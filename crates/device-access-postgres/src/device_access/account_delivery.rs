@@ -44,7 +44,7 @@ async fn mapping(
     })
     .transpose()
 }
-async fn agent_epoch(
+pub(super) async fn agent_epoch(
     c: &mut PgConnection,
     b: &Binding,
     agent: &delivery::Agent,
@@ -194,6 +194,12 @@ pub(super) async fn accept(
         return Ok(());
     }
     let authority = match actor {
+        Some(p)
+            if matches!(b.origin, Origin::Employee { .. })
+                && b.person == super::service::person(p)? =>
+        {
+            None
+        }
         Some(p) => Some(OperationAuthority::from_proof(
             &super::service::grants(c, p).await?,
             p,
@@ -1097,6 +1103,7 @@ pub struct Progress {
     pub task_id: Option<Uuid>,
     pub received: bool,
     pub execution: Execution,
+    pub cancellation: rss_mdm_task_state::Cancellation,
     pub effect: Option<da::AccountEffect>,
     pub cleanup_pending: bool,
 }
@@ -1112,16 +1119,16 @@ impl Service {
                 let (actor,device,id)=*ctx;
                 let b=super::service::operation_on(c,actor,device,id).await?;
                 let row=sqlx::query(
-                    "SELECT id,state,result,COALESCE((da_journal->>'received')::boolean,false) AS issued
-                     FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
+                    "SELECT r.id,r.state,r.result,r.da_target IS NOT NULL AND live.revision>(r.access_binding->>'revision')::bigint AS superseded,COALESCE((da_journal->>'received')::boolean,false) AS issued
+                     FROM rss_da.access_runs r JOIN rss_da.bindings live ON (r.tenant_id,r.binding_id)=(live.tenant_id,live.id) WHERE r.tenant_id=$1 AND r.binding_id=$2
                      AND access_binding->>'operationId'=$3 AND access_binding->>'revision'=$4
-                     ORDER BY created_at DESC,id DESC LIMIT 1"
+                     ORDER BY r.created_at DESC,r.id DESC LIMIT 1"
                 )
                 .bind(b.tenant).bind(b.id).bind(id.to_string()).bind(b.revision.to_string())
                 .fetch_optional(&mut *c).await.map_err(db)?;
                 let mut progress=Progress{
                     operation_id:id,binding_id:b.id,revision:b.revision,task_id:None,
-                    received:false,execution:Execution::NotStarted,effect:None,
+                    received:false,execution:Execution::NotStarted,cancellation:rss_mdm_task_state::Cancellation::None,effect:None,
                     cleanup_pending:b.state==State::Revoked,
                 };
                 if let Some(row)=row{
@@ -1129,9 +1136,23 @@ impl Service {
                     state.expire(crate::platform_sso::store::now(c).await?);
                     progress.task_id=Some(row.try_get("id").map_err(db)?);
                     progress.execution=state.execution;
+                    if state.execution==Execution::NotStarted && row.try_get::<bool,_>("superseded").map_err(db)? {
+                        // A later durable revision fences this unstarted permit in the delivery path.
+                        state.cancel();
+                    }
+                    progress.cancellation=state.cancellation;
                     progress.received=matches!(state.delivery,rss_mdm_task_state::Delivery::Received{..}) || row.try_get::<bool,_>("issued").map_err(db)?;
                     progress.effect=row.try_get::<Option<sqlx::types::Json<da::AccountResult>>,_>("result")
                         .map_err(db)?.map(|r|r.0.effect);
+                }
+                if progress.effect.is_none() && b.intent.platform()==w::TaskPlatform::Macos {
+                    let native:Option<sqlx::types::Json<w::AccessResult>>=sqlx::query_scalar(
+                        "SELECT document FROM rss_da.results WHERE tenant_id=$1 AND task=$2 AND binding=$3 AND document->>'revision'=$4 AND document->'definitionDigest'=$5 ORDER BY event LIMIT 1"
+                    ).bind(b.tenant).bind(id).bind(b.id).bind(b.revision.to_string()).bind(sqlx::types::Json(b.definition_digest()?)).fetch_optional(&mut *c).await.map_err(db)?;
+                    if let Some(result)=native {
+                        progress.execution=Execution::Succeeded;
+                        progress.effect=Some(result.0.effect.into());
+                    }
                 }
                 if progress.cleanup_pending {
                     let phases=super::lifecycle::cleanup_phases(c,actor.tenant_id(),std::slice::from_ref(&b)).await?;

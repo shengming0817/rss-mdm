@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Outcome of continuing a previously registered Windows key after employee recovery.",
+  "oneOf": [
+    {
+      "const": "current",
+      "description": "The registered key is current for this operation.",
+      "type": "string"
+    },
+    {
+      "const": "registration_required",
+      "description": "The employee needs enterprise key registration.",
+      "type": "string"
+    }
+  ],
+  "title": "KeyRenewal",
+  "$id": "https://rss.example/agent/enterprise/v1/KeyRenewal"
+}

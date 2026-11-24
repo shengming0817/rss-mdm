@@ -31,6 +31,7 @@ fn main() {
             "SignedConfiguration": schemars::schema_for!(rss_mdm_agent_wire::da::SignedConfiguration),
         },
         "enterprise": {
+            "KeyRenewal": schemars::schema_for!(rss_mdm_agent_wire::enterprise::KeyRenewal),
             "KeyRegistration": schemars::schema_for!(rss_mdm_agent_wire::enterprise::KeyRegistration),
             "NativeProof": schemars::schema_for!(rss_mdm_agent_wire::enterprise::NativeProof),
             "Begin": schemars::schema_for!(rss_mdm_agent_wire::enterprise::Begin),

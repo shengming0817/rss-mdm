@@ -30,7 +30,7 @@ fn domain(e: rss_mdm_device_access_postgres::Error) -> AgentError {
 pub fn routes(
     runtime: Option<Arc<Services>>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! {struct AccessRoutes for [Agent,Da]{get_access_directory,post_access_begin,post_access_confirm,post_access_recovery_use}}
+    rss_mdm_http_contract::route_module! {struct AccessRoutes for [Agent,Da]{get_access_directory,post_access_begin,post_access_confirm,post_access_recovery_use,post_windows_key}}
     AccessRoutes {
         get_access_directory: rss_mdm_http_contract::module::Route::new(
             "/device-access",
@@ -52,6 +52,14 @@ pub fn routes(
             "/device-access/confirm",
             post(
                 access_confirm,
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        ),
+        post_windows_key: rss_mdm_http_contract::module::Route::new(
+            "/device-access/operations/{operation}/windows-key",
+            post(
+                windows_key,
                 &contracts::PROTOCOL_AGENT_CHANNEL,
                 &[RouteOperation::Action],
             ),
@@ -84,12 +92,9 @@ async fn access_begin(
             &headers,
             peer.as_ref().map(|v| &v.0),
             &audit,
-            false,
         )
         .await?;
-        let employee = employee(&app, &headers, &audit, &control)
-            .await?
-            .ok_or(Error::Unauthorized)?;
+        let employee = employee(&app, &headers, &audit, &control).await?;
         let input = body(input)?;
         let value = app
             .business
@@ -121,23 +126,60 @@ async fn access_confirm(
             &headers,
             peer.as_ref().map(|v| &v.0),
             &audit,
-            false,
         )
         .await?;
-        let employee = employee(&app, &headers, &audit, &control)
-            .await?
-            .ok_or(Error::Unauthorized)?;
+        let employee = employee(&app, &headers, &audit, &control).await?;
         let input = body(input)?;
         let value = app
             .business
             .confirm_device_access(&p, &employee, &input, app.admission.as_ref(), &audit)
             .await
             .map_err(domain)?;
-        Ok(Json(value.status()))
+        Ok(Json(value.status().map_err(domain)?))
     })
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the typed HTTP signature retains the authenticated device, browser session, request deadline, path and proof"
+)]
+async fn windows_key(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
+    Extension(control): Extension<rss_axum::RequestControl>,
+    State(app): State<Arc<Services>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
+    axum::extract::Path(operation): axum::extract::Path<uuid::Uuid>,
+    rss_mdm_http_contract::agent::RuntimeHeaders(headers):rss_mdm_http_contract::agent::RuntimeHeaders,
+    input: Body<rss_mdm_agent_wire::enterprise::KeyRegistration>,
+) -> Result<NoStore<Json<rss_mdm_agent_wire::enterprise::KeyRenewal>>, AgentError> {
+    bounded(async {
+        let p = principal(
+            origin.as_ref().map(|v| &v.0),
+            &app,
+            &headers,
+            peer.as_ref().map(|v| &v.0),
+            &audit,
+        )
+        .await?;
+        let actor = employee(&app, &headers, &audit, &control).await?;
+        Ok(NoStore(Json(
+            app.business
+                .renew_windows_key(
+                    &p,
+                    &actor,
+                    operation,
+                    &body(input)?,
+                    app.admission.as_ref(),
+                    &audit,
+                )
+                .await
+                .map_err(domain)?,
+        )))
+    })
+    .await
+}
 async fn access_recovery_use(
     origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     State(app): State<Arc<Services>>,
@@ -153,7 +195,6 @@ async fn access_recovery_use(
             &headers,
             peer.as_ref().map(|v| &v.0),
             &audit,
-            false,
         )
         .await?;
         app.business
@@ -185,12 +226,9 @@ async fn access_directory(
             &headers,
             peer.as_ref().map(|v| &v.0),
             &audit,
-            false,
         )
         .await?;
-        let employee = employee(&app, &headers, &audit, &control)
-            .await?
-            .ok_or(Error::Unauthorized)?;
+        let employee = employee(&app, &headers, &audit, &control).await?;
         let request = rss_mdm_authorization_service::context::RequestAuth {
             proof: Arc::new(employee),
             sessions: app.identity.as_ref().clone(),
@@ -225,7 +263,6 @@ async fn principal(
     headers: &axum::http::HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     audit: &RequestAudit,
-    _tasks: bool,
 ) -> Result<rss_mdm_registration_service::DevicePrincipal, AgentError> {
     if headers.contains_key("authorization") || headers.contains_key("cookie") {
         return Err(Error::Unauthorized.into());
@@ -247,7 +284,7 @@ async fn employee(
     headers: &axum::http::HeaderMap,
     audit: &RequestAudit,
     control: &rss_axum::RequestControl,
-) -> Result<Option<rss_mdm_authorization_service::context::AuthorizedPrincipal>, AgentError> {
+) -> Result<rss_mdm_authorization_service::context::AuthorizedPrincipal, AgentError> {
     let headers = headers
         .get_all("x-rss-user-session")
         .iter()
@@ -272,5 +309,5 @@ async fn employee(
         )
         .await?;
     p.bind_audit(audit).map_err(Error::from)?;
-    Ok(Some(p))
+    Ok(p)
 }

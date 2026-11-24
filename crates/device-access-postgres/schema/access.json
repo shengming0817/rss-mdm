@@ -67,7 +67,7 @@
       "updates": [
         "consumed"
       ],
-      "delete_policy": "expires_at<clock_timestampandconsumedisnull"
+      "delete_policy": "expires_at<clock_timestamp"
     },
     {
       "schema": "rss_da",

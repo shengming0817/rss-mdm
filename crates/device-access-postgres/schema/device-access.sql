@@ -72,7 +72,7 @@ CREATE POLICY tenant ON rss_da.results USING(tenant_id=nullif(current_setting('r
 GRANT SELECT,INSERT ON rss_da.bindings,rss_da.ceremonies,rss_da.results TO da_access;
 GRANT UPDATE(instance,principal,generation,revision,state,account,document) ON rss_da.bindings TO da_access;
 GRANT UPDATE(consumed) ON rss_da.ceremonies TO da_access;
-CREATE POLICY expired_only ON rss_da.ceremonies AS RESTRICTIVE FOR DELETE USING(expires_at<clock_timestamp() AND consumed IS NULL);
+CREATE POLICY expired_only ON rss_da.ceremonies AS RESTRICTIVE FOR DELETE USING(expires_at<clock_timestamp());
 GRANT DELETE ON rss_da.ceremonies TO da_access;
 GRANT SELECT ON rss_da.bindings,rss_da.results TO da_command_runtime;
 GRANT SELECT ON rss_da.bindings TO da_policy_runtime;

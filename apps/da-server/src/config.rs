@@ -294,6 +294,8 @@ impl Database {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Oidc {
+    pub assurance_profiles: Vec<rss_mdm_device_access_runtime::oidc::AssuranceProfile>,
+    pub private_providers: Vec<rss_mdm_device_access_runtime::oidc::PrivateProvider>,
     pub state_key_file: PathBuf,
     pub active_credential_key: String,
     pub credential_keys: std::collections::BTreeMap<String, PathBuf>,
@@ -322,8 +324,12 @@ impl Oidc {
             .map(|(id, p)| Ok((id.clone(), key(p)?)))
             .collect::<Result<Vec<_>>>()?;
 
-        let transport = rss_identity_oidc::HttpOidc::new(Vec::new(), Vec::new(), policy)
-            .map_err(|_| Error::Configuration)?;
+        let transport = rss_mdm_device_access_runtime::oidc::transport(
+            &self.assurance_profiles,
+            &self.private_providers,
+            policy,
+        )
+        .map_err(|_| Error::Configuration)?;
 
         rss_identity_postgres::Federation::new(
             rss_identity_core::groups::GroupFactsMaxAge::new(self.group_facts_max_age_seconds)

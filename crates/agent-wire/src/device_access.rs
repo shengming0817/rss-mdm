@@ -821,6 +821,8 @@ pub struct AccessBindingStatus {
     pub binding_generation: i64,
     /// Factor replacement generation.
     pub factor_generation: i64,
+    /// Exact desired effect identity used in signed native application results.
+    pub definition_digest: [u8; 32],
     /// Desired revision.
     pub revision: i64,
     /// Whether this association is revoked on the server.

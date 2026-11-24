@@ -11,6 +11,7 @@ pub struct Identity {
         String,
         std::sync::Arc<dyn rss_mdm_device_access_postgres::enterprise::broker::Client>,
     >,
+    pub federated_routes: Option<axum::Router>,
     pub authority: Authority,
     pub webauthn: rss_identity_postgres::WebauthnAuthority,
     pub http: rss_identity_http_axum::HttpConfig,
@@ -25,6 +26,9 @@ pub(crate) fn failure(e: AuthorityError) -> Error {
             rss_identity_core::account::AccountRuleError::InsufficientPrivilege
             | rss_identity_core::account::AccountRuleError::ReauthenticationRequired,
         ) => Error::Forbidden,
+        AuthorityError::DeadlineElapsed => {
+            Error::Classified(rss_mdm_audit_integration::completion::ResponseFailure::Deadline)
+        }
         AuthorityError::CommitUnknown(_) => Error::CommitUnknown,
         AuthorityError::RollbackFailed(_) => Error::RollbackFailed,
         _ => Error::Unavailable,

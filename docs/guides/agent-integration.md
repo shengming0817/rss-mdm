@@ -56,7 +56,11 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## Agent 上报本机 MDM 状态
 
-具有 `mdm.enrollment.v1` 的 Agent 用 `/reports` 提交注册回执中对应的冻结 `collection`，并以 `body:{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}}]}` 上报普通字段；其它闭合状态为 `this_organization`、`other_organization`、`unknown`。部分采集使用 `partial`，sequence 按该冻结采集定义的来源与 dataset 单调递增。该事实进入现有 CollectionRun、Observation、Inventory，字段为 `channel.mdm.enrollment`。标准入口任务的结果只说明入口是否打开，完成注册须由后续本机观察证明。
+注册获得该采集定义且具备 `inventory.collect.v1` 的 Agent 用 `/reports` 提交注册回执中对应的冻结 `collection`，单项采集使用 `body:{"kind":"partial","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}}]}` 上报普通字段；其它闭合状态为 `this_organization`、`other_organization`、`unknown`。部分采集使用 `partial`，sequence 按该冻结采集定义的来源与 dataset 单调递增。该事实进入现有 CollectionRun、Observation、Inventory，字段为 `channel.mdm.enrollment`。标准入口任务的结果只说明入口是否打开，完成注册须由后续本机观察证明。
+
+Agent 注册在已有 `channel.mdm.enrollment` 定义中同时下发 `channel.client.modules` 字段，通过现有 reports 上报本机 DA 和 MDM 的 installed、enabled 及安装配置 application 结果。
+完整 snapshot 同时发送注册和模块两项；单项采集走 partial，保留另一项的现有观察。无本机数据时可显式报告 unknown 或省略尚未观测的模块布尔字段。资产详情在原字段 evidence 中返回来源、observedAt、原 receivedAt；moduleObservationStale 在没有报告时为空，收到报告满 900 秒为真。
+独立 DA 在 status-reports 的 modules 中使用相同事实，陈旧窗口沿 DA reports 配置。安装观察不授予跨产品权限。注册和实际登录效果从各自已有入口读取。
 
 ## 无兼容退出
 
@@ -244,11 +248,13 @@ PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的�
 重新核验本地账号、SID/GeneratedUID、会话及本地账号来源，再确认。Windows account 必须携带 authority：local、active_directory（domainSid）或 entra（tenantId/objectId），交互上下文 windowsAuthority 与账号来源一致；Mac 上该字段为 null。来源必须由原生安全上下文建立，不能根据用户名、UPN 或 SID 外形猜测。MSA 与 RDP 不在当前范围。
 普通进程上报、软件清单和最近登录记录不能替代该核验。用户名仅用于显示或新建目标，不能接管同名账号。
 
-首次开通只用于尚未建立 Device Access 关联的当前注册；之后由 RSS 后台管理员修改或新增。
+首次开通适用于尚未建立 Device Access 关联的当前注册。之后的新增、转交和解绑按设备管理范围授权。
+
+已有绑定的员工可从现有绑定目录取得 device、binding 和 revision。浏览器直接为 `reset_factors` 或 `repair_binding` 取得本次 Identity 用途证明并提交同一操作。目标稳定账号取自已有绑定。设备 begin/confirm 只用于首次开通。Mac 原生应用按绑定目录中的 bindingGeneration、revision 与 definitionDigest 回报效果。
 Begin/confirm 在宿主同一 READ COMMITTED 写事务内调用 Identity 的 live-session 准入，先取得 Identity guard，再取得注册和业务锁；会话撤销与绑定提交串行化。原会话过期仍然生效，此准入不续期、不消费 step-up。
 确认使用稳定 operationId；响应丢失重试原请求，不换 nonce 或账号。Begin 的 nonce 不入库存储，
 响应丢失后重新发起新 ceremony；并发 ceremony 仍只有一个能够完成首次关联。
-每设备每注册最多保留 128 个绑定记录及 128 个未清理 ceremony，失效绑定保留，过期未消费 ceremony 可清理。
+每设备每注册最多保留 128 个绑定记录及 128 个未清理 ceremony，失效绑定保留，过期 ceremony 可清理，原操作回执独立保留。
 
 签名 `device_access` task 复用 Offer/Received/Start，包含人员、注册/绑定代际、配置 revision 和摘要。
 收到 Offer 不能执行；Start 前重新核验目标、权限及本机条件。Create 的系统密码只经本机交互设置，

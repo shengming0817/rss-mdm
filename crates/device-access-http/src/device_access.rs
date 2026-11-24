@@ -51,7 +51,7 @@ pub fn mount(
 }
 fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { publish_credential_policy, credential_policy, request_credential, credential_status, get_materials, post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, get_operation, get_execution, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, get_enterprise_operation, post_enterprise_step_up, post_offboarding_idp } }
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { publish_credential_policy, credential_policy, request_credential, credential_status, get_materials, post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, post_oidc_step_up, get_operation, get_execution, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, get_enterprise_operation, post_enterprise_step_up, post_offboarding_idp } }
         RegisterModule1 {
             publish_credential_policy: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/device-access/credential-policies",
@@ -131,6 +131,14 @@ fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Decla
                         RouteOperation::Update,
                         RouteOperation::Lifecycle,
                     ],
+                ),
+            ),
+            post_oidc_step_up: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/bindings/{id}/step-up/oidc/{provider}",
+                rss_mdm_http_contract::routing::post(
+                    oidc_step_up,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action],
                 ),
             ),
             post_step_up: rss_mdm_http_contract::module::Route::new(
@@ -256,6 +264,7 @@ enum ActionInput {
         policy: Uuid,
     },
     ResetFactors,
+    RepairBinding,
     Unbind {
         disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,
     },
@@ -402,6 +411,7 @@ impl ChangeInput {
         let action = match self.action {
             ActionInput::Offboard { disposition } => access::Action::Offboard { disposition },
             ActionInput::ResetFactors => access::Action::ResetFactors,
+            ActionInput::RepairBinding => access::Action::RepairBinding,
             ActionInput::Unbind { disposition } => access::Action::Unbind { disposition },
             ActionInput::Reinstate {
                 instance,
@@ -478,12 +488,17 @@ async fn step_up(
     body: Result<Json<ChangeInput>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::identity_contract::TimedChallenge>, Error> {
     let input = body.map_err(Error::from)?.0.into_change();
-    let context = input.step_up_context(
-        &auth.proof,
-        &device,
-        id,
-        &offboarding_providers(&s, auth.proof.binding(), &input),
-    )?;
+    let (context, _) = s
+        .registration
+        .change_step_up_context(
+            &auth.proof,
+            &device,
+            id,
+            &input,
+            &offboarding_providers(&s, auth.proof.binding(), &input),
+            s.admission.as_ref(),
+        )
+        .await?;
     let challenge = s
         .identity
         .webauthn
@@ -498,6 +513,115 @@ async fn step_up(
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::TimedChallenge(challenge)))
+}
+
+#[derive(schemars::JsonSchema, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FederatedChange {
+    change: ChangeInput,
+    return_target: String,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizationUrl {
+    authorization_url: String,
+}
+
+/// Identity's own federated route owns browser/CSRF checks, its cookie and callback.
+struct OidcRedirect(axum::response::Response);
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct IdentityRateLimit {
+    code: String,
+}
+impl axum::response::IntoResponse for OidcRedirect {
+    fn into_response(self) -> axum::response::Response {
+        self.0
+    }
+}
+impl rss_mdm_http_contract::signature::Output for OidcRedirect {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Response, Schema};
+        let mut r = Response::json::<AuthorizationUrl>(200);
+        r.headers
+            .insert("set-cookie".into(), Schema::response::<String>());
+        let mut limited = Response::json::<IdentityRateLimit>(429);
+        limited
+            .headers
+            .insert("retry-after".into(), Schema::response::<String>());
+        vec![r, limited]
+    }
+}
+async fn oidc_step_up(
+    State(s): State<Arc<Services>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(peer): Extension<rss_identity_http_axum::ClientAddress>,
+    Extension(control): Extension<rss_axum::RequestControl>,
+    Path((tenant, device, id, provider)): Path<(Uuid, rss_mdm_agent_wire::DeviceId, Uuid, Uuid)>,
+    crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
+    body: Result<Json<FederatedChange>, axum::extract::rejection::JsonRejection>,
+) -> Result<OidcRedirect, Error> {
+    use tower::ServiceExt;
+    let input = body.map_err(Error::from)?.0;
+    let router = s
+        .identity
+        .federated_routes
+        .clone()
+        .ok_or(Error::Unsupported)?;
+    let change = input.change.into_change();
+    let (context, employee) = s
+        .registration
+        .change_step_up_context(
+            &auth.proof,
+            &device,
+            id,
+            &change,
+            &offboarding_providers(&s, auth.proof.binding(), &change),
+            s.admission.as_ref(),
+        )
+        .await?;
+    if employee.is_none() {
+        return Err(Error::Forbidden);
+    }
+    let mut request = axum::http::Request::post(format!(
+        "/api/v1/identity/tenants/{tenant}/oidc/{provider}/step-up"
+    ))
+    .body(axum::body::Body::from(
+        serde_json::to_vec(
+            &serde_json::json!({"returnTarget":input.return_target,"operation":{"kind":"host"}}),
+        )
+        .map_err(|_| Error::Malformed)?,
+    ))
+    .map_err(|_| Error::Malformed)?;
+    *request.headers_mut() = headers;
+    request
+        .headers_mut()
+        .remove(axum::http::header::CONTENT_LENGTH);
+    request.extensions_mut().insert(peer);
+    request.extensions_mut().insert(control.deadline());
+    request.extensions_mut().insert(auth.proof.binding());
+    request.extensions_mut().insert(context);
+    let response = router.oneshot(request).await.expect("router is infallible");
+    if response.status().is_success()
+        || response.status() == axum::http::StatusCode::TOO_MANY_REQUESTS
+    {
+        Ok(OidcRedirect(response))
+    } else {
+        if response.status().is_server_error()
+            && let Some(rss_identity_http_axum::HttpFailure::Authority(error)) = response
+                .extensions()
+                .get::<rss_identity_http_axum::HttpFailure>()
+        {
+            return Err(crate::identity::failure(*error));
+        }
+        Err(match response.status().as_u16() {
+            400 => Error::Malformed,
+            401 => Error::Unauthorized,
+            403 => Error::Forbidden,
+            409 => Error::Conflict,
+            _ => Error::Unavailable,
+        })
+    }
 }
 
 async fn offboarding(

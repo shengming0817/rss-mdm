@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 autotests = false
 [dependencies]
+tower.workspace = true
 rss-mdm-vault-sync.workspace = true
 rss-mdm-pki-service.workspace = true
 rss-mdm-windows-mdm.workspace = true
@@ -63,7 +64,6 @@ sqlx.workspace = true
 time.workspace = true
 reqwest = {workspace = true, features=["json"]}
 sha2.workspace = true
-tower.workspace = true
 rss-mdm-device-trust.workspace = true
 rss-mdm-native-protection.workspace = true
 rss-mdm-query.workspace = true
