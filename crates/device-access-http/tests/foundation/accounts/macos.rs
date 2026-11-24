@@ -443,10 +443,43 @@ async fn scenario(
 
     let clean_offer: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(clean_offer.operation_id, cleanup);
-    let clean = observe(&peer, base, &clean_offer, da::AccountObservation::Received)
-        .await?
-        .permit
-        .context("cleanup for late Created")?;
+    let cleanup_ack = observe(&peer, base, &clean_offer, da::AccountObservation::Received).await?;
+    let clean = cleanup_ack.permit.context("cleanup for late Created")?;
+    let replacement_id = Uuid::new_v4();
+    let next_disposition = || {
+        owner.change(
+            c,
+            &client,
+            &r,
+            binding,
+            access::Change {
+                operation_id: replacement_id,
+                expected_revision: 2,
+                action: access::Action::Unbind {
+                    disposition: w::AccessAccountDisposition::Disable,
+                },
+            },
+            json!({"kind":"unbind","disposition":"disable"}),
+        )
+    };
+    let busy = Box::pin(next_disposition()).await.unwrap_err();
+    assert!(busy.to_string().contains("HTTP 409"), "{busy:#}");
+    let held: da::AccountSettlement = material::success(
+        peer.post(format!(
+            "{base}/account-operations/{}/events",
+            clean_offer.task_id
+        ))
+        .json(&da::AccountEvent {
+            event_id: cleanup_ack.event_id,
+            attempt_id: clean_offer.attempt_id,
+            definition_digest: clean_offer.definition_digest,
+            event: da::AccountObservation::Received,
+        })
+        .send()
+        .await?,
+    )
+    .await?;
+    assert_eq!(held.permit.as_ref(), Some(&clean));
     assert!(
         matches!(clean.action,w::AccessAction::Unbind{account:w::AccessAccount::Macos{generated_uid},disposition:w::AccessAccountDisposition::Keep} if generated_uid==uid)
     );
@@ -510,6 +543,33 @@ async fn scenario(
     let unfulfilled: Value =
         material::success(progress(other_cleanup, &existing_owner).await?).await?;
     assert_eq!(unfulfilled["cleanupPending"], true);
+    // The previously rejected change is admissible only after the exact original disposition settled.
+    Box::pin(next_disposition()).await?;
+    let later: da::AccountOffer = material::success(next().await?).await?;
+    assert_eq!(later.operation_id, replacement_id);
+    let permit = observe(&peer, base, &later, da::AccountObservation::Received)
+        .await?
+        .permit
+        .context("subsequent authorized disposition")?;
+    assert!(matches!(
+        permit.action,
+        w::AccessAction::Unbind {
+            disposition: w::AccessAccountDisposition::Disable,
+            ..
+        }
+    ));
+    observe(
+        &peer,
+        base,
+        &later,
+        report(
+            &permit,
+            w::AccessEffect::Unbound {
+                disposition: w::AccessAccountDisposition::Disable,
+            },
+        ),
+    )
+    .await?;
     // A known creation with wrong privilege stays observable without enabling login.
     let id = Uuid::new_v4();
     let op = assign(c, &client, &r, &other, id, policy.id, "LocalUser").await?;

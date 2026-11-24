@@ -460,7 +460,19 @@ impl Service {
                         if prior.state==State::Revoked && prior.account.is_none(){
                             storage::require_retired_in(c,prior).await?;
                         }
-                        if !matches!(input.action,Action::Unbind{..}|Action::Offboard{..}) {
+                        let withdrawing = matches!(input.action, Action::Unbind { .. } | Action::Offboard { .. });
+                        let direct_mac_cleanup = prior.state == State::Revoked && prior.intent.platform() == TaskPlatform::Macos
+                            && matches!(prior.account_delivery, Some(super::account_delivery::Target::Da { .. }));
+                        // A withdrawal fences a Create, but cannot supersede a cleanup Start already on the Mac.
+                        if !withdrawing || direct_mac_cleanup {
+                            let unresolved:bool=sqlx::query_scalar(
+                                "SELECT EXISTS(SELECT FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
+                                 AND da_target IS NOT NULL AND state->>'execution' IN ('running','unknown') AND state->>'cancellation'<>'confirmed'
+                                 AND (access_binding->>'revision')::bigint=$3)"
+                            ).bind(tenant).bind(*id).bind(input.expected_revision).fetch_one(&mut *c).await.map_err(db)?;
+                            if unresolved {return Err(Error::Conflict);}
+                        }
+                        if !withdrawing {
                             rss_mdm_recovery_credentials::tasks::device::require_rotation_settled(
                                 c,tenant,**device,prior.id,prior.generation
                             ).await.map_err(crate::recovery::error)?;
@@ -579,15 +591,6 @@ impl Service {
                         }
                     };
                     if old.is_some() && matches!(input.action, Action::Put { .. } | Action::Reinstate { .. }) { storage::require_retired_in(c, &value).await?; }
-                    if old.is_some() && !matches!(input.action, Action::Unbind { .. } | Action::Offboard { .. }) {
-                        // A new revision cannot start over an unresolved native mutation.
-                        let unresolved:bool=sqlx::query_scalar(
-                            "SELECT EXISTS(SELECT FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
-                             AND da_target IS NOT NULL AND state->>'execution' IN ('running','unknown') AND state->>'cancellation'<>'confirmed'
-                             AND (access_binding->>'revision')::bigint=$3)"
-                        ).bind(tenant).bind(*id).bind(input.expected_revision).fetch_one(&mut *c).await.map_err(db)?;
-                        if unresolved {return Err(Error::Conflict);}
-                    }
                     value.operation_id = input.operation_id;
                     let subject = rss_identity_postgres::platform::PlatformBinding {
                         instance: rss_identity_core::InstanceId::parse(&value.person.instance.to_string()).map_err(|_| Error::Malformed)?,
