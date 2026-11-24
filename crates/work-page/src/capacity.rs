@@ -21,7 +21,14 @@ struct State {
     tenants: BTreeMap<Uuid, usize>,
     windows: BTreeMap<u64, usize>,
     next_window: u64,
-    waiting: VecDeque<(Arc<()>, Uuid, Option<Window>)>,
+    waiting: VecDeque<Waiter>,
+}
+
+struct Waiter {
+    id: Arc<()>,
+    tenant: Uuid,
+    window: Option<Window>,
+    database: Option<Arc<Capacity>>,
 }
 
 /// A narrower registration participates in the same atomic grant as the host.
@@ -32,6 +39,14 @@ pub(crate) struct Window {
 }
 
 impl State {
+    fn record(&mut self, tenant: Uuid, window: Option<Window>, count: usize) {
+        self.active += count;
+        self.last = Some(tenant);
+        *self.tenants.entry(tenant).or_default() += count;
+        if let Some(w) = window {
+            *self.windows.entry(w.id).or_default() += count;
+        }
+    }
     fn available(&self, tenant: Uuid, window: Option<Window>, per_tenant: usize) -> usize {
         let tenant_free = per_tenant - self.tenants.get(&tenant).copied().unwrap_or(0);
         window.map_or(tenant_free, |w| {
@@ -86,79 +101,139 @@ impl Capacity {
         window: Option<Window>,
         stop: &CancellationToken,
     ) -> impl Future<Output = Vec<Slot>> + Send + use<> {
+        let requested = self.request(tenant, width, window, None, stop);
+        async move { requested.await.0 }
+    }
+
+    // The only nested lock order is execution -> physical database. Ordinary
+    // database operations never depend on execution slots. A waiting claim is
+    // eligible in the execution queue only while its database can admit it.
+    pub(crate) fn request(
+        self: &Arc<Self>,
+        tenant: Uuid,
+        width: usize,
+        window: Option<Window>,
+        database: Option<Arc<Capacity>>,
+        stop: &CancellationToken,
+    ) -> impl Future<Output = (Vec<Slot>, Option<Slot>)> + Send + use<> {
         let mut changed = self.changed.subscribe();
+        let mut db_changed = database.as_ref().map(|db| db.changed.subscribe());
         let stop = stop.clone();
         let ticket = Ticket {
             capacity: self.clone(),
             id: Arc::new(()),
         };
-        let tenant_limit = self.per_tenant.get();
         if width > 0 && !stop.is_cancelled() {
             self.state
                 .lock()
                 .expect("capacity state")
                 .waiting
-                .push_back((ticket.id.clone(), tenant, window));
+                .push_back(Waiter {
+                    id: ticket.id.clone(),
+                    tenant,
+                    window,
+                    database: database.clone(),
+                });
         }
         async move {
-            if width == 0 {
-                return Vec::new();
-            }
-            let capacity = &ticket.capacity;
-            loop {
+            while width > 0 && !stop.is_cancelled() {
+                if let Some(grant) =
+                    ticket
+                        .capacity
+                        .grant(&ticket.id, tenant, width, window, database.as_ref())
                 {
-                    let mut state = capacity.state.lock().expect("capacity state");
-                    if stop.is_cancelled() {
-                        return Vec::new();
-                    }
-                    let free = (capacity.limit.get() - state.active).min(state.available(
-                        tenant,
-                        window,
-                        tenant_limit,
-                    ));
-                    let mut eligible = state
-                        .waiting
-                        .iter()
-                        .filter(|(_, t, w)| state.available(*t, *w, tenant_limit) > 0);
-                    if free > 0
-                        && eligible
-                            .clone()
-                            .min_by_key(|(_, t, _)| {
-                                (
-                                    state.tenants.get(t).copied().unwrap_or(0),
-                                    Some(*t) == state.last,
-                                )
-                            })
-                            .is_some_and(|(id, _, _)| Arc::ptr_eq(id, &ticket.id))
-                    {
-                        let contenders = eligible
-                            .by_ref()
-                            .map(|(_, tenant, _)| *tenant)
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .len();
-                        let fair_share = (capacity.limit.get() - state.active).div_ceil(contenders);
-                        let count = width.min(free).min(fair_share);
-                        state.last = Some(tenant);
-                        state.active += count;
-                        if let Some(w) = window {
-                            *state.windows.entry(w.id).or_default() += count;
-                        }
-                        *state.tenants.entry(tenant).or_default() += count;
-                        return (0..count)
-                            .map(|_| Slot {
-                                capacity: capacity.clone(),
-                                tenant,
-                                window,
-                            })
-                            .collect();
-                    }
+                    return grant;
                 }
                 tokio::select! {
-                    () = stop.cancelled() => return Vec::new(),
-                    result = changed.changed() => result.expect("live capacity"),
+                    ()=stop.cancelled()=>break,
+                    result=changed.changed()=>result.expect("live capacity"),
+                    _=async { db_changed.as_mut().expect("coupled claim").changed().await.expect("live database") }, if db_changed.is_some()=>{
+                        ticket.capacity.changed.send_replace(());
+                    }
                 }
             }
+            (Vec::new(), None)
         }
+    }
+
+    fn grant(
+        self: &Arc<Self>,
+        id: &Arc<()>,
+        tenant: Uuid,
+        width: usize,
+        window: Option<Window>,
+        database: Option<&Arc<Capacity>>,
+    ) -> Option<(Vec<Slot>, Option<Slot>)> {
+        let mut state = self.state.lock().expect("capacity state");
+        let free = self.limit.get() - state.active;
+        if free == 0 {
+            return None;
+        }
+        let mut contenders = std::collections::BTreeSet::new();
+        let next = state
+            .waiting
+            .iter()
+            .filter(|w| {
+                state.available(w.tenant, w.window, self.per_tenant.get()) > 0
+                    && w.database.as_ref().is_none_or(|db| {
+                        db.connection_available(
+                            w.tenant,
+                            &db.state.lock().expect("database capacity"),
+                        )
+                    })
+            })
+            .inspect(|w| {
+                contenders.insert(w.tenant);
+            })
+            .min_by_key(|w| {
+                (
+                    state.tenants.get(&w.tenant).copied().unwrap_or(0),
+                    Some(w.tenant) == state.last,
+                )
+            })?;
+        if !Arc::ptr_eq(&next.id, id) {
+            return None;
+        }
+        let connection = match database {
+            Some(db) => Some(db.try_connection(tenant)?),
+            None => None,
+        };
+        let count = width
+            .min(free.div_ceil(contenders.len()))
+            .min(state.available(tenant, window, self.per_tenant.get()));
+        state.record(tenant, window, count);
+        Some((
+            (0..count)
+                .map(|_| Slot {
+                    capacity: self.clone(),
+                    tenant,
+                    window,
+                })
+                .collect(),
+            connection,
+        ))
+    }
+
+    fn connection_available(&self, tenant: Uuid, state: &State) -> bool {
+        state.active < self.limit.get()
+            && state.available(tenant, None, self.per_tenant.get()) > 0
+            && !state
+                .waiting
+                .iter()
+                .any(|w| state.available(w.tenant, w.window, self.per_tenant.get()) > 0)
+    }
+
+    pub(crate) fn try_connection(self: &Arc<Self>, tenant: Uuid) -> Option<Slot> {
+        let mut state = self.state.lock().expect("database capacity");
+        if !self.connection_available(tenant, &state) {
+            return None;
+        }
+        state.record(tenant, None, 1);
+        Some(Slot {
+            capacity: self.clone(),
+            tenant,
+            window: None,
+        })
     }
 }
 
@@ -173,7 +248,7 @@ impl Drop for Ticket {
             .lock()
             .expect("capacity state")
             .waiting
-            .retain(|(id, _, _)| !Arc::ptr_eq(id, &self.id));
+            .retain(|waiter| !Arc::ptr_eq(&waiter.id, &self.id));
         self.capacity.changed.send_replace(());
     }
 }
@@ -254,6 +329,24 @@ mod tests {
         drop(peer);
         assert_eq!(hot.await.len(), 1);
     }
+    #[tokio::test]
+    async fn blocked_database_tickets_take_neither_budget_and_wake_after_release() {
+        let host = Capacity::new(NonZeroUsize::new(8).unwrap());
+        let db = Capacity::with_tenant_limit(NonZeroUsize::new(2).unwrap(), NonZeroUsize::MIN);
+        let stop = CancellationToken::new();
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let settlement = db.acquire(a, 1, &stop).await;
+        let mut hot = Box::pin(host.request(a, 8, None, Some(db.clone()), &stop));
+        assert!(futures::poll!(&mut hot).is_pending());
+        let (slots, connection) = host.request(b, 8, None, Some(db.clone()), &stop).await;
+        assert_eq!(slots.len(), 8);
+        assert!(connection.is_some());
+        drop(settlement);
+        assert!(futures::poll!(&mut hot).is_pending());
+        drop((slots, connection));
+        assert_eq!(hot.await.0.len(), 8);
+    }
+
     #[tokio::test]
     async fn capacity_one_serializes_all_registrations() {
         let budget = Capacity::new(NonZeroUsize::MIN);

@@ -1,6 +1,5 @@
 //! Tenant-aware admission to the physical PostgreSQL scheduling pool.
 use crate::capacity::{Capacity, Slot};
-use futures::FutureExt;
 use rss_reconcile::{
     ClaimBatch, Completion, Control, DurableStore, Error, ErrorKind, ResourceSet, Scope, Target,
     Timer,
@@ -33,15 +32,14 @@ pub(crate) async fn with_execution_slots<F: Future>(
 }
 
 impl Reservation {
-    // Never await either budget while holding the other. Try the complementary
-    // grant in the same poll, otherwise keep the queued ticket and release the
-    // provisional permits. All actual claims retain the original tenant/window.
+    // Preserve an immediately usable execution grant. When the database is busy,
+    // requeue both requirements atomically, holding neither while waiting.
     async fn claim_connection(
         &self,
         db: &Arc<Capacity>,
         tenant: uuid::Uuid,
     ) -> Result<Option<(Slot, usize)>, Error> {
-        let mut execution = std::mem::take(&mut *self.slots.lock().expect("execution reservation"));
+        let execution = std::mem::take(&mut *self.slots.lock().expect("execution reservation"));
         let (host, scope, window) = execution
             .first()
             .ok_or_else(|| Error::new(ErrorKind::Invariant))?
@@ -50,33 +48,19 @@ impl Reservation {
             return Err(Error::new(ErrorKind::Invariant));
         }
         let maximum = execution.len();
-        loop {
-            let mut database = std::pin::pin!(db.acquire(tenant, 1, &self.stop));
-            if let Some(mut ready) = database.as_mut().now_or_never() {
-                let width = execution.len();
-                *self.slots.lock().expect("execution reservation") = execution;
-                return Ok(ready.pop().map(|slot| (slot, width)));
-            }
-            drop(execution);
-            let Some(connection) = database.await.pop() else {
-                return Ok(None);
-            };
-            let mut pending =
-                std::pin::pin!(host.acquire_within(tenant, maximum, window, &self.stop));
-            if let Some(grant) = pending.as_mut().now_or_never() {
-                if grant.is_empty() {
-                    return Ok(None);
-                }
-                let width = grant.len();
-                *self.slots.lock().expect("execution reservation") = grant;
-                return Ok(Some((connection, width)));
-            }
-            drop(connection);
-            execution = pending.await;
-            if execution.is_empty() {
-                return Ok(None);
-            }
+        if self.stop.is_cancelled() {
+            return Ok(None);
         }
+        let (execution, connection) = if let Some(connection) = db.try_connection(tenant) {
+            (execution, Some(connection))
+        } else {
+            drop(execution);
+            host.request(tenant, maximum, window, Some(db.clone()), &self.stop)
+                .await
+        };
+        let width = execution.len();
+        *self.slots.lock().expect("execution reservation") = execution;
+        Ok(connection.map(|connection| (connection, width)))
     }
 }
 
