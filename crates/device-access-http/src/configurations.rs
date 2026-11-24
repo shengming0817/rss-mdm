@@ -424,13 +424,13 @@ async fn claim_account(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     tls: Option<Extension<ClientCertificateEvidence>>,
-    claim: Body<rss_mdm_agent_wire::da::AccountClaim>,
+    axum::extract::Query(claim): axum::extract::Query<rss_mdm_agent_wire::da::AccountClaim>,
 ) -> Result<Json<Option<rss_mdm_agent_wire::da::AccountOffer>>, BusinessError> {
     let p = credential_peer(&s, tls, &a).await?;
     Ok(Json(
         service(&s)?
             .service
-            .claim_account(&p, claim?.0.platform, &a)
+            .claim_account(&p, claim.platform, &a)
             .await?,
     ))
 }

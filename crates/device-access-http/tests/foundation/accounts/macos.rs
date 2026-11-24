@@ -216,14 +216,18 @@ async fn scenario(
     assert!(error.to_string().contains("HTTP 409"), "{error:#}");
     let poll = |platform| {
         peer.post(format!("{base}/account-operations/next"))
-            .json(&da::AccountClaim { platform })
+            .query(&da::AccountClaim { platform })
             .send()
     };
     let next = || poll(w::TaskPlatform::Macos);
     assert!(
-        material::success::<Option<da::AccountOffer>>(poll(w::TaskPlatform::Windows).await?)
-            .await?
-            .is_none()
+        material::success::<Option<da::AccountOffer>>(
+            peer.post(format!("{base}/account-operations/next"))
+                .send()
+                .await?
+        )
+        .await?
+        .is_none()
     );
     let offer: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(offer, material::success(next().await?).await?);
@@ -352,32 +356,6 @@ async fn scenario(
     // before its delayed journal arrived. Preserve the report but withhold cleanup authority.
     let existing_owner = Box::pin(Manager::new(c, &client)).await?;
     let existing_id = Uuid::new_v4();
-    let person = rss_mdm_device_access::Person {
-        instance: r.service_id,
-        principal: existing_owner.principal,
-    };
-    let intent = rss_mdm_device_access::AccountIntent::Existing {
-        account: w::AccessAccount::Macos { generated_uid: uid },
-    };
-    let body = json!({"kind":"put","instance":person.instance,"principal":person.principal,"account":intent,"policy":policy.id});
-    existing_owner
-        .change(
-            c,
-            &client,
-            &r,
-            existing_id,
-            access::Change {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 0,
-                action: access::Action::Put {
-                    person,
-                    intent,
-                    policy: policy.id,
-                },
-            },
-            body,
-        )
-        .await?;
     let created = |uid, role| da::AccountEffect::MacAccountCreated {
         generated_uid: uid,
         role,
@@ -385,6 +363,29 @@ async fn scenario(
         volume_owner: w::AccessObservation::Absent,
         filevault_unlock: w::AccessObservation::NeedsAdministrator,
     };
+    let known = Box::pin(assign(
+        c,
+        &client,
+        &r,
+        &existing_owner,
+        existing_id,
+        policy.id,
+        "currentuser",
+    ))
+    .await?;
+    let second: da::AccountOffer = material::success(next().await?).await?;
+    assert_eq!(second.operation_id, known);
+    let second_start = observe(&peer, base, &second, da::AccountObservation::Received)
+        .await?
+        .permit
+        .context("second direct creation")?;
+    observe(
+        &peer,
+        base,
+        &second,
+        report(&second_start, created(uid, w::AccessRole::Standard)),
+    )
+    .await?;
     let evidence = da::AccountEvent {
         event_id: Uuid::new_v4(),
         event: report(&t, created(uid, w::AccessRole::Standard)),
@@ -420,7 +421,26 @@ async fn scenario(
             .await?
             .is_none()
     );
-    unlink(c, &client, &r, &existing_owner, existing_id).await?;
+    let other_cleanup = Uuid::new_v4();
+    Box::pin(existing_owner.change(
+        c,
+        &client,
+        &r,
+        existing_id,
+        access::Change {
+            operation_id: other_cleanup,
+            expected_revision: 1,
+            action: access::Action::Unbind {
+                disposition: w::AccessAccountDisposition::Disable,
+            },
+        },
+        json!({"kind":"unbind","disposition":"disable"}),
+    ))
+    .await?;
+    let denied: Value = material::success(progress(other_cleanup, &existing_owner).await?).await?;
+    assert_eq!(denied["execution"], "failed");
+    assert_eq!(denied["cleanupPending"], true);
+
     let clean_offer: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(clean_offer.operation_id, cleanup);
     let clean = observe(&peer, base, &clean_offer, da::AccountObservation::Received)
@@ -428,7 +448,7 @@ async fn scenario(
         .permit
         .context("cleanup for late Created")?;
     assert!(
-        matches!(clean.action,w::AccessAction::Unbind{account:w::AccessAccount::Macos{generated_uid},..} if generated_uid==uid)
+        matches!(clean.action,w::AccessAction::Unbind{account:w::AccessAccount::Macos{generated_uid},disposition:w::AccessAccountDisposition::Keep} if generated_uid==uid)
     );
     // The original cleanup is now permitted. A later Create with a different name
     // cannot acquire the same UID until that disposition is complete.
@@ -482,6 +502,14 @@ async fn scenario(
     .await?;
     let finished: Value = material::success(progress(cleanup, owner).await?).await?;
     assert_eq!(finished["cleanupPending"], false);
+    assert!(
+        material::success::<Option<da::AccountOffer>>(next().await?)
+            .await?
+            .is_none()
+    );
+    let unfulfilled: Value =
+        material::success(progress(other_cleanup, &existing_owner).await?).await?;
+    assert_eq!(unfulfilled["cleanupPending"], true);
     // A known creation with wrong privilege stays observable without enabling login.
     let id = Uuid::new_v4();
     let op = assign(c, &client, &r, &other, id, policy.id, "LocalUser").await?;

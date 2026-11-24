@@ -557,7 +557,7 @@ pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(),
                  AND (old.id=$3 OR lower(old.document#>>'{intent,name}')=lower($4))
                  AND (u.access_binding->>'revision')::bigint=old.revision
                  AND CASE WHEN old.state='revoked' THEN
-                    u.state->>'cancellation'<>'confirmed' AND
+                    u.da_journal->>'cleanup_conflict' IS DISTINCT FROM 'true' AND u.state->>'cancellation'<>'confirmed' AND
                     old.document->'appliedRevision' IS DISTINCT FROM old.document->'revision' AND
                     (u.da_journal->>'awaiting_create' IS NOT NULL OR old.account IS NOT NULL)
                  ELSE u.state->>'cancellation'<>'confirmed' AND (old.id<>$3 OR u.result#>>'{effect,state}'='mac_account_created')
@@ -609,7 +609,13 @@ pub(super) async fn cleanup_owns_account(
     account: &AccessAccount,
     except: Option<Uuid>,
 ) -> Result<bool, Error> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND account=$3 AND state='revoked' AND ($4::uuid IS NULL OR id<>$4) AND (account->>'platform'='windows' OR document#>>'{accountDelivery,kind}'='da') AND document->'appliedRevision' IS DISTINCT FROM document->'revision')")
+    sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings old
+        WHERE old.tenant_id=$1 AND old.device=$2 AND old.account=$3 AND old.state='revoked'
+          AND ($4::uuid IS NULL OR old.id<>$4) AND old.document->'appliedRevision' IS DISTINCT FROM old.document->'revision'
+          AND (old.account->>'platform'='windows' OR EXISTS (
+            SELECT FROM rss_da.access_runs u WHERE (u.tenant_id,u.binding_id)=(old.tenant_id,old.id)
+              AND (u.access_binding->>'revision')::bigint=old.revision AND u.da_target IS NOT NULL
+              AND u.da_journal->>'cleanup_conflict' IS DISTINCT FROM 'true' AND u.state->>'cancellation'<>'confirmed')))")
         .bind(b.tenant).bind(b.device.into_uuid()).bind(sqlx::types::Json(account)).bind(except)
         .fetch_one(c).await.map_err(db)
 }

@@ -22,12 +22,10 @@
   "properties": {
     "platform": {
       "$ref": "#/$defs/TaskPlatform",
-      "description": "Filters offers; the current DA registration and frozen target grant authority."
+      "default": "windows",
+      "description": "Selects eligible offers. The unqualified Windows poll and explicit macOS query share this route.\nAuthentication and execution authority remain bound to the DA registration and original target."
     }
   },
-  "required": [
-    "platform"
-  ],
   "title": "AccountClaim",
   "type": "object",
   "$id": "https://rss.example/da/v1/AccountClaim"

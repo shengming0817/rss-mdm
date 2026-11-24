@@ -177,13 +177,7 @@ pub(super) async fn verify(
     };
     let read: Value = material::success(progress(op, &admin.cookie).await?).await?;
     assert_eq!(read["received"], false);
-    let next = || {
-        peer.post(format!("{base}/account-operations/next"))
-            .json(&da::AccountClaim {
-                platform: w::TaskPlatform::Windows,
-            })
-            .send()
-    };
+    let next = || peer.post(format!("{base}/account-operations/next")).send();
     let offer: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(offer.operation_id, op);
     assert_eq!(
@@ -609,13 +603,7 @@ pub(super) async fn interrupted_create(
     };
     let body = json!({"kind":"put","instance":person.instance,"principal":person.principal,"account":intent,"policy":policy});
     Box::pin(manager.change(c, client, r, binding, put(0), body.clone())).await?;
-    let next = || {
-        peer.post(format!("{base}/account-operations/next"))
-            .json(&da::AccountClaim {
-                platform: w::TaskPlatform::Windows,
-            })
-            .send()
-    };
+    let next = || peer.post(format!("{base}/account-operations/next")).send();
     let offer: da::AccountOffer = material::success(next().await?).await?;
     let ack = da::AccountEvent {
         event_id: Uuid::new_v4(),
@@ -714,13 +702,7 @@ pub(super) async fn stopped_create(
     base: &str,
     binding: Uuid,
 ) -> Result<()> {
-    let next = || {
-        peer.post(format!("{base}/account-operations/next"))
-            .json(&da::AccountClaim {
-                platform: w::TaskPlatform::Windows,
-            })
-            .send()
-    };
+    let next = || peer.post(format!("{base}/account-operations/next")).send();
     let fresh: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(fresh.binding_id, binding);
     let start = observe(peer, base, &fresh, da::AccountObservation::Received).await?;

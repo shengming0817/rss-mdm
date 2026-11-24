@@ -213,7 +213,14 @@ pub(super) async fn accept(
     let deadline = i64::MAX;
     let mut state = RunState::new(deadline, now).map_err(|_| Error::Corrupt)?;
     let mut journal = Journal::default();
-    if b.state == State::Revoked && b.account.is_none() {
+    if b.state == State::Revoked
+        && let Some(account @ w::AccessAccount::Macos { .. }) = &b.account
+        && storage::cleanup_owns_account(c, b, account, Some(b.id)).await?
+    {
+        // An earlier unlink already owns this UID. Keep this disposition visibly unfulfilled.
+        journal.cleanup_conflict = true;
+        state.execution = Execution::Failed;
+    } else if b.state == State::Revoked && b.account.is_none() {
         let previous: Option<(Uuid, Option<sqlx::types::Json<da::AccountResult>>, bool)> =
             sqlx::query_as(
                 "SELECT id,result,COALESCE((da_journal->>'uid_conflict')::boolean,false) FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
@@ -238,7 +245,8 @@ pub(super) async fn accept(
                 let mut cleanup = b.clone();
                 let account = w::AccessAccount::Macos { generated_uid };
                 if storage::cleanup_owns_account(c, b, &account, Some(b.id)).await? {
-                    state.cancel();
+                    journal.cleanup_conflict = true;
+                    state.execution = Execution::Failed;
                 } else {
                     cleanup.account = Some(account);
                     storage::save_in(c, &cleanup, b.revision).await?;
@@ -265,6 +273,7 @@ pub(super) async fn accept(
 struct Journal {
     awaiting_create: Option<Uuid>,
     uid_conflict: bool,
+    cleanup_conflict: bool,
     renewals: u16,
     received: bool,
     unknown_observed: bool,
@@ -305,7 +314,9 @@ impl Run {
         }
         if b.state == State::Revoked
             && let Some(account @ w::AccessAccount::Macos { .. }) = &b.account
-            && has_other_owner(c, &b, account).await?
+            && (self.journal.cleanup_conflict
+                || has_other_owner(c, &b, account).await?
+                || storage::cleanup_owns_account(c, &b, account, Some(b.id)).await?)
         {
             return Err(Error::Conflict);
         }
@@ -778,14 +789,17 @@ impl Run {
                 binding.account = Some(account);
                 storage::save_in(c, &binding, binding.revision).await?;
             }
-        } else if let Some((id, state)) = cleanup
-            && (self.journal.uid_conflict
-                || matches!(
-                    result.effect,
-                    da::AccountEffect::Access(w::AccessEffect::Failed { .. })
-                ))
-        {
-            Self::confirm_no_cleanup(c, b.tenant, id, state).await?;
+        } else if let Some((id, mut state)) = cleanup {
+            if self.journal.uid_conflict {
+                state.execution = Execution::Failed;
+                sqlx::query("UPDATE rss_da.access_runs SET state=$3,da_journal=jsonb_set(da_journal-'awaiting_create','{cleanup_conflict}','true') WHERE tenant_id=$1 AND id=$2")
+                    .bind(b.tenant).bind(id).bind(sqlx::types::Json(state)).execute(&mut *c).await.map_err(db)?;
+            } else if matches!(
+                result.effect,
+                da::AccountEffect::Access(w::AccessEffect::Failed { .. })
+            ) {
+                Self::confirm_no_cleanup(c, b.tenant, id, state).await?;
+            }
         }
         sqlx::query("UPDATE rss_da.access_runs SET result=$3 WHERE tenant_id=$1 AND id=$2")
             .bind(b.tenant)

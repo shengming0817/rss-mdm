@@ -7,8 +7,14 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountClaim {
-    /// Filters offers; the current DA registration and frozen target grant authority.
+    /// Selects eligible offers. The unqualified Windows poll and explicit macOS query share this route.
+    /// Authentication and execution authority remain bound to the DA registration and original target.
+    #[serde(default = "windows_platform")]
     pub platform: w::TaskPlatform,
+}
+
+fn windows_platform() -> w::TaskPlatform {
+    w::TaskPlatform::Windows
 }
 
 /// Observations stored with standalone DA account operations.
