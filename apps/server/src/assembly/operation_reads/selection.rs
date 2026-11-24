@@ -23,6 +23,7 @@ struct Scan<'a> {
     limit: usize,
     stage: &'static str,
     exhausted: bool,
+    ordered: Option<std::vec::IntoIter<sqlx::postgres::PgRow>>,
 }
 
 impl<'a> Scan<'a> {
@@ -45,6 +46,7 @@ impl<'a> Scan<'a> {
             limit,
             stage,
             exhausted: false,
+            ordered: None,
         })
     }
 
@@ -58,10 +60,25 @@ impl<'a> Scan<'a> {
         }
         // At the boundary, the next query may only distinguish exhaustion from overflow.
         let size = requested.min(self.remaining.max(1));
-        let mut sql = sqlx::QueryBuilder::new("");
-        self.scope.page(&mut sql, self.after.as_ref(), size)?;
-        let rows = sql.build().fetch_all(c).await.map_err(super::sql)?;
-        rss_mdm_query_postgres::observe_rows("operations.candidates", &rows).map_err(super::sql)?;
+        let rows = if self.scope.needs_sort() {
+            if self.ordered.is_none() {
+                // Derived filters may require several classification batches. Sort once,
+                // then consume the admitted metadata window using the same request budget.
+                let fetch = if classified(self.query) {
+                    sources::SORT_ROWS
+                } else {
+                    requested
+                };
+                self.ordered = Some(self.fetch(c, fetch).await?.into_iter());
+            }
+            self.ordered
+                .as_mut()
+                .expect("ordered window was loaded")
+                .take(size)
+                .collect()
+        } else {
+            self.fetch(c, size).await?
+        };
         check_budget(
             self.limit - self.remaining + rows.len(),
             self.limit,
@@ -80,6 +97,28 @@ impl<'a> Scan<'a> {
             self.after = Some(self.query.position(last).map_err(query_error)?);
         }
         Ok(output)
+    }
+    async fn fetch(
+        &self,
+        c: &mut sqlx::PgConnection,
+        size: usize,
+    ) -> Result<Vec<sqlx::postgres::PgRow>, Error> {
+        let mut sql = sqlx::QueryBuilder::new("");
+        self.scope.page(&mut sql, self.after.as_ref(), size)?;
+        let rows = sql.build().fetch_all(c).await.map_err(super::sql)?;
+        rss_mdm_query_postgres::observe_rows("operations.candidates", &rows).map_err(super::sql)?;
+        // A rejected materialized sort emits one marker, even with no selected rows.
+        if self.scope.needs_sort()
+            && let Some(row) = rows.first()
+            && sqlx::ValueRef::is_null(&row.try_get_raw("document").map_err(super::sql)?)
+        {
+            check_budget(
+                sources::SORT_ROWS + 1,
+                sources::SORT_ROWS,
+                "operations.sort.sources",
+            )?;
+        }
+        Ok(rows)
     }
 }
 

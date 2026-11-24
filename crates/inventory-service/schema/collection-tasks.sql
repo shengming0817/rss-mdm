@@ -90,6 +90,7 @@ CREATE INDEX collection_native_delivery
                                    , id)
   WHERE channel = 'mdm'
     AND native_delivery IN ('queued', 'prepared');
+CREATE INDEX collection_tasks_device_directory ON mdm_inventory.collection_tasks(tenant_id,device,id);
 COMMIT;
 
 CREATE POLICY work_discovery ON mdm_inventory.collection_tasks FOR SELECT TO mdm_owner USING(true);

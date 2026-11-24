@@ -96,6 +96,10 @@ pub(super) fn owner(row: &Value) -> Result<Owner, Error> {
     .ok_or(Error::Unavailable(Failure::CommandInvariant))
 }
 
+// Bound a sort that has to consume its entire input, independently of how few
+// rows the client requests. A classified page reuses this one ordered window.
+pub(super) const SORT_ROWS: usize = 4_096;
+
 pub(crate) struct Scope<'a> {
     tenant: String,
     devices: Option<Vec<Uuid>>,
@@ -147,6 +151,67 @@ impl<'a> Scope<'a> {
         size: usize,
     ) -> Result<(), Error> {
         self.sources(sql);
+        let sorted = self.needs_sort();
+        if sorted {
+            self.bounded_sort(sql, after, size)?;
+        } else {
+            self.identity_page(sql, after, size)?;
+        }
+        ambiguity(sql, true);
+        sql.push(" SELECT CASE WHEN selected.id IS NOT NULL THEN jsonb_build_object('id',selected.id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status,'source',source,'inputBytes',input_bytes) END AS document, ambiguous.id IS NOT NULL AS ambiguous FROM ");
+        if sorted {
+            sql.push("sort_work LEFT JOIN selected ON sort_work.admitted");
+        } else {
+            sql.push("selected");
+        }
+        sql.push(" LEFT JOIN ambiguous USING(id)");
+        if sorted {
+            sql.push(" WHERE selected.id IS NOT NULL OR NOT sort_work.admitted");
+        }
+        // USING merges the common id column and preserves the selected position.
+        rss_mdm_query_postgres::order(sql, self.query, &*BINDINGS).map_err(query_error)
+    }
+
+    pub(super) fn needs_sort(&self) -> bool {
+        self.query
+            .sort()
+            .first()
+            .is_some_and(|key| key.field != "id")
+    }
+
+    fn bounded_sort(
+        &self,
+        sql: &mut QueryBuilder<Postgres>,
+        after: Option<&Position>,
+        size: usize,
+    ) -> Result<(), Error> {
+        sql.push(",sort_input AS MATERIALIZED (SELECT * FROM (");
+        for i in 0..SOURCES.len() {
+            if i > 0 {
+                sql.push(" UNION ALL ");
+            }
+            sql.push("SELECT *,")
+                .push(i)
+                .push(" AS source FROM owner_")
+                .push(i);
+            self.eligible(sql)?;
+            rss_mdm_query_postgres::seek(sql, self.query, after, &*BINDINGS)
+                .map_err(query_error)?;
+        }
+        sql.push(") eligible LIMIT ").push_bind(SORT_ROWS as i64 + 1)
+            .push("),sort_work AS MATERIALIZED (SELECT count(*)<=").push_bind(SORT_ROWS as i64)
+            .push(" AS admitted FROM sort_input),selected AS MATERIALIZED (SELECT * FROM sort_input WHERE (SELECT admitted FROM sort_work)");
+        rss_mdm_query_postgres::order(sql, self.query, &*BINDINGS).map_err(query_error)?;
+        sql.push(" LIMIT ").push_bind(size as i64).push(")");
+        Ok(())
+    }
+
+    fn identity_page(
+        &self,
+        sql: &mut QueryBuilder<Postgres>,
+        after: Option<&Position>,
+        size: usize,
+    ) -> Result<(), Error> {
         sql.push(",selected AS MATERIALIZED (SELECT * FROM (");
         for i in 0..SOURCES.len() {
             if i > 0 {
@@ -177,9 +242,7 @@ impl<'a> Scope<'a> {
         sql.push(") merged");
         rss_mdm_query_postgres::order(sql, self.query, &*BINDINGS).map_err(query_error)?;
         sql.push(" LIMIT ").push_bind(size as i64).push(")");
-        ambiguity(sql, true);
-        sql.push(" SELECT jsonb_build_object('id',id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status,'source',source,'inputBytes',input_bytes) AS document, EXISTS(SELECT FROM ambiguous) AS ambiguous FROM selected");
-        rss_mdm_query_postgres::order(sql, self.query, &*BINDINGS).map_err(query_error)
+        Ok(())
     }
 
     pub(crate) fn totals(
@@ -210,7 +273,7 @@ impl<'a> Scope<'a> {
 // a different device, metadata predicate, seek position, or public projection.
 fn ambiguity(sql: &mut QueryBuilder<Postgres>, page: bool) {
     if page {
-        // The complete page of keys fits in a single bounded lookup.
+        // Bounded by the public page or the explicit sort-input ceiling.
         sql.push(",candidate_keys AS (SELECT array_agg(id) AS ids FROM selected)");
     } else {
         // A whole-statistic join can choose to scan unrelated tenant history. Probe
@@ -219,7 +282,7 @@ fn ambiguity(sql: &mut QueryBuilder<Postgres>, page: bool) {
         sql.push(",candidate_keys AS (SELECT array_agg(id) AS ids FROM (SELECT id, (row_number() OVER () - 1) / ")
             .push(selection::BATCH).push(" AS batch FROM selected) numbered GROUP BY batch)");
     }
-    sql.push(",ambiguous AS (SELECT FROM candidate_keys k CROSS JOIN LATERAL (SELECT id FROM (");
+    sql.push(",ambiguous AS (SELECT duplicates.id FROM candidate_keys k CROSS JOIN LATERAL (SELECT id FROM (");
     for (i, source) in SOURCES.iter().enumerate() {
         if i > 0 {
             sql.push(" UNION ALL ");
@@ -232,5 +295,10 @@ fn ambiguity(sql: &mut QueryBuilder<Postgres>, page: bool) {
         }
         sql.push(" WHERE id=ANY(k.ids)");
     }
-    sql.push(") memberships GROUP BY id HAVING count(*)>1 LIMIT 1) duplicates LIMIT 1)");
+    sql.push(") memberships GROUP BY id HAVING count(*)>1");
+    if page {
+        sql.push(") duplicates)");
+    } else {
+        sql.push(" LIMIT 1) duplicates LIMIT 1)");
+    }
 }

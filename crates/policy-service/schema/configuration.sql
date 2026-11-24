@@ -117,6 +117,7 @@ CREATE POLICY tenant ON mdm_planning.configuration_receipts USING(tenant_id=null
 ALTER TABLE mdm_planning.configuration_recovery ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_planning.configuration_recovery FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_planning.configuration_recovery USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE INDEX configuration_operations_device_directory ON mdm_planning.configuration_operations(tenant_id,device,id);
 COMMIT;
 
 CREATE FUNCTION mdm_planning.configuration_windows_pending_operations(p_device uuid, p_after uuid) RETURNS SETOF mdm_planning.configuration_operations

@@ -294,6 +294,8 @@ CREATE INDEX windows_wake_operations
     AND dispatch_failure IS NULL
     AND input_context ->> 'platform' = 'windows';
 
+CREATE INDEX control_operations_device_directory ON mdm_devices.control_operations(tenant_id,device,id);
+CREATE INDEX unmanage_runs_device_directory ON mdm_devices.unmanage_runs(tenant_id,device,id);
 COMMIT;
 
 GRANT UPDATE(request) ON mdm_devices.control_operations TO mdm_command_runtime;

@@ -123,6 +123,7 @@ CREATE FUNCTION rss_da.save_retired_access_run(p_device uuid,p_run uuid,p_previo
 $$;
 REVOKE ALL ON FUNCTION rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb) TO da_access,da_command_runtime;
+CREATE INDEX access_runs_device_directory ON rss_da.access_runs(tenant_id,device,id) WHERE da_target IS NULL;
 COMMIT;
 
 CREATE POLICY work_discovery ON rss_da.access_runs FOR SELECT TO da_owner USING(true);

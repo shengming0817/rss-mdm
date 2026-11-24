@@ -61,4 +61,6 @@ GRANT UPDATE(request) ON mdm_registration_tasks.operations TO mdm_command_runtim
 GRANT SELECT ON mdm_registration_tasks.operations TO mdm_access;
 -- Immutable request coordinates used by the tenant-scoped activity projection.
 GRANT SELECT(tenant_id,actor,id,operation) ON mdm_registration_tasks.requests TO mdm_access;
+CREATE INDEX operations_device_directory ON mdm_registration_tasks.operations(tenant_id,device,id);
+CREATE INDEX runs_device_directory ON mdm_registration_tasks.runs(tenant_id,device,id);
 COMMIT;
