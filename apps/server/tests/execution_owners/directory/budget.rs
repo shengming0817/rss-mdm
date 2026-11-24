@@ -240,17 +240,7 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     runs(peer, other_version, &other, &[command_id]).await?;
 
     let account = h.c.account(&[Permission::OperationRead]).await?;
-    let rule = rss_mdm_authorization_service::Rule {
-        subject: rss_mdm_authorization_service::Subject::User {
-            user: account.user.clone(),
-        },
-        grants: vec![rss_mdm_authorization_service::Grant {
-            operation: Permission::OperationRead,
-            scope: rss_mdm_authorization_service::Scope::Device { id: native.device },
-        }],
-    };
-    sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
+    scope_account(&h.c, &account, native.device, 0).await?;
     let proof = Arc::new(h.c.authenticate(&account).await?);
     let operations = Arc::new(directory(
         h,
@@ -478,7 +468,6 @@ async fn sorted_budget(h: &Harness, device: rss_mdm_agent_wire::DeviceId) -> Res
 }
 
 async fn independent_statistics(h: &Harness, busy: &DeviceObject, version: Uuid) -> Result<()> {
-    use rss_mdm_authorization_service::{Grant, Rule, Scope as DeviceScope, Subject};
     let account = h.c.account(&[Permission::OperationRead]).await?;
     let proof = Arc::new(h.c.authenticate(&account).await?);
     let operations = Arc::new(directory(
@@ -508,29 +497,7 @@ async fn independent_statistics(h: &Harness, busy: &DeviceObject, version: Uuid)
     assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
     assert_eq!(totals["statistics"]["total"], 4097);
     // Five explicit grants used to send classified statistics into the list sort fallback.
-    let mut grants = vec![Grant {
-        operation: Permission::OperationRead,
-        scope: DeviceScope::Device {
-            id: busy.members[0].device,
-        },
-    }];
-    for _ in 0..4 {
-        let endpoint = planning::endpoint(&h.c).await?;
-        grants.push(Grant {
-            operation: Permission::OperationRead,
-            scope: DeviceScope::Device {
-                id: endpoint.members[0].device,
-            },
-        });
-    }
-    let rule = Rule {
-        subject: Subject::User {
-            user: account.user.clone(),
-        },
-        grants,
-    };
-    sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
+    scope_account(&h.c, &account, busy.members[0].device, 4).await?;
     let filter = "authorization.state==not_applicable";
     let (status, totals) = http(&router, &path, &[("filter", filter)]).await?;
     assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
@@ -550,5 +517,36 @@ async fn independent_statistics(h: &Harness, busy: &DeviceObject, version: Uuid)
         http(&router, &path, &[("filter", filter)]).await?.0,
         axum::http::StatusCode::SERVICE_UNAVAILABLE
     );
+    Ok(())
+}
+
+async fn scope_account(
+    c: &Context,
+    account: &crate::authority_t2_support::Account,
+    device: rss_mdm_agent_wire::DeviceId,
+    extra: usize,
+) -> Result<()> {
+    use rss_mdm_authorization_service::{Grant, Rule, Scope as DeviceScope, Subject};
+    let mut grants = vec![Grant {
+        operation: Permission::OperationRead,
+        scope: DeviceScope::Device { id: device },
+    }];
+    for _ in 0..extra {
+        let endpoint = planning::endpoint(c).await?;
+        grants.push(Grant {
+            operation: Permission::OperationRead,
+            scope: DeviceScope::Device {
+                id: endpoint.members[0].device,
+            },
+        });
+    }
+    let rule = Rule {
+        subject: Subject::User {
+            user: account.user.clone(),
+        },
+        grants,
+    };
+    sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&c.operator).await?;
     Ok(())
 }
