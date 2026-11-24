@@ -149,7 +149,7 @@ pub async fn verify(
     client: &reqwest::Client,
     base: &str,
 ) -> Result<()> {
-    use rss_mdm_policy_postgres::device_access::{Publication, Target};
+    use rss_mdm_agent_wire::da::{Publication, Target};
     let business = assemble(c, m)?;
     let token = material::administrator(c)
         .await
@@ -170,12 +170,15 @@ pub async fn verify(
         role: None,
     };
     let mut tx = c.seed().await?;
-    let existing = rss_mdm_policy_postgres::device_access::selected_on(
+    let existing = rss_mdm_policy_postgres::device_access::applicable_on(
         &mut tx,
         Uuid::parse_str(&c.tenant.to_string())?,
         &receipt.device,
     )
-    .await?;
+    .await?
+    .into_iter()
+    .next()
+    .map(|(p, _)| p);
     tx.rollback().await?;
     let publication = Publication {
         managed_fields: vec![],

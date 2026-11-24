@@ -97,7 +97,7 @@ pub async fn reject_account_change(
     c: &Context,
     m: &material::Material,
     device: &rss_mdm_agent_wire::DeviceId,
-    publication: &policy::Publication,
+    publication: &da::Publication,
 ) -> Result<()> {
     let token = material::device_administrator(c, device).await?;
     let actor = c
@@ -204,7 +204,7 @@ pub async fn verify_sources(
     base: &str,
     token: &str,
     actor: &AuthorizedPrincipal,
-    publication: &mut policy::Publication,
+    publication: &mut da::Publication,
     observation: &mut rss_mdm_device_access::deployment::Observation,
     ordinary: &da::SignedConfiguration,
 ) -> Result<()> {
@@ -508,8 +508,46 @@ pub async fn verify_sources(
         },
     )
     .await?;
-    observation.configuration = managed;
+    observation.configuration = managed.clone();
     observation.policy_version = publication.version;
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    let stale = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(
+        stale["resolution"]["fields"][0]["locked"], false,
+        "regranting a field cannot restore authority to a pre-release artifact"
+    );
+    let renewed: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{management}/configurations"))
+            .bearer_auth(token)
+            .json(&da::Export {
+                operation_id: Uuid::new_v4(),
+                policy: publication.id,
+                version: publication.version,
+                delivery: da::DeliveryPermission::ManagedMandatory,
+                lifetime_seconds: 600,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let content = renewed.decode()?;
+    observation.configuration = Some(ConfigurationDeployment {
+        artifact: content.operation_id,
+        digest: renewed.digest,
+        native_digest: content.native.digest,
+        delivery: content.delivery,
+        state: da::SourceState::Present,
+        applied: None,
+    });
     observation.sequence += 1;
     material::empty(
         client
@@ -522,6 +560,30 @@ pub async fn verify_sources(
     let restored = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(restored["evidence"], "verified");
     assert_eq!(restored["resolution"]["fields"][0]["locked"], true);
+    // Replay the old carrier after the new lock is established; its higher observation
+    // sequence cannot replace the remembered artifact with a pre-release revision.
+    let active = std::mem::replace(&mut observation.configuration, managed);
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    let replay = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(replay["resolution"]["blocked"], "read_failed");
+    observation.configuration = active;
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
     Ok(())
 }
 
@@ -531,17 +593,17 @@ pub async fn verify_override(
     client: &reqwest::Client,
     token: &str,
     observation: &rss_mdm_device_access::deployment::Observation,
-    device_policy: &policy::Publication,
+    device_policy: &da::Publication,
     base: &str,
 ) -> Result<()> {
     use rss_mdm_device_access::deployment::{ConfigurationDeployment, ConfigurationReadback};
     use rss_mdm_device_access_postgres::configuration::Change;
     let management = c.management_base();
     let read:serde_json::Value=sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND definition#>>'{target,kind}'='tenant_default'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
-    let mut default: policy::Publication = serde_json::from_value(read)?;
+    let mut default: da::Publication = serde_json::from_value(read)?;
     default.managed_fields = vec![da::ConfigurationField::Mac];
     default.configuration = device_policy.configuration.clone();
-    let (separate, _) = super::activate_grant(
+    let (separate, peer) = super::activate_grant(
         m,
         client,
         client
@@ -557,7 +619,7 @@ pub async fn verify_override(
     target.id = Uuid::new_v4();
     target.version = Uuid::new_v4();
     target.revision = 1;
-    target.target = policy::Target::Device {
+    target.target = da::Target::Device {
         device: separate.device,
     };
     target.managed_fields.clear();
@@ -573,7 +635,7 @@ pub async fn verify_override(
         .principal
         .as_uuid();
     let (cookie, csrf) = super::credentials::login(c, client, principal).await?;
-    let _: policy::Publication = material::success(
+    let _: da::Publication = material::success(
         client
             .post(format!(
                 "{}/api/v1/tenants/{}/device-access/configurations",
@@ -604,7 +666,7 @@ pub async fn verify_override(
         },
     )
     .await?;
-    let export = |p: &policy::Publication, delivery| {
+    let export = |p: &da::Publication, delivery| {
         client
             .post(format!("{management}/configurations"))
             .bearer_auth(token)
@@ -622,14 +684,46 @@ pub async fn verify_override(
             .await?;
     let backend: da::SignedConfiguration =
         material::success(export(&target, da::DeliveryPermission::Da).await?).await?;
+    let trust: da::ConfigurationTrust = material::success(
+        peer.get(format!("{base}/configuration-trust"))
+            .send()
+            .await?,
+    )
+    .await?;
+    material::empty(
+        peer.post(format!("{base}/configuration-trust/acknowledgements"))
+            .json(&rss_mdm_agent_wire::task_trust::Acknowledgement {
+                version: 1,
+                operation: Uuid::new_v4(),
+                device_id: separate.device,
+                revision: trust.revision,
+                digest: trust.installation_digest()?,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let current_url = format!("{base}/configuration");
+    let snapshot: da::CurrentConfiguration =
+        material::success(peer.get(&current_url).send().await?).await?;
+    assert_eq!(snapshot.identity.device_id, separate.device);
+    assert_eq!(snapshot.publication.unwrap().id, target.id);
+    assert_eq!(snapshot.artifact.unwrap().digest, backend.digest);
+    assert_eq!(snapshot.authorities.len(), 2);
+    let authority = snapshot
+        .authorities
+        .iter()
+        .find(|a| a.policy == default.id)
+        .unwrap();
     let signed = source.decode()?;
+    assert!(authority.covers_managed_field(&signed, da::ConfigurationField::Mac));
     observation.policy = default.id;
     observation.policy_version = default.version;
     observation.applications.clear();
     observation.configuration = Some(ConfigurationDeployment {
         artifact: signed.operation_id,
         digest: source.digest,
-        native_digest: signed.native.digest,
+        native_digest: signed.native.digest.clone(),
         delivery: da::DeliveryPermission::ManagedMandatory,
         state: da::SourceState::Present,
         applied: Some(ConfigurationReadback {
@@ -650,5 +744,77 @@ pub async fn verify_override(
     let current = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(current["publication"]["id"], serde_json::json!(target.id));
     assert_eq!(current["application"], "verified_applied");
+    default.managed_fields.clear();
+    default.revision += 1;
+    default.version = Uuid::new_v4();
+    publish_protected(
+        c,
+        m,
+        &Change {
+            operation_id: Uuid::new_v4(),
+            expected_revision: default.revision - 1,
+            publication: default.clone(),
+        },
+    )
+    .await?;
+    let after: da::CurrentConfiguration =
+        material::success(peer.get(&current_url).send().await?).await?;
+    assert_eq!(after.publication.unwrap().id, target.id);
+    let release = after
+        .authorities
+        .iter()
+        .find(|a| a.policy == default.id)
+        .unwrap();
+    assert_eq!(
+        release.fields[&da::ConfigurationField::Mac],
+        da::FieldAuthority {
+            authorized: false,
+            revision: default.revision as u64
+        }
+    );
+    assert!(!release.covers_managed_field(&signed, da::ConfigurationField::Mac));
+    let released = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(released["resolution"]["fields"][0]["locked"], false);
+    // Damage only this device's backend envelope. The independent issuer release
+    // remains readable to both the device and the administrator.
+    let operation = backend.decode()?.operation_id;
+    let update =
+        "UPDATE rss_da.configuration_exports SET result=$3 WHERE tenant_id=$1 AND operation=$2";
+    assert_eq!(
+        sqlx::query(update)
+            .bind(separate.tenant)
+            .bind(operation)
+            .bind(serde_json::json!({}))
+            .execute(&c.operator)
+            .await?
+            .rows_affected(),
+        1
+    );
+    let invalid: da::CurrentConfiguration =
+        material::success(peer.get(&current_url).send().await?).await?;
+    assert_eq!(invalid.state, da::SourceState::Invalid);
+    assert!(invalid.artifact.is_none());
+    let issuer = invalid
+        .authorities
+        .iter()
+        .find(|a| a.policy == default.id)
+        .unwrap();
+    assert_eq!(issuer.fields, release.fields);
+    assert_eq!(
+        peer.get(format!("{base}/configurations/{operation}"))
+            .send()
+            .await?
+            .status(),
+        409
+    );
+    let invalid = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(invalid["resolution"], released["resolution"]);
+    assert_eq!(invalid["application"], "unknown");
+    sqlx::query(update)
+        .bind(separate.tenant)
+        .bind(operation)
+        .bind(serde_json::to_value(&backend)?)
+        .execute(&c.operator)
+        .await?;
     Ok(())
 }

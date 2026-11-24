@@ -61,6 +61,22 @@ pub struct Registration {
     /// Stable caller operation identity; changed input under the same ID conflicts.
     pub operation_id: Uuid,
 }
+/// Original administrative revocation of this installation's exact DA credential.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevocationReceipt {
+    /// DA service instance from the activation receipt.
+    pub service_id: Uuid,
+    /// Tenant owning the credential.
+    pub tenant: Uuid,
+    /// DA registration being retired.
+    pub device: crate::DeviceId,
+    /// Credential verified at activation and current when revocation committed.
+    pub credential: Uuid,
+    /// Administrator's original revoke operation.
+    pub operation_id: Uuid,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 /// Authorized recipients of an immutable configuration.
@@ -138,6 +154,6 @@ pub struct Progress {
 
 /// Fingerprint of the generated Device Access protocol schema.
 pub const SCHEMA_FINGERPRINT: &str =
-    "e5b3fdb72ea070e82c5cba55f3a7da8d3efda7e49cc2b8ba6639cbc1c7d7ce1f";
+    "132bf2788b13c25b3644318a8c1e2b5d1657231f693fb5e0f858bd80211c7951";
 /// Canonical current Device Access schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/da/manifest.json");

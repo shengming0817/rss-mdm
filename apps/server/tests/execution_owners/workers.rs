@@ -811,7 +811,8 @@ impl TaskOwner {
     }
     async fn seed(self, h: &Harness) -> Result<Uuid> {
         let id = if matches!(self, Self::Access) {
-            use rss_mdm_policy_postgres::device_access::{Publication, Target, publish_on};
+            use rss_mdm_agent_wire::da::{Publication, Target};
+            use rss_mdm_policy_postgres::device_access::publish_on;
             let policy = Publication {
                 id: Uuid::new_v4(),
                 version: Uuid::new_v4(),

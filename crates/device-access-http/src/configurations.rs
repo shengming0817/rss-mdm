@@ -65,9 +65,15 @@ impl WindowOwner for Reports {
 fn service(s: &Services) -> Result<&crate::Business, BusinessError> {
     s.business.as_deref().ok_or(BusinessError::Unavailable)
 }
+const REVOCATION: &str = "/api/v1/da/registrations/revocation";
+
 pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! {struct DeviceReports for [Da] {status, application, current, claim_credential, credential_event, claim_account, account_event}}
+    rss_mdm_http_contract::route_module! {struct DeviceReports for [Da] {status, application, current, revocation, claim_credential, credential_event, claim_account, account_event}}
     DeviceReports {
+        revocation: Route::new(
+            REVOCATION,
+            get(revocation, &crate::PROTOCOL, &[Operation::Action]),
+        ),
         claim_account: Route::new(
             "/api/v1/da/account-operations/next",
             post(claim_account, &crate::PROTOCOL, &[Operation::Action]),
@@ -101,21 +107,30 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
     .authentication(device_transport)
     .layer(axum::extract::DefaultBodyLimit::max(65536))
 }
-fn device_transport(_: &str, _: &str) -> rss_mdm_http_contract::authentication::Description {
+fn device_transport(_: &str, path: &str) -> rss_mdm_http_contract::authentication::Description {
     use rss_mdm_http_contract::{
         authentication::{Credential, Description},
         signature::Output,
+    };
+    let (owner, constraint) = if path == REVOCATION {
+        (
+            "registration-service::agent::da::RegistrationService::revocation_receipt",
+            "Possession of the exact DA certificate recorded in the committed revocation",
+        )
+    } else {
+        (
+            "registration-service::agent::da::RegistrationService::authenticate",
+            "Current purpose-bound DA device certificate presented during the TLS handshake",
+        )
     };
     Description {
         owner: "device-access-http::tls",
         alternatives: vec![Credential {
             kind: "mtls",
-            owner: "registration-service::agent::da::RegistrationService::authenticate",
+            owner,
             headers: Default::default(),
             required_headers: vec![],
-            constraints: vec![
-                "Current purpose-bound DA device certificate presented during the TLS handshake",
-            ],
+            constraints: vec![constraint],
         }],
         rejections: Error::responses(),
         conditional_response_headers: vec![],
@@ -201,11 +216,20 @@ async fn application(
             .await?,
     ))
 }
+async fn revocation(
+    State(s): State<Arc<Services>>,
+    Extension(a): Extension<RequestAudit>,
+    tls: Option<Extension<ClientCertificateEvidence>>,
+) -> Result<Json<da::RevocationReceipt>, Error> {
+    Ok(Json(
+        s.registrations.revocation_receipt(&peer(tls)?, &a).await?,
+    ))
+}
 async fn current(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     tls: Option<Extension<ClientCertificateEvidence>>,
-) -> Result<Json<config::CurrentConfiguration>, Error> {
+) -> Result<Json<da::CurrentConfiguration>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
     a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     Ok(Json(
@@ -225,9 +249,7 @@ async fn list(
     CollectionResponse<
         Json<
             rss_mdm_query::Page<
-                rss_mdm_query::directory::Projection<
-                    rss_mdm_policy_postgres::device_access::Publication,
-                >,
+                rss_mdm_query::directory::Projection<rss_mdm_agent_wire::da::Publication>,
             >,
         >,
     >,
@@ -251,7 +273,7 @@ async fn detail(
     State(s): State<Arc<crate::management::Services>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
+) -> Result<Json<rss_mdm_agent_wire::da::Publication>, BusinessError> {
     Ok(Json(s.business.configuration(&auth.proof, id).await?))
 }
 async fn versions(
@@ -328,7 +350,7 @@ async fn publication_operation(
     State(s): State<Arc<crate::management::Services>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
+) -> Result<Json<rss_mdm_agent_wire::da::Publication>, BusinessError> {
     Ok(Json(
         s.business.publication_operation(&auth.proof, id).await?,
     ))

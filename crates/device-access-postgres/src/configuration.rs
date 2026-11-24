@@ -178,11 +178,11 @@ impl AdmissionPort for Admission {
 pub struct Change {
     pub operation_id: Uuid,
     pub expected_revision: i64,
-    pub publication: rss_mdm_policy_postgres::device_access::Publication,
+    pub publication: rss_mdm_agent_wire::da::Publication,
 }
 mod management;
 pub(crate) use management::fault as policy_fault;
-pub use management::{ConfigurationPage, CurrentConfiguration, DirectoryQuery, HISTORY};
+pub use management::{ConfigurationPage, DirectoryQuery, HISTORY};
 
 mod diagnostics;
 pub use diagnostics::Diagnostics;

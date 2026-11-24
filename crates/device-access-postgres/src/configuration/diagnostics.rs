@@ -1,5 +1,5 @@
 //! Configuration delivery credibility is independent of current login-policy qualification.
-use super::management::{authorize, fault, tenant};
+use super::management::{authorize, fault, matches_backend, tenant};
 use crate::{Error, Service, evidence::Authorities};
 use rss_mdm_agent_wire::da;
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
@@ -7,12 +7,11 @@ use rss_mdm_device_access::configuration::{Resolution, resolve};
 use rss_mdm_policy_postgres::device_access as policy;
 use rss_mdm_registration_service::device::endpoints;
 use rss_mdm_task_trust::configuration::ConfigurationService;
-use sqlx::PgConnection;
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostics {
-    pub publication: Option<policy::Publication>,
+    pub publication: Option<da::Publication>,
     pub managed_state: da::SourceState,
     pub evidence: Option<da::EvidenceLevel>,
     pub resolution: Resolution,
@@ -60,24 +59,6 @@ fn application_state(
     }
 }
 
-/// Current issuer authority may release fields through the protected publication operation.
-/// Ordinary content/version changes cannot revoke an otherwise valid managed artifact.
-async fn fields(
-    c: &mut PgConnection,
-    config: &da::Configuration,
-) -> Result<Vec<da::ConfigurationField>, Error> {
-    let current = policy::get_on(c, config.tenant, config.id)
-        .await
-        .map_err(fault)?
-        .ok_or(Error::Corrupt)?;
-    Ok(config
-        .managed_fields
-        .iter()
-        .copied()
-        .filter(|field| current.managed_fields.contains(field))
-        .collect())
-}
-
 impl Service {
     pub async fn configuration_diagnostics(
         &self,
@@ -89,11 +70,13 @@ impl Service {
         self.read_with_session(p, (self, signing, authorities, p, device), |ctx, c| Box::pin(async move {
             let (service, signing, authorities, p, device) = *ctx;
             let tenant = tenant(p)?;
-            authorize(c, p, &policy::Target::Device { device: *device }, false, false).await?;
+            authorize(c, p, &da::Target::Device { device: *device }, false, false).await?;
             endpoints::lock_da_in(c, p.tenant_id(), device).await?;
             let anchor = endpoints::current_da_in(c, p.tenant_id(), device).await?.ok_or(Error::NotFound)?;
             policy::lock_publications_on(c, tenant).await.map_err(fault)?;
-            let publication = policy::selected_on(c, tenant, device).await.map_err(fault)?;
+            let issuers = policy::applicable_on(c, tenant, device).await.map_err(fault)?;
+            let publication = issuers.first().map(|(p, _)| p.clone());
+            let issuer = |id| issuers.iter().find(|(_, a)| a.policy == id).map(|(_, a)| a).ok_or(Error::Corrupt);
             let now = crate::platform_sso::store::now(c).await?;
             let identity = da::ReportIdentity { service_id: service.service_id()?, tenant,
                 device_id: anchor.device,  };
@@ -108,14 +91,14 @@ impl Service {
             for value in previous {
                 let refs: crate::evidence::Mandatory = serde_json::from_value(value).map_err(|_| Error::Corrupt)?;
                 for (policy, fields_by_artifact) in refs {
-                  for (field, artifact) in fields_by_artifact {
-                    let config = signing.read_on(p.binding(), c, artifact).await?.decode().map_err(|_| Error::Corrupt)?;
-                    if config.id != policy || !config.permits(&identity, device)
+                  for (field, saved) in fields_by_artifact {
+                    let config = signing.read_on(p.binding(), c, saved.artifact).await?.decode().map_err(|_| Error::Corrupt)?;
+                    if config.id != policy || config.revision != saved.revision || !config.permits(&identity, device)
                         || config.delivery != da::DeliveryPermission::ManagedMandatory
                         || !config.managed_fields.contains(&field) {
                         return Err(Error::Corrupt);
                     }
-                    if fields(c, &config).await?.contains(&field) && !locked.contains(&field) { locked.push(field); }
+                    if issuer(config.id)?.covers_managed_field(&config, field) && !locked.contains(&(policy, field)) { locked.push((policy, field)); }
                   }
                 }
             }
@@ -144,11 +127,11 @@ impl Service {
                         readbacks.push(readback);
                     }
                     if config.delivery != da::DeliveryPermission::ManagedMandatory { continue; }
-                    config.managed_fields = fields(c, &config).await?;
+                    let authority = issuer(config.id)?;
+                    config.managed_fields = config.managed_fields.iter().copied().filter(|field| authority.covers_managed_field(&config, *field)).collect();
                     // A protected release explicitly removes the source's authority.
                     if config.managed_fields.is_empty() { continue; }
-                    let issuer = policy::get_on(c, tenant, config.id).await.map_err(fault)?.ok_or(Error::Corrupt)?;
-                    if !issuer.enabled || o.revoked { state = da::SourceState::Withdrawn; break; }
+                    if !authority.enabled || o.revoked { state = da::SourceState::Withdrawn; break; }
                     if o.issued_at > now || config.issued_at > now { state = da::SourceState::Invalid; break; }
                     if o.expires_at <= now || config.expires_at <= now { state = da::SourceState::Expired; break; }
                     if proof.state != da::SourceState::Present { state = proof.state; break; }
@@ -162,7 +145,12 @@ impl Service {
                 }
                 Err(e) => return Err(e),
             }
-            if state == da::SourceState::Missing && !locked.is_empty() { state = da::SourceState::ReadFailed; }
+            if matches!(state, da::SourceState::Present | da::SourceState::Missing)
+                && locked.iter().any(|(id, field)| !managed.iter().any(|m| m.id == *id && m.managed_fields.contains(field))) {
+                state = da::SourceState::ReadFailed;
+            }
+            let locked: Vec<_> = [da::ConfigurationField::Mac, da::ConfigurationField::Windows].into_iter()
+                .filter(|field| locked.iter().any(|(_, required)| required == field)).collect();
             if publication.as_ref().is_some_and(|v| !v.enabled) { state = da::SourceState::Withdrawn; }
             let backend = publication.as_ref().filter(|v| v.enabled).map(|v| &v.configuration);
             let candidates: Vec<_> = managed.iter().collect();
@@ -173,13 +161,23 @@ impl Service {
             if let Some(selected) = publication.as_ref().filter(|v| v.enabled)
                 && resolution.blocked.is_none()
             {
-                application = Application::AwaitingExport;
-                if let Some(signed) = signing.current_on(p.binding(), c, selected.id, selected.revision).await? {
+                let candidate = async {
+                    let Some(signed) = signing.current_on(p.binding(), c, selected.id, selected.revision).await? else {
+                        return Ok(None);
+                    };
                     let config = signing.verify_on(c, p.binding().tenant(), &signed, now).await?;
-                    if !config.permits(&identity, device) || config.version != selected.version || config.id != selected.id
-                        || config.delivery != da::DeliveryPermission::Da {
-                        return Err(Error::Corrupt);
+                    if !config.permits(&identity, device) || !matches_backend(selected, &config) {
+                        return Err(Error::Conflict);
                     }
+                    Ok(Some((signed, config)))
+                }.await;
+                let qualified = match candidate {
+                    Ok(None) => { application = Application::AwaitingExport; None }
+                    Ok(value) => value,
+                    Err(Error::Forbidden | Error::Conflict | Error::Malformed) => None,
+                    Err(error) => return Err(error),
+                };
+                if let Some((signed, config)) = qualified {
                     artifact_id = Some(config.operation_id);
                     let head: Option<serde_json::Value> = sqlx::query_scalar(
                         "SELECT document FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2 AND kind='application'")

@@ -1,16 +1,23 @@
 //! Publication authorization, exact operation recovery and current-device distribution.
 use super::Change;
 use crate::{Error, Service, operations::Operation, service::Change as Changed};
+use rss_mdm_agent_wire::da::{Publication, Target};
 use rss_mdm_agent_wire::{da, runtime::Secret};
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_policy_postgres::device_access::{self as policy, Publication, Target};
+use rss_mdm_policy_postgres::device_access as policy;
 use rss_mdm_registration_service::{DevicePrincipal, device::endpoints};
 use rss_mdm_task_trust::configuration::ConfigurationService;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
+pub(super) fn matches_backend(publication: &Publication, config: &da::Configuration) -> bool {
+    config.id == publication.id
+        && config.version == publication.version
+        && config.revision == publication.revision as u64
+        && config.delivery == da::DeliveryPermission::Da
+}
 pub(crate) fn fault(e: policy::Error) -> Error {
     match e {
         policy::Error::Malformed => Error::Malformed,
@@ -314,7 +321,7 @@ impl Service {
         p: &DevicePrincipal,
         id: Option<Uuid>,
         a: &RequestAudit,
-    ) -> Result<CurrentConfiguration, Error> {
+    ) -> Result<da::CurrentConfiguration, Error> {
         a.identify_device(p.device());
         self.write(a, (self, signing, p, id), |ctx, c| {
             Box::pin(async move {
@@ -325,69 +332,77 @@ impl Service {
                 policy::lock_publications_on(c, tenant)
                     .await
                     .map_err(fault)?;
-                let publication = policy::selected_on(c, tenant, p.device())
+                let issuers = policy::applicable_on(c, tenant, p.device())
                     .await
                     .map_err(fault)?;
-                let Some(publication) = publication else {
+                let publication = issuers.first().map(|(publication, _)| publication.clone());
+                let mut current = da::CurrentConfiguration {
+                    identity: da::ReportIdentity {
+                        service_id: service.service_id()?,
+                        tenant,
+                        device_id: *p.device(),
+                    },
+                    state: da::SourceState::Missing,
+                    publication,
+                    artifact: None,
+                    authorities: issuers
+                        .into_iter()
+                        .map(|(_, authority)| authority)
+                        .collect(),
+                };
+                let Some(publication) = &current.publication else {
                     return Ok(Changed {
-                        value: CurrentConfiguration {
-                            state: da::SourceState::Missing,
-                            publication: None,
-                            artifact: None,
-                        },
+                        value: current,
                         replay: false,
                     });
                 };
                 if !publication.enabled {
+                    current.state = da::SourceState::Withdrawn;
                     return Ok(Changed {
-                        value: CurrentConfiguration {
-                            state: da::SourceState::Withdrawn,
-                            publication: Some(publication),
-                            artifact: None,
-                        },
+                        value: current,
                         replay: false,
                     });
                 }
-                let artifact = match id {
-                    Some(id) => Some(signing.read_on(p.binding(), c, id).await?),
-                    None => {
-                        signing
-                            .current_on(p.binding(), c, publication.id, publication.revision)
-                            .await?
-                    }
-                };
-                if let Some(value) = &artifact {
-                    let config = signing.admit_device_on(c, p, value).await?;
-                    if config.id != publication.id
-                        || config.version != publication.version
-                        || config.delivery != da::DeliveryPermission::Da
-                    {
+                let candidate = async {
+                    let artifact = match id {
+                        Some(id) => Some(signing.read_on(p.binding(), c, id).await?),
+                        None => {
+                            signing
+                                .current_on(p.binding(), c, publication.id, publication.revision)
+                                .await?
+                        }
+                    };
+                    let Some(value) = artifact else {
+                        return Ok(None);
+                    };
+                    let config = signing.admit_device_on(c, p, &value).await?;
+                    if !matches_backend(publication, &config) {
                         return Err(Error::Conflict);
                     }
+                    Ok(Some(value))
+                }
+                .await;
+                match candidate {
+                    Ok(Some(value)) => {
+                        current.state = da::SourceState::Present;
+                        current.artifact = Some(value);
+                    }
+                    Ok(None) => {}
+                    Err(Error::Forbidden | Error::Conflict | Error::Malformed) if id.is_none() => {
+                        // A withheld or undecodable candidate does not hide a protected release.
+                        crate::reports::admit(c, service, p, None).await?;
+                        current.state = da::SourceState::Invalid;
+                    }
+                    Err(error) => return Err(error),
                 }
                 Ok(Changed {
-                    value: CurrentConfiguration {
-                        state: if artifact.is_some() {
-                            da::SourceState::Present
-                        } else {
-                            da::SourceState::Missing
-                        },
-                        publication: Some(publication),
-                        artifact,
-                    },
+                    value: current,
                     replay: false,
                 })
             })
         })
         .await
     }
-}
-#[derive(Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentConfiguration {
-    pub state: da::SourceState,
-    pub publication: Option<Publication>,
-    pub artifact: Option<da::SignedConfiguration>,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

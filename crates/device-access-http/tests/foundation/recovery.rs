@@ -10,6 +10,7 @@ pub struct Expected {
     pub active: rss_mdm_agent_wire::da::Registration,
     pub active_peer: reqwest::Client,
     pub revoked: rss_mdm_agent_wire::da::Registration,
+    pub revocation: da::RevocationReceipt,
     pub revoked_peer: reqwest::Client,
     pub superseded_peer: reqwest::Client,
     pub pending: credentials::Pending,
@@ -202,7 +203,7 @@ pub async fn verify(
     let running = tokio::spawn(rss_da_app::host::serve(config, async move {
         stopped.await.map_err(std::io::Error::other)
     }));
-    let result = restored_http(material, &expected).await;
+    let result = restored_http(material, &expected, &administrator).await;
     let _ = stop.send(());
     tokio::time::timeout(Duration::from_secs(50), running).await???;
     result
@@ -214,7 +215,11 @@ async fn credential_history(
     Ok(sqlx::query_as("SELECT c.device,c.id,c.state,d.epoch,d.state FROM rss_da.credentials c JOIN rss_da.devices d ON (d.tenant_id,d.id)=(c.tenant_id,c.device) WHERE c.tenant_id=$1 AND c.device=ANY($2) ORDER BY c.device,c.id")
         .bind(expected.active.tenant).bind(vec![expected.active.device.into_uuid(),expected.revoked.device.into_uuid()]).fetch_all(c).await?)
 }
-async fn restored_http(m: &material::Material, e: &Expected) -> Result<()> {
+async fn restored_http(
+    m: &material::Material,
+    e: &Expected,
+    administrator: &config::Database,
+) -> Result<()> {
     let client = m.client(None)?;
     let tenant = e.active.tenant;
     let url = format!(
@@ -253,11 +258,24 @@ async fn restored_http(m: &material::Material, e: &Expected) -> Result<()> {
     );
     assert_eq!(status.request, e.pending.request);
     assert_eq!(status.receipt.as_ref(), Some(&e.pending.receipt));
+    // The original device was offline throughout revocation. Its first read uses a
+    // fresh TLS connection after the host and database have both restarted.
+    let url = format!("{}/registrations/revocation", e.device_base);
+    for _ in 0..2 {
+        let receipt: da::RevocationReceipt =
+            material::success(e.revoked_peer.get(&url).send().await?).await?;
+        assert_eq!(receipt, e.revocation);
+    }
     let path = format!("{}/credential-operations/next", e.device_base);
     assert_eq!(e.revoked_peer.post(&path).send().await?.status(), 401);
     assert_eq!(e.superseded_peer.post(&path).send().await?.status(), 401);
     let current: rss_mdm_agent_wire::runtime::CredentialTaskSpec =
         material::success(e.active_peer.post(&path).send().await?).await?;
     assert_eq!(current.task_id, e.pending.request.operation_id);
+    // The same leaf and durable receipt cannot authorize delivery from a stale host.
+    let mut operator = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=epoch+1 WHERE tenant_id=$1 AND epoch=1")
+        .bind(tenant).execute(&mut operator).await?.rows_affected(), 1);
+    assert_eq!(e.revoked_peer.get(&url).send().await?.status(), 409);
     Ok(())
 }

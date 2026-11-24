@@ -10,6 +10,8 @@ fn main() {
             "Response": schemars::schema_for!(rss_mdm_agent_wire::vault::Response)
         },
         "da": {
+            "CurrentConfiguration": schemars::schema_for!(rss_mdm_agent_wire::da::CurrentConfiguration),
+            "RevocationReceipt": schemars::schema_for!(rss_mdm_agent_wire::da::RevocationReceipt),
             "Configuration": schemars::schema_for!(rss_mdm_agent_wire::da::Configuration),
             "AccountOffer": schemars::schema_for!(rss_mdm_agent_wire::da::AccountOffer),
             "AccountEvent": schemars::schema_for!(rss_mdm_agent_wire::da::AccountEvent),

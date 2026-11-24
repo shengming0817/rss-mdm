@@ -258,11 +258,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .await?,
     )
     .await?;
-    let publication = rss_mdm_policy_postgres::device_access::Publication {
+    let publication = rss_mdm_agent_wire::da::Publication {
         id: Uuid::new_v4(),
         version: Uuid::new_v4(),
         revision: 1,
-        target: rss_mdm_policy_postgres::device_access::Target::TenantDefault,
+        target: rss_mdm_agent_wire::da::Target::TenantDefault,
         enabled: true,
         managed_fields: vec![],
         configuration: serde_json::from_value(
@@ -276,7 +276,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     };
     let (cookie, csrf) =
         credentials::login(&c, &client, Uuid::parse_str(proof.principal_id())?).await?;
-    let published: rss_mdm_policy_postgres::device_access::Publication = material::success(
+    let published: rss_mdm_agent_wire::da::Publication = material::success(
         client
             .post(format!(
                 "{}/api/v1/tenants/{}/device-access/configurations",
@@ -295,7 +295,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "{management}/admin/configuration-operations/{}",
         change.operation_id
     );
-    let recovered: rss_mdm_policy_postgres::device_access::Publication = material::success(
+    let recovered: rss_mdm_agent_wire::da::Publication = material::success(
         client
             .get(receipt_url)
             .header("cookie", cookie)
@@ -397,6 +397,13 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         403
     );
+    // No signing key has been acknowledged yet. Every current candidate is
+    // withheld, independently of the ordering of exports issued in the same second.
+    let held: da::CurrentConfiguration =
+        material::success(peer.get(format!("{base}/configuration")).send().await?).await?;
+    assert_eq!(held.state, da::SourceState::Invalid);
+    assert!(held.artifact.is_none());
+    assert!(held.authorities.iter().any(|a| a.policy == publication.id));
     let ack = Acknowledgement {
         version: 1,
         operation: Uuid::new_v4(),
@@ -634,18 +641,34 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         )
         .await
         .context("platform session is active before registration revocation")?;
-    material::empty(
+    let revoke_id = Uuid::new_v4();
+    let revoke = || {
         client
             .post(format!(
                 "{management}/devices/{}/registration/revoke",
                 receipt.device
             ))
             .bearer_auth(&token)
-            .json(&serde_json::json!({"operationId":Uuid::new_v4()}))
+            .json(&serde_json::json!({"operationId":revoke_id}))
             .send()
-            .await?,
-    )
-    .await?;
+    };
+    let revocation: da::RevocationReceipt = material::success(revoke().await?).await?;
+    assert_eq!(
+        revocation,
+        da::RevocationReceipt {
+            operation_id: revoke_id,
+            service_id: renewed_receipt.service_id,
+            tenant: renewed_receipt.tenant,
+            device: renewed_receipt.device,
+            credential: renewed_receipt.credential,
+        }
+    );
+    let replay: da::RevocationReceipt = material::success(revoke().await?).await?;
+    assert_eq!(revocation, replay);
+    let recovery_url = format!("{base}/registrations/revocation");
+    for other in [&client, &peer, &current_peer] {
+        assert_eq!(other.get(&recovery_url).send().await?.status(), 401);
+    }
     assert_eq!(
         renewed_peer
             .get(format!("{base}/configuration-trust"))
@@ -685,6 +708,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             active_peer: current_peer,
             superseded_peer: survivor_peer,
             revoked: renewed_receipt,
+            revocation,
             revoked_peer: renewed_peer,
             pending,
             device_base: base.to_string(),
