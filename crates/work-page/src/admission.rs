@@ -19,6 +19,12 @@ impl<T, O> Work<T, (), O> {
     }
 }
 
+type Class<T, R> = (Option<T>, Option<R>);
+struct Rotation<T, R> {
+    lane: (T, R),
+    used: u64,
+}
+
 pub(crate) struct Admission<K, T, R, O> {
     limit: usize,
     pending: BTreeMap<K, (u64, u64)>,
@@ -30,8 +36,9 @@ pub(crate) struct Admission<K, T, R, O> {
     last: Option<(K, T, R)>,
     // Only admission of an elected contender advances its contested class.
     // A fast cached hot successor may run between scans without rewinding this cursor.
-    rotation: BTreeMap<(Option<T>, Option<R>), (T, R)>,
-    elected: BTreeMap<K, (Option<T>, Option<R>)>,
+    rotation: BTreeMap<Class<T, R>, Rotation<T, R>>,
+    elections: u64,
+    elected: BTreeMap<K, Class<T, R>>,
 }
 
 fn decrement<G: Ord>(counts: &mut BTreeMap<G, usize>, group: &G) {
@@ -54,6 +61,7 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
             objects: BTreeSet::new(),
             last: None,
             rotation: BTreeMap::new(),
+            elections: 0,
             elected: BTreeMap::new(),
         }
     }
@@ -131,8 +139,32 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
             .entry((work.tenant.clone(), work.resource.clone()))
             .or_default() += 1;
         if let Some(class) = self.elected.remove(&key) {
-            self.rotation
-                .insert(class, (work.tenant.clone(), work.resource.clone()));
+            self.elections += 1;
+            self.rotation.insert(
+                class,
+                Rotation {
+                    lane: (work.tenant.clone(), work.resource.clone()),
+                    used: self.elections,
+                },
+            );
+            // An empty in-flight set can occur between two pages of a busy scan.
+            // Keep its turn through that gap. Bound historical cursors by the
+            // maximum number of simultaneous active tenant/resource classes.
+            if self.rotation.len() > self.limit.saturating_add(1).saturating_pow(2) {
+                let oldest = self
+                    .rotation
+                    .iter()
+                    .min_by_key(|((t, r), cursor)| {
+                        (
+                            t.as_ref().is_none_or(|t| self.tenants.contains_key(t))
+                                && r.as_ref().is_none_or(|r| self.resources.contains_key(r)),
+                            cursor.used,
+                        )
+                    })
+                    .map(|(class, _)| class.clone())
+                    .expect("nonempty rotations");
+                self.rotation.remove(&oldest);
+            }
         }
         self.last = Some((key.clone(), work.tenant, work.resource));
         Some(key)
@@ -163,7 +195,7 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
                 &key,
                 waiting.0,
                 binding(&key),
-                self.rotation.get(&owner),
+                self.rotation.get(&owner).map(|cursor| &cursor.lane),
                 false,
             );
             let candidates = classes.entry(class).or_insert_with(BTreeMap::new);
@@ -205,12 +237,6 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
                 }
             }
         }
-        self.rotation.retain(|(tenant, resource), _| {
-            tenant.as_ref().is_none_or(|t| self.tenants.contains_key(t))
-                && resource
-                    .as_ref()
-                    .is_none_or(|r| self.resources.contains_key(r))
-        });
         !self.pending.is_empty()
     }
 
@@ -320,5 +346,31 @@ mod tests {
             }
             assert_eq!(served, (0..8).collect());
         }
+    }
+    #[test]
+    fn idle_interval_between_pages_preserves_the_last_contested_turn() {
+        let binding = |key: &u8| Work {
+            tenant: *key,
+            resource: 0,
+            resource_limit: 1,
+            object: *key,
+        };
+        let mut queue = Admission::new(1);
+        let mut served = BTreeSet::new();
+        for round in 0..12 {
+            queue.discover(0, round);
+            assert_eq!(queue.take(&binding), Some(0));
+            for key in 1..4 {
+                queue.discover(key, round);
+            }
+            queue.retain_successors(&binding);
+            queue.finish(&0, binding(&0));
+            let peer = queue.take(&binding).unwrap();
+            served.insert(peer);
+            queue.retain_successors(&binding);
+            queue.finish(&peer, binding(&peer));
+            queue.retain_successors(&binding);
+        }
+        assert_eq!(served, BTreeSet::from([1, 2, 3]));
     }
 }
