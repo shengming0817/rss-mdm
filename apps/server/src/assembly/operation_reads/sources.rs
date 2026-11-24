@@ -278,7 +278,7 @@ impl<'a> Scope<'a> {
                 .push_bind(ids.to_vec())
                 .push("::uuid[]) AS allowed_id)");
         }
-        sql.push(",selected AS MATERIALIZED (SELECT * FROM (");
+        sql.push(",selected_keys AS MATERIALIZED (SELECT * FROM (");
         for i in 0..SOURCES.len() {
             if i > 0 {
                 sql.push(" UNION ALL ");
@@ -287,7 +287,7 @@ impl<'a> Scope<'a> {
             if multiple.is_some() {
                 sql.push("SELECT local_rows.* FROM granted CROSS JOIN LATERAL (");
             }
-            sql.push("SELECT *,")
+            sql.push("SELECT id,device,kind,")
                 .push(i)
                 .push(" AS source FROM owner_")
                 .push(i);
@@ -312,9 +312,27 @@ impl<'a> Scope<'a> {
             }
             sql.push(")");
         }
-        sql.push(") merged");
-        rss_mdm_query_postgres::order(sql, self.query, &*BINDINGS).map_err(query_error)?;
-        sql.push(" LIMIT ").push_bind(size as i64).push(")");
+        // With a unique ID the later public sort terms cannot reorder valid
+        // rows. A boundary collision is checked across the full owner namespace.
+        sql.push(") merged")
+            .push(order)
+            .push_bind(size as i64)
+            .push(")");
+        // Hydrating before the key limit can replace an ordered index walk with
+        // a bitmap scan, a join to command status, and an unbounded sort. Look up
+        // the winning coordinates in their original owner and snapshot only.
+        sql.push(",selected AS MATERIALIZED (SELECT detail.*,k.source FROM selected_keys k CROSS JOIN LATERAL (");
+        for i in 0..SOURCES.len() {
+            if i > 0 {
+                sql.push(" UNION ALL ");
+            }
+            sql.push("SELECT * FROM owner_")
+                .push(i)
+                .push(" WHERE k.source=")
+                .push(i)
+                .push(" AND (id,device,kind)=(k.id,k.device,k.kind)");
+        }
+        sql.push(" LIMIT 1) detail)");
         Ok(())
     }
 
