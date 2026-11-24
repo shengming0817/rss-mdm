@@ -74,6 +74,46 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "A directly authorized macOS Create was read back. PSSO readiness is independent.",
+          "properties": {
+            "filevaultUnlock": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Independently observed FileVault unlock eligibility."
+            },
+            "generatedUid": {
+              "description": "Stable native identity read from the created account.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/$defs/AccessRole",
+              "description": "Actual privilege, including when it differs from the requested role."
+            },
+            "secureToken": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Account-specific Secure Token observation."
+            },
+            "state": {
+              "const": "mac_account_created",
+              "type": "string"
+            },
+            "volumeOwner": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Independently observed Apple silicon volume ownership."
+            }
+          },
+          "required": [
+            "state",
+            "generatedUid",
+            "role",
+            "secureToken",
+            "volumeOwner",
+            "filevaultUnlock"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Native retirement observation; completion also requires credential removal.",
           "properties": {
             "account": {
@@ -649,7 +689,7 @@
       ]
     },
     "AccountObservation": {
-      "description": "Closed set of Windows account observations accepted by DA.",
+      "description": "Closed set of local account observations accepted by DA.",
       "oneOf": [
         {
           "additionalProperties": false,

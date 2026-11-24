@@ -496,6 +496,19 @@ pub enum AccessFailure {
     deny_unknown_fields
 )]
 pub enum AccessEffect {
+    /// A directly authorized macOS Create was read back. PSSO readiness is independent.
+    MacAccountCreated {
+        /// Stable native identity read from the created account.
+        generated_uid: Uuid,
+        /// Actual privilege, including when it differs from the requested role.
+        role: AccessRole,
+        /// Account-specific Secure Token observation.
+        secure_token: AccessObservation,
+        /// Independently observed Apple silicon volume ownership.
+        volume_owner: AccessObservation,
+        /// Independently observed FileVault unlock eligibility.
+        filevault_unlock: AccessObservation,
+    },
     /// Native retirement observation; completion also requires credential removal.
     WhfbRetired {
         /// Exact Entra account.
@@ -532,6 +545,11 @@ pub enum AccessEffect {
 impl AccessEffect {
     /// Reject cross-platform or incomplete successful evidence.
     pub fn validate_for(&self, platform: TaskPlatform) -> Result<(), WireError> {
+        if let Self::MacAccountCreated { generated_uid, .. } = self
+            && (platform != TaskPlatform::Macos || generated_uid.is_nil())
+        {
+            return Err(WireError::InvalidValue);
+        }
         if let Self::Applied {
             account,
             mac,
@@ -646,7 +664,7 @@ impl AccessEffect {
                     || !matches!(configuration.windows, AccessWindowsConfiguration::Whfb)
             }
             Self::Applied { .. } => false,
-            Self::Unknown | Self::Failed { .. } => false,
+            Self::MacAccountCreated { .. } | Self::Unknown | Self::Failed { .. } => false,
         }
     }
 }

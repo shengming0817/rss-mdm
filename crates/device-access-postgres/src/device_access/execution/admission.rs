@@ -513,6 +513,9 @@ pub(crate) async fn finish_in(
     value
         .validate_for(plan.binding.intent.platform())
         .map_err(|_| Error::Malformed)?;
+    if matches!(value.effect, wire::AccessEffect::MacAccountCreated { .. }) {
+        return Err(Error::Conflict.into());
+    }
     if matches!(value.effect, wire::AccessEffect::WhfbRetired { .. })
         && plan.binding.state != rss_mdm_device_access::State::Revoked
     {

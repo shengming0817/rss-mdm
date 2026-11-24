@@ -191,33 +191,13 @@ pub async fn result_in(
     report: &AccessResult,
     project: bool,
 ) -> Result<bool, Error> {
-    use sha2::{Digest, Sha256};
-    if task.is_nil() || attempt.is_nil() || event.is_nil() {
-        return Err(Error::Malformed);
-    }
     let mut b = locked_observation_in(c, tenant, report.binding_id).await?;
     report
         .validate_for(b.intent.platform())
         .map_err(|_| Error::Malformed)?;
-    let bytes = serde_json::to_vec(report).map_err(|_| Error::Malformed)?;
-    let digest: [u8; 32] = Sha256::digest(bytes).into();
-    if let Some(old) = sqlx::query_scalar::<_,Vec<u8>>("SELECT digest FROM rss_da.results WHERE tenant_id=$1 AND task=$2 AND attempt=$3 AND event=$4")
-        .bind(tenant).bind(task).bind(attempt).bind(event).fetch_optional(&mut *c).await.map_err(db)? {
-        return if old == digest { Ok(false) } else { Err(Error::Conflict) };
+    if !record_result_in(c, tenant, task, attempt, event, report).await? {
+        return Ok(false);
     }
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_da.results WHERE tenant_id=$1 AND binding=$2")
-            .bind(tenant)
-            .bind(b.id)
-            .fetch_one(&mut *c)
-            .await
-            .map_err(db)?;
-    if count >= 4096 {
-        return Err(Error::Capacity);
-    }
-    sqlx::query("INSERT INTO rss_da.results(tenant_id,task,attempt,event,binding,digest,document) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(tenant).bind(task).bind(attempt).bind(event).bind(b.id).bind(digest.as_slice())
-        .bind(serde_json::to_value(report).map_err(|_| Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
     if !project
         || report.binding_generation != b.generation
         || report.revision != b.revision
@@ -247,6 +227,41 @@ pub async fn result_in(
         _ => "pending",
     };
     super::lifecycle::emit_on(c, &b, None, event, phase).await?;
+    Ok(true)
+}
+
+/// Immutable native observations, shared by configuration and standalone creation receipts.
+pub(super) async fn record_result_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    task: Uuid,
+    attempt: Uuid,
+    event: Uuid,
+    report: &AccessResult,
+) -> Result<bool, Error> {
+    use sha2::{Digest, Sha256};
+    if task.is_nil() || attempt.is_nil() || event.is_nil() {
+        return Err(Error::Malformed);
+    }
+    let bytes = serde_json::to_vec(report).map_err(|_| Error::Malformed)?;
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    if let Some(old) = sqlx::query_scalar::<_,Vec<u8>>("SELECT digest FROM rss_da.results WHERE tenant_id=$1 AND task=$2 AND attempt=$3 AND event=$4")
+        .bind(tenant).bind(task).bind(attempt).bind(event).fetch_optional(&mut *c).await.map_err(db)? {
+        return if old == digest { Ok(false) } else { Err(Error::Conflict) };
+    }
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_da.results WHERE tenant_id=$1 AND binding=$2")
+            .bind(tenant)
+            .bind(report.binding_id)
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    if count >= 4096 {
+        return Err(Error::Capacity);
+    }
+    sqlx::query("INSERT INTO rss_da.results(tenant_id,task,attempt,event,binding,digest,document) VALUES($1,$2,$3,$4,$5,$6,$7)")
+        .bind(tenant).bind(task).bind(attempt).bind(event).bind(report.binding_id).bind(digest.as_slice())
+        .bind(serde_json::to_value(report).map_err(|_| Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
     Ok(true)
 }
 
@@ -517,6 +532,38 @@ pub async fn mac_configuration_in(
 /// Registration-locked admission: a new binding cannot race an old native key cleanup.
 pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(), Error> {
     if let super::AccountIntent::Create {
+        platform: TaskPlatform::Macos,
+        name,
+    } = &b.intent
+    {
+        // The caller holds the device fence, including for a previously unseen binding ID.
+        let pending: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT FROM rss_da.bindings old
+               JOIN rss_da.access_runs u ON (u.tenant_id,u.binding_id)=(old.tenant_id,old.id)
+               WHERE old.tenant_id=$1 AND old.device=$2 AND u.da_target IS NOT NULL
+                 AND old.document#>>'{intent,platform}'='macos'
+                 AND (old.id=$3 OR lower(old.document#>>'{intent,name}')=lower($4))
+                 AND (u.access_binding->>'revision')::bigint=old.revision
+                 AND CASE WHEN old.state='revoked' THEN
+                    u.state->>'cancellation'<>'confirmed' AND
+                    old.document->'appliedRevision' IS DISTINCT FROM old.document->'revision' AND
+                    (u.da_journal->>'awaiting_create' IS NOT NULL OR old.account IS NOT NULL)
+                 ELSE (old.id<>$3 OR u.result#>>'{effect,state}'='mac_account_created')
+                    AND (u.result IS NULL OR u.result#>>'{effect,state}'<>'failed')
+                 END)",
+        )
+        .bind(b.tenant)
+        .bind(b.device.into_uuid())
+        .bind(b.id)
+        .bind(name)
+        .fetch_one(&mut *c)
+        .await
+        .map_err(db)?;
+        if pending {
+            return Err(Error::Conflict);
+        }
+    }
+    if let super::AccountIntent::Create {
         platform: rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
         name,
     } = &b.intent
@@ -533,10 +580,10 @@ pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(),
             return Err(Error::Conflict);
         }
     }
-    let Some(account @ AccessAccount::Windows { .. }) = &b.account else {
+    let Some(account) = &b.account else {
         return Ok(());
     };
-    let pending: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND account=$3 AND state='revoked' AND document->'appliedRevision' IS DISTINCT FROM document->'revision')")
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND account=$3 AND state='revoked' AND (account->>'platform'='windows' OR document#>>'{accountDelivery,kind}'='da') AND document->'appliedRevision' IS DISTINCT FROM document->'revision')")
         .bind(b.tenant).bind(b.device.into_uuid()).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?)
         .fetch_one(c).await.map_err(db)?;
     if pending {

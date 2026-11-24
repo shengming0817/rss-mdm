@@ -69,15 +69,21 @@ pub(super) async fn select(
         }
         return refresh_target(c, b).await;
     }
-    let mac_create = matches!(b.intent, super::AccountIntent::Create { platform: w::TaskPlatform::Macos, .. })
-        && matches!(b.origin, Origin::Administrator { .. });
-    if !mac_create && (b.intent.platform() != w::TaskPlatform::Windows
-        || !b
-            .configuration
-            .windows
-            .accounts()
-            .contains(&w::AccessWindowsKind::Local)
-        || b.account.as_ref().is_some_and(|a| !local(a)))
+    let mac_create = matches!(
+        b.intent,
+        super::AccountIntent::Create {
+            platform: w::TaskPlatform::Macos,
+            ..
+        }
+    ) && matches!(b.origin, Origin::Administrator { .. });
+    if !mac_create
+        && (b.intent.platform() != w::TaskPlatform::Windows
+            || !b
+                .configuration
+                .windows
+                .accounts()
+                .contains(&w::AccessWindowsKind::Local)
+            || b.account.as_ref().is_some_and(|a| !local(a)))
     {
         return Ok(None);
     }
@@ -171,6 +177,12 @@ pub(super) async fn accept(
     else {
         return Ok(());
     };
+    if b.intent.platform() == w::TaskPlatform::Macos
+        && b.state != State::Revoked
+        && (!matches!(b.intent, super::AccountIntent::Create { .. }) || b.account.is_some())
+    {
+        return Ok(());
+    }
     let authority = match actor {
         Some(p) => Some(OperationAuthority::from_proof(
             &super::service::grants(c, p).await?,
@@ -192,8 +204,8 @@ pub(super) async fn accept(
     let mut state = RunState::new(deadline, now).map_err(|_| Error::Corrupt)?;
     let mut journal = Journal::default();
     if b.state == State::Revoked && b.account.is_none() {
-        journal.awaiting_create = sqlx::query_scalar(
-            "SELECT id FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
+        let previous: Option<(Uuid, Option<sqlx::types::Json<w::AccessResult>>)> = sqlx::query_as(
+            "SELECT id,result FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
                AND da_target->>'epoch'=$3 AND da_target->>'installation'=$4
                AND (access_binding->>'generation')::bigint=$5 AND state->>'startedAt' IS NOT NULL
                AND access_binding->>'state'<>'revoked' AND state->>'cancellation'<>'confirmed'
@@ -207,8 +219,20 @@ pub(super) async fn accept(
         .fetch_optional(&mut *c)
         .await
         .map_err(db)?;
-        if journal.awaiting_create.is_none() {
-            state.cancel();
+        match previous.map(|(id, result)| (id, result.map(|value| value.0.effect))) {
+            Some((_, Some(w::AccessEffect::MacAccountCreated { generated_uid, .. }))) => {
+                // A completed Create can predate this unlink while its policy was withdrawn.
+                let mut cleanup = b.clone();
+                cleanup.account = Some(w::AccessAccount::Macos { generated_uid });
+                storage::save_in(c, &cleanup, b.revision).await?;
+            }
+            Some((_, Some(w::AccessEffect::Failed { .. })))
+                if b.intent.platform() == w::TaskPlatform::Macos =>
+            {
+                state.cancel()
+            }
+            Some((id, _)) => journal.awaiting_create = Some(id),
+            None => state.cancel(),
         }
     }
     sqlx::query("INSERT INTO rss_da.access_runs(expected_epoch,tenant_id,id,policy_version,origin,access_binding,device,occurrence,created_at,available_at,deadline,state,da_target,da_journal) VALUES($1,$2,$3,$4,'\"human\"',$5,$6,$7,$8,$8,$9,$10,$11,$12)")
@@ -560,6 +584,37 @@ impl Run {
         }
     }
 
+    /// An unlink may consume evidence only from the exact Create run it froze.
+    async fn waiting_cleanup(
+        &self,
+        c: &mut PgConnection,
+    ) -> Result<Option<(Uuid, RunState)>, Error> {
+        let row: Option<(Uuid, sqlx::types::Json<RunState>)> = sqlx::query_as(
+            "SELECT u.id,u.state FROM rss_da.access_runs u JOIN rss_da.bindings b
+             ON (b.tenant_id,b.id)=(u.tenant_id,u.binding_id)
+             WHERE u.tenant_id=$1 AND u.binding_id=$2 AND b.state='revoked' AND b.account IS NULL
+             AND (u.access_binding->>'revision')::bigint=b.revision AND u.da_journal->>'awaiting_create'=$3
+             AND u.state->>'cancellation'<>'confirmed' FOR UPDATE OF u"
+        ).bind(self.binding.tenant).bind(self.binding.id).bind(self.id.to_string())
+         .fetch_optional(&mut *c).await.map_err(db)?;
+        Ok(row.map(|(id, state)| (id, state.0)))
+    }
+    async fn confirm_no_cleanup(
+        c: &mut PgConnection,
+        tenant: Uuid,
+        id: Uuid,
+        mut state: RunState,
+    ) -> Result<(), Error> {
+        state.cancel();
+        sqlx::query("UPDATE rss_da.access_runs SET state=$3 WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant)
+            .bind(id)
+            .bind(sqlx::types::Json(state))
+            .execute(c)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
     async fn settle_absence(
         &mut self,
         c: &mut PgConnection,
@@ -585,26 +640,10 @@ impl Run {
         if !matches!(start.action, w::AccessAction::Create { .. }) {
             return Ok(false);
         }
-        // The pending cleanup named this exact issued run when it was accepted under the device lock.
-        let row:Option<(Uuid,sqlx::types::Json<RunState>)>=sqlx::query_as(
-            "SELECT u.id,u.state FROM rss_da.access_runs u JOIN rss_da.bindings b
-             ON (b.tenant_id,b.id)=(u.tenant_id,u.binding_id)
-             WHERE u.tenant_id=$1 AND u.binding_id=$2 AND b.state='revoked' AND b.account IS NULL
-             AND (u.access_binding->>'revision')::bigint=b.revision AND u.da_journal->>'awaiting_create'=$3
-             AND u.state->>'cancellation'<>'confirmed' FOR UPDATE OF u"
-        ).bind(self.binding.tenant).bind(self.binding.id).bind(self.id.to_string())
-         .fetch_optional(&mut *c).await.map_err(db)?;
-        let Some((cleanup, sqlx::types::Json(mut state))) = row else {
+        let Some((cleanup, state)) = self.waiting_cleanup(c).await? else {
             return Ok(false);
         };
-        state.cancel();
-        sqlx::query("UPDATE rss_da.access_runs SET state=$3 WHERE tenant_id=$1 AND id=$2")
-            .bind(self.binding.tenant)
-            .bind(cleanup)
-            .bind(sqlx::types::Json(state))
-            .execute(c)
-            .await
-            .map_err(db)?;
+        Self::confirm_no_cleanup(c, self.binding.tenant, cleanup, state).await?;
         if matches!(input.event, E::NotStarted { .. }) {
             self.state.execution = Execution::NotStarted;
         }
@@ -613,6 +652,83 @@ impl Run {
             .cancelled(input.attempt_id)
             .map_err(|_| Error::Conflict)?;
         Ok(true)
+    }
+    /// Creation evidence settles the original attempt even when configuration or authority changed.
+    async fn mac_create_result(
+        &mut self,
+        c: &mut PgConnection,
+        event: &da::AccountEvent,
+        b: &Binding,
+        result: &w::AccessResult,
+        expected_role: w::AccessRole,
+        current: bool,
+    ) -> Result<(), Error> {
+        let account = match &result.effect {
+            w::AccessEffect::MacAccountCreated {
+                generated_uid,
+                role,
+                ..
+            } => {
+                self.state
+                    .result(event.attempt_id, *role == expected_role)
+                    .map_err(|_| Error::Conflict)?;
+                Some(w::AccessAccount::Macos {
+                    generated_uid: *generated_uid,
+                })
+            }
+            w::AccessEffect::Failed { .. } => {
+                self.state
+                    .result(event.attempt_id, false)
+                    .map_err(|_| Error::Conflict)?;
+                None
+            }
+            w::AccessEffect::Unknown => {
+                self.state
+                    .uncertain_result(event.attempt_id)
+                    .map_err(|_| Error::Conflict)?;
+                None
+            }
+            _ => return Err(Error::Conflict),
+        };
+        if !storage::record_result_in(
+            c,
+            b.tenant,
+            self.id,
+            event.attempt_id,
+            event.event_id,
+            result,
+        )
+        .await?
+        {
+            return Err(Error::Conflict);
+        }
+        let mut binding = storage::locked_observation_in(c, b.tenant, b.id).await?;
+        let cleanup = if !current {
+            self.waiting_cleanup(c).await?
+        } else {
+            None
+        };
+        if let Some(account) = account {
+            if current || cleanup.is_some() {
+                if binding.account.as_ref().is_some_and(|old| old != &account) {
+                    return Err(Error::Conflict);
+                }
+                binding.account = Some(account);
+                storage::save_in(c, &binding, binding.revision).await?;
+            }
+        } else if let Some((id, state)) = cleanup
+            && matches!(result.effect, w::AccessEffect::Failed { .. })
+        {
+            Self::confirm_no_cleanup(c, b.tenant, id, state).await?;
+        }
+        sqlx::query("UPDATE rss_da.access_runs SET result=$3 WHERE tenant_id=$1 AND id=$2")
+            .bind(b.tenant)
+            .bind(self.id)
+            .bind(sqlx::types::Json(result))
+            .execute(c)
+            .await
+            .map_err(db)?;
+        Ok(())
     }
     async fn observe(
         &mut self,
@@ -667,6 +783,11 @@ impl Run {
                 self.state.deadline,
                 windows,
             )?;
+            if platform == w::TaskPlatform::Macos
+                && matches!(spec.action, w::AccessAction::Apply { .. })
+            {
+                return Err(Error::Conflict);
+            }
             spec.validate().map_err(|_| Error::Corrupt)?;
             self.journal.received = true;
             self.journal.start = Some(spec);
@@ -754,8 +875,16 @@ impl Run {
                 {
                     return Err(Error::Conflict);
                 }
-                v.validate_for(w::TaskPlatform::Windows)
+                v.validate_for(task.platform)
                     .map_err(|_| Error::Malformed)?;
+                if task.platform == w::TaskPlatform::Macos
+                    && let w::AccessAction::Create { configuration, .. } = &task.action
+                {
+                    let role = configuration.role.unwrap_or(w::AccessRole::Standard);
+                    self.mac_create_result(c, input, b, v, role, current)
+                        .await?;
+                    return Ok(None);
+                }
                 match (&task.action, &v.effect) {
                     (_, w::AccessEffect::Failed { .. } | w::AccessEffect::Unknown) => (),
                     (
@@ -813,7 +942,10 @@ impl Run {
                 {
                     return Err(Error::Conflict);
                 }
-                if current && matches!(v.effect, w::AccessEffect::Unbound { .. }) {
+                if current
+                    && task.platform == w::TaskPlatform::Windows
+                    && matches!(v.effect, w::AccessEffect::Unbound { .. })
+                {
                     let stopped:Vec<Uuid>=sqlx::query_scalar(
                         "SELECT id FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2 AND device=$3
                          AND da_target->>'epoch'=$4 AND da_target->>'installation'=$5
@@ -835,25 +967,24 @@ impl Run {
                         .unbound(c, b.tenant, b.id, b.generation, b.revision)
                         .await?;
                 }
-                let success = v
-                    .effect
-                    .complete(&b.configuration, w::TaskPlatform::Windows);
-                let unresolved = materials
-                    .unresolved(
-                        c,
-                        task,
-                        if current {
-                            super::participants::BindingDisposition::Current
-                        } else {
-                            super::participants::BindingDisposition::Withdrawn
-                        },
-                        if current {
-                            !success
-                        } else {
-                            !matches!(v.effect, w::AccessEffect::Unknown)
-                        },
-                    )
-                    .await?;
+                let success = v.effect.complete(&b.configuration, task.platform);
+                let unresolved = task.platform == w::TaskPlatform::Windows
+                    && materials
+                        .unresolved(
+                            c,
+                            task,
+                            if current {
+                                super::participants::BindingDisposition::Current
+                            } else {
+                                super::participants::BindingDisposition::Withdrawn
+                            },
+                            if current {
+                                !success
+                            } else {
+                                !matches!(v.effect, w::AccessEffect::Unknown)
+                            },
+                        )
+                        .await?;
                 if unresolved || matches!(v.effect, w::AccessEffect::Unknown) {
                     self.state.uncertain_result(input.attempt_id)
                 } else {
