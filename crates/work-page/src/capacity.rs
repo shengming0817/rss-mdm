@@ -19,7 +19,25 @@ struct State {
     active: usize,
     last: Option<Uuid>,
     tenants: BTreeMap<Uuid, usize>,
-    waiting: VecDeque<(Arc<()>, Uuid)>,
+    windows: BTreeMap<u64, usize>,
+    next_window: u64,
+    waiting: VecDeque<(Arc<()>, Uuid, Option<Window>)>,
+}
+
+/// A narrower registration participates in the same atomic grant as the host.
+#[derive(Clone, Copy)]
+pub(crate) struct Window {
+    id: u64,
+    limit: usize,
+}
+
+impl State {
+    fn available(&self, tenant: Uuid, window: Option<Window>, per_tenant: usize) -> usize {
+        let tenant_free = per_tenant - self.tenants.get(&tenant).copied().unwrap_or(0);
+        window.map_or(tenant_free, |w| {
+            tenant_free.min(w.limit - self.windows.get(&w.id).copied().unwrap_or(0))
+        })
+    }
 }
 
 impl Capacity {
@@ -38,12 +56,34 @@ impl Capacity {
         self.limit
     }
 
+    pub(crate) fn window(&self, limit: NonZeroUsize) -> Option<Window> {
+        if limit >= self.limit {
+            return None;
+        }
+        let mut state = self.state.lock().expect("capacity state");
+        state.next_window += 1;
+        Some(Window {
+            id: state.next_window,
+            limit: limit.get(),
+        })
+    }
+
     /// Prefer tenants with fewer executing items, keeping FIFO order for ties.
     /// At equal usage give another waiting tenant a turn before repeating the last grant.
     pub fn acquire(
         self: &Arc<Self>,
         tenant: Uuid,
         width: usize,
+        stop: &CancellationToken,
+    ) -> impl Future<Output = Vec<Slot>> + Send + use<> {
+        self.acquire_within(tenant, width, None, stop)
+    }
+
+    pub(crate) fn acquire_within(
+        self: &Arc<Self>,
+        tenant: Uuid,
+        width: usize,
+        window: Option<Window>,
         stop: &CancellationToken,
     ) -> impl Future<Output = Vec<Slot>> + Send + use<> {
         let mut changed = self.changed.subscribe();
@@ -58,7 +98,7 @@ impl Capacity {
                 .lock()
                 .expect("capacity state")
                 .waiting
-                .push_back((ticket.id.clone(), tenant));
+                .push_back((ticket.id.clone(), tenant, window));
         }
         async move {
             if width == 0 {
@@ -71,40 +111,44 @@ impl Capacity {
                     if stop.is_cancelled() {
                         return Vec::new();
                     }
-                    let used = state.tenants.get(&tenant).copied().unwrap_or(0);
-                    let free = (capacity.limit.get() - state.active).min(tenant_limit - used);
+                    let free = (capacity.limit.get() - state.active).min(state.available(
+                        tenant,
+                        window,
+                        tenant_limit,
+                    ));
+                    let mut eligible = state
+                        .waiting
+                        .iter()
+                        .filter(|(_, t, w)| state.available(*t, *w, tenant_limit) > 0);
                     if free > 0
-                        && state
-                            .waiting
-                            .iter()
-                            .min_by_key(|(_, key)| {
+                        && eligible
+                            .clone()
+                            .min_by_key(|(_, t, _)| {
                                 (
-                                    state.tenants.get(key).copied().unwrap_or(0),
-                                    Some(*key) == state.last,
+                                    state.tenants.get(t).copied().unwrap_or(0),
+                                    Some(*t) == state.last,
                                 )
                             })
-                            .is_some_and(|(id, _)| Arc::ptr_eq(id, &ticket.id))
+                            .is_some_and(|(id, _, _)| Arc::ptr_eq(id, &ticket.id))
                     {
-                        // Divide spare capacity among current contenders. An idle tenant
-                        // merely listed on a discovery page has no claim on the budget.
-                        let contenders = state
-                            .waiting
-                            .iter()
-                            .map(|(_, key)| *key)
-                            .filter(|key| {
-                                state.tenants.get(key).copied().unwrap_or(0) < tenant_limit
-                            })
+                        let contenders = eligible
+                            .by_ref()
+                            .map(|(_, tenant, _)| *tenant)
                             .collect::<std::collections::BTreeSet<_>>()
                             .len();
                         let fair_share = (capacity.limit.get() - state.active).div_ceil(contenders);
                         let count = width.min(free).min(fair_share);
                         state.last = Some(tenant);
                         state.active += count;
+                        if let Some(w) = window {
+                            *state.windows.entry(w.id).or_default() += count;
+                        }
                         *state.tenants.entry(tenant).or_default() += count;
                         return (0..count)
                             .map(|_| Slot {
                                 capacity: capacity.clone(),
                                 tenant,
+                                window,
                             })
                             .collect();
                     }
@@ -129,7 +173,7 @@ impl Drop for Ticket {
             .lock()
             .expect("capacity state")
             .waiting
-            .retain(|(id, _)| !Arc::ptr_eq(id, &self.id));
+            .retain(|(id, _, _)| !Arc::ptr_eq(id, &self.id));
         self.capacity.changed.send_replace(());
     }
 }
@@ -137,11 +181,19 @@ impl Drop for Ticket {
 pub struct Slot {
     capacity: Arc<Capacity>,
     tenant: Uuid,
+    window: Option<Window>,
 }
 impl Drop for Slot {
     fn drop(&mut self) {
         let mut state = self.capacity.state.lock().expect("capacity state");
         state.active -= 1;
+        if let Some(w) = self.window {
+            let n = state.windows.get_mut(&w.id).expect("admitted registration");
+            *n -= 1;
+            if *n == 0 {
+                state.windows.remove(&w.id);
+            }
+        }
         let count = state
             .tenants
             .get_mut(&self.tenant)
@@ -178,6 +230,24 @@ mod tests {
             stop.cancel();
             assert!(hot.await.is_empty());
         }
+    }
+    #[tokio::test]
+    async fn a_host_waiter_does_not_reserve_a_narrow_registration() {
+        let host = Capacity::new(NonZeroUsize::new(8).unwrap());
+        let narrow = host.window(NonZeroUsize::MIN);
+        let stop = CancellationToken::new();
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let mut held = host.acquire(a, 8, &stop).await;
+        let mut hot = Box::pin(host.acquire_within(a, 1, narrow, &stop));
+        let peer = host.acquire_within(b, 1, narrow, &stop);
+        assert!(futures::poll!(&mut hot).is_pending());
+        drop(held.pop().unwrap());
+        let peer = peer.await;
+        assert_eq!(peer.len(), 1);
+        drop(held.pop().unwrap());
+        assert!(futures::poll!(&mut hot).is_pending());
+        drop(peer);
+        assert_eq!(hot.await.len(), 1);
     }
     #[tokio::test]
     async fn capacity_one_serializes_all_registrations() {

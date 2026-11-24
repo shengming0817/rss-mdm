@@ -313,36 +313,20 @@ impl Service {
         stop: &tokio_util::sync::CancellationToken,
     ) {
         let idle = Duration::from_millis(500);
-        // The probe flag is an attribute of this page, not a durable cursor coordinate.
-        let probes = std::sync::Mutex::new(std::collections::BTreeSet::new());
         rss_mdm_work_page::run_grouped(
             NonZeroUsize::new(crate::RELAY_CONCURRENCY as usize).unwrap(),
             idle,
             stop,
             &tokio::sync::Notify::new(),
             (
-                |(tenant, _)| tenant,
-                |after| {
-                    let probes = &probes;
-                    async move {
-                        let rows = self
-                            .work_scopes(after)
-                            .await
-                            .map_err(|_| eprintln!("telemetry relay discovery unconfirmed"))?;
-                        *probes.lock().expect("relay discovery") = rows
-                            .iter()
-                            .filter(|row| row.2)
-                            .map(|row| (row.0, row.1))
-                            .collect();
-                        Ok(rows
-                            .into_iter()
-                            .map(|(tenant, epoch, _)| (tenant, epoch))
-                            .collect::<Vec<_>>())
-                    }
+                |(tenant, _, _)| tenant,
+                |after: Option<(_, _, bool)>| async move {
+                    self.work_scopes(after.map(|(tenant, epoch, _)| (tenant, epoch)))
+                        .await
+                        .map_err(|_| eprintln!("telemetry relay discovery unconfirmed"))
                 },
             ),
-            |key| {
-                let probe = probes.lock().expect("relay discovery").contains(&key);
+            |(tenant, epoch, probe)| {
                 let owner = self.clone();
                 let store = store.clone();
                 let stop = stop.clone();
@@ -350,7 +334,7 @@ impl Service {
                     if stop.is_cancelled() {
                         return Ok(idle);
                     }
-                    let binding = owner.work_binding(key.0, key.1).map_err(|_| ())?;
+                    let binding = owner.work_binding(tenant, epoch).map_err(|_| ())?;
                     if probe && owner.qualify_reader(binding).await.is_err() {
                         eprintln!("telemetry selection qualification unconfirmed");
                     }

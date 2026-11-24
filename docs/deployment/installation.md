@@ -72,7 +72,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
-8 核部署的 Compose 默认值为 `MDM_PLANNING_CONCURRENCY=8`、`MDM_DEVICE_CONCURRENCY=8`、`MDM_PG_MAX_CONNECTIONS=200`。PostgreSQL 按最后一个变量设置 `max_connections`。默认卷存储、租户管理和 PostgreSQL 遥测组合的各连接池上限合计 190。保留 3 个超级用户连接和 1 个维护连接时，应用可用 196 个连接。首装在保存操作身份前读实际容量；并发或容量校验失败时，可修正这三个变量后重新运行。已受理的安装重放沿用原并发输入。安装器扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。同一执行预算可由一个就绪租户用满；出现竞争后，已发现且在途较少的就绪租户优先取得释放的名额。容量 1 时串行。两个 PostgreSQL 调度池各有 2 条连接，同一租户在每池最多占 1 条，供独立租户领取和结算。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
+8 核部署的 Compose 默认值为 `MDM_PLANNING_CONCURRENCY=8`、`MDM_DEVICE_CONCURRENCY=8`、`MDM_PG_MAX_CONNECTIONS=200`。PostgreSQL 按最后一个变量设置 `max_connections`。默认卷存储、租户管理和 PostgreSQL 遥测组合的各连接池上限合计 190。保留 3 个超级用户连接和 1 个维护连接时，应用可用 196 个连接。首装在保存操作身份前读实际容量；并发或容量校验失败时，可修正这三个变量后重新运行。已受理的安装重放沿用原并发输入。安装器扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。同一执行预算可由一个就绪租户用满；出现竞争后，已发现且在途较少的就绪租户优先取得释放的名额。容量 1 时串行。两个 PostgreSQL 调度池的连接上限各为 2；每池对同一租户同时接纳一个数据库调度操作。一项结算等待业务行锁时，其他租户可通过该池领取并结算。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
 
 外部调用按宿主独立配置。首装的 `MDM_APNS_CONCURRENCY`、`MDM_WNS_CONCURRENCY`、`MDM_ADE_CONCURRENCY`、`MDM_PUBLICATION_CONCURRENCY` 默认各为 8。`MDM_APNS_PER_CREDENTIAL`、`MDM_WNS_PER_CREDENTIAL`、`MDM_PUBLICATION_PER_SOURCE` 首装省略时取对应宿主总额，显式值允许从 1 到总额（含）。单租户可用满共享凭据；凭据内出现多个就绪租户或软件来源间出现竞争时，释放的名额按当前在途工作分配。后续使用 `configure-host` 提交宿主级 `change.kind=external_calls`，`settings` 为运行配置 `background.external_calls` 的完整对象。导出并部署该 revision 后生效。启用 Windows 通道时，宿主为 WNS 回执另计一个最多 2 条连接的池。安装器为 `business_databases.wns` 配置独立登录角色 `mdm_wns_runtime`，仅该角色可以把有效租约上的 406 回执结算为共享 Package SID 的退避期限。
 

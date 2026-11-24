@@ -1160,6 +1160,39 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         }
     }).await??;
     anyhow::ensure!(task.shutdown().join().await?.is_clean());
+    // Measure a separate workload with no artificial lock. Epoch and the original
+    // business receipts are sampled together on the operator connection.
+    let mut sample = Vec::new();
+    for _ in 0..8 {
+        sample.push(TaskOwner::Script.seed(&a).await?);
+    }
+    let beginning = rss_request_context::Clock::now(&start);
+    let measurement = start_owner(a.a.script_work.clone().registration(
+        config.tasks,
+        config.tasks_drain,
+        Arc::default(),
+    ))?;
+    let mut first_claim = None;
+    let end = tokio::time::timeout(Duration::from_secs(10),async {
+        loop {
+            let (claims,settled): (i64,i64) = sqlx::query_as("SELECT count(*) FILTER (WHERE t.epoch>0), count(*) FILTER (WHERE p.runs_done AND p.input_revision=p.input_consumed) FROM mdm_script.policy_recovery p JOIN rss_reconcile.targets t ON t.tenant_id=p.tenant_id AND t.reconciler=$3 AND t.entity='policy:'||p.policy::text WHERE p.tenant_id=$1::uuid AND p.policy=ANY($2)")
+                .bind(a.c.tenant.to_string()).bind(&sample).bind(script::wake::scope(a.c.tenant).reconciler()).fetch_one(&a.c.operator).await?;
+            let observed = rss_request_context::Clock::now(&start);
+            if claims > 0 { first_claim.get_or_insert(observed); }
+            if settled == 8 && claims == 8 {break Ok::<_,anyhow::Error>(observed);}
+            tokio::task::yield_now().await;
+        }
+    }).await??;
+    anyhow::ensure!(measurement.shutdown().join().await?.is_clean());
+    let first_claim = first_claim.unwrap();
+    let results = json!({"jobs":8,"schedulerPool":2,"firstClaimMs":(first_claim-beginning).as_secs_f64()*1000.0,
+        "firstClaimToFinalReceiptMs":(end-first_claim).as_secs_f64()*1000.0,"completedPerSecond":8.0/(end-beginning).as_secs_f64()});
+    let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/local-t2");
+    std::fs::create_dir_all(&output)?;
+    std::fs::write(
+        output.join("worker-capacity.json"),
+        serde_json::to_vec_pretty(&results)?,
+    )?;
     b.close().await?;
     a.close().await
 }

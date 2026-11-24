@@ -1,4 +1,4 @@
-//! A discovery page and one successor per saturated host, resource or object.
+//! Bounded ready candidates, distinguished by the active tenants and resources a release may affect.
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct Work<T, R, O> {
@@ -17,13 +17,6 @@ impl<T, O> Work<T, (), O> {
             object,
         }
     }
-}
-
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum Block<R, O> {
-    Host,
-    Resource(R),
-    Object(O),
 }
 
 pub(crate) struct Admission<K, T, R, O> {
@@ -73,16 +66,9 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
         self.pending.retain(|_, (_, seen)| *seen == round);
     }
 
-    fn block(&self, work: Work<T, R, O>) -> Option<Block<R, O>> {
-        if self.objects.contains(&work.object) {
-            Some(Block::Object(work.object))
-        } else if self.resources.get(&work.resource).copied().unwrap_or(0) >= work.resource_limit {
-            Some(Block::Resource(work.resource))
-        } else if self.active.len() >= self.limit {
-            Some(Block::Host)
-        } else {
-            None
-        }
+    fn available(&self, work: Work<T, R, O>) -> bool {
+        !self.objects.contains(&work.object)
+            && self.resources.get(&work.resource).copied().unwrap_or(0) < work.resource_limit
     }
 
     // Least occupied tenant, then source / tenant share of that source. At equal usage
@@ -92,7 +78,7 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
         key: &K,
         turn: u64,
         work: Work<T, R, O>,
-    ) -> (usize, usize, usize, bool, bool, u64, bool) {
+    ) -> (usize, usize, usize, u64, bool, bool, bool) {
         let last = self.last.as_ref();
         let same_tenant = last.is_some_and(|(_, t, _)| t == &work.tenant);
         let same_resource = last.is_some_and(|(_, _, r)| r == &work.resource);
@@ -103,9 +89,9 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
                 .get(&(work.tenant, work.resource))
                 .copied()
                 .unwrap_or(0),
+            turn,
             same_tenant,
             same_resource,
-            turn,
             last.is_some_and(|(k, _, _)| key <= k),
         )
     }
@@ -117,7 +103,7 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
         let key = self
             .pending
             .iter()
-            .filter(|(key, _)| self.block(binding(key)).is_none())
+            .filter(|(key, _)| self.available(binding(key)))
             .min_by_key(|(key, (turn, _))| self.priority(key, *turn, binding(key)))
             .map(|(key, _)| key.clone())?;
         self.pending.remove(&key);
@@ -134,23 +120,46 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
         Some(key)
     }
 
-    // The durable cursor traverses the rest even when every slot is held. Never
-    // allocate a waiter or spawn a task per durable row in a hot tenant's backlog.
+    // Completing any active job may change its tenant's share, its resource's
+    // share, and the availability of its object. Keep those alternatives apart
+    // until the actual completion. Among currently idle peers keep up to one
+    // host-width of distinct lanes in waiting order, independently of backlog size.
     pub(crate) fn retain_successors(&mut self, binding: &impl Fn(&K) -> Work<T, R, O>) -> bool {
-        let mut successors = BTreeMap::new();
+        let mut classes = BTreeMap::new();
         for (key, waiting) in std::mem::take(&mut self.pending) {
-            let block = self
-                .block(binding(&key))
-                .expect("admitted every eligible candidate");
+            let work = binding(&key);
+            let class = (
+                self.tenants
+                    .contains_key(&work.tenant)
+                    .then(|| work.tenant.clone()),
+                self.resources
+                    .contains_key(&work.resource)
+                    .then(|| work.resource.clone()),
+                self.objects.contains(&work.object).then_some(work.object),
+            );
+            let lane = (work.tenant, work.resource);
             let priority = self.priority(&key, waiting.0, binding(&key));
             let candidate = (priority, key, waiting);
-            let best = successors.entry(block).or_insert_with(|| candidate.clone());
-            if candidate < *best {
-                *best = candidate;
-            }
+            let lanes = classes.entry(class).or_insert_with(BTreeMap::new);
+            lanes
+                .entry(lane)
+                .and_modify(|old| {
+                    if candidate < *old {
+                        *old = candidate.clone();
+                    }
+                })
+                .or_insert(candidate);
         }
-        self.pending
-            .extend(successors.into_values().map(|(_, key, turn)| (key, turn)));
+        for lanes in classes.into_values() {
+            let mut successors: Vec<_> = lanes.into_values().collect();
+            successors.sort_unstable();
+            self.pending.extend(
+                successors
+                    .into_iter()
+                    .take(self.limit)
+                    .map(|(_, key, waiting)| (key, waiting)),
+            );
+        }
         !self.pending.is_empty()
     }
 
@@ -160,5 +169,26 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
         decrement(&mut self.tenants, &work.tenant);
         decrement(&mut self.resources, &work.resource);
         decrement(&mut self.shares, &(work.tenant, work.resource));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn release_changes_which_waiting_tenant_has_the_smaller_share() {
+        let binding = |key: &u8| Work::independent(*key % 2, *key);
+        let mut admission = Admission::new(2);
+        for key in 0..2 {
+            admission.discover(key, 0);
+            assert_eq!(admission.take(&binding), Some(key));
+        }
+        for key in 2..64 {
+            admission.discover(key, 1);
+        }
+        admission.retain_successors(&binding);
+        assert_eq!(admission.pending.len(), 2);
+        admission.finish(&1, binding(&1));
+        assert_eq!(admission.take(&binding), Some(3));
     }
 }
