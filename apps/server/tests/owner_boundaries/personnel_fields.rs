@@ -33,6 +33,7 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
             P::InventoryRead,
             P::GroupRead,
             P::GroupWrite,
+            P::GroupRecompute,
             P::Enrollment,
             P::InventorySensitiveRead,
             P::UserGroupRead,
@@ -113,7 +114,7 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
     .await?;
     assert_eq!(count, 1);
     let (agent, grant) = crate::device_material_support::seed_registration(&c).await?;
-    crate::device_material_support::authenticated_agent(
+    let (_, peer, certificate, trust) = crate::device_material_support::qualified_agent(
         &c,
         grant,
         &agent,
@@ -121,12 +122,6 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
     )
     .await
     .context("registered agent credential")?;
-    let (peer, certificate, _, trust) = crate::device_material_support::qualified_peer_material(
-        &c,
-        &agent,
-        rss_mdm_agent_wire::pki::Purpose::Agent,
-    )
-    .await?;
     let meta = peer.metadata();
     let mut tx = seed_transaction(&c).await?;
     sqlx::query(
@@ -136,8 +131,11 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
     .bind(serde_json::to_vec(&trust)?)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("INSERT INTO mdm_pki.certificates(tenant_id,purpose,fingerprint,issuer,serial,device,not_after,certificate,verification_version,verification_trust,verification_start,verification_end) SELECT tenant_id,purpose,sha256($2::bytea),encode($3,'hex'),encode($4,'hex'),$5,$6,$2,1,sha256(body),$7,$6 FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='agent'")
-        .bind(c.tenant.to_string()).bind(&certificate).bind(meta.issuer.as_slice()).bind(&meta.serial).bind(agent.into_uuid()).bind(meta.not_after).bind(meta.not_before).execute(&mut *tx).await?;
+    let issuer = trust.issuers.first().context("agent test issuer")?;
+    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'agent',$2,1,'active',$3,'step_ca',$4)")
+        .bind(c.tenant.to_string()).bind(&issuer.digest).bind(serde_json::to_vec(issuer)?).bind(meta.not_after).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_pki.certificates(tenant_id,purpose,fingerprint,issuer,serial,device,not_after,certificate,verification_version,verification_trust,verification_start,verification_end) SELECT tenant_id,purpose,sha256($2::bytea),encode($3,'hex'),$4,$5,$6,$2,1,sha256(body),$7,$6 FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='agent'")
+        .bind(c.tenant.to_string()).bind(&certificate).bind(meta.issuer.as_slice()).bind(rss_mdm_device_trust::serial(&meta.serial)).bind(agent.into_uuid()).bind(meta.not_after).bind(meta.not_before).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.current_users(tenant_id,device,revision,session_reference,confirmed_at) VALUES($1::uuid,$2,1,$3,extract(epoch FROM statement_timestamp())::bigint)")
         .bind(c.tenant.to_string()).bind(agent.into_uuid()).bind(serde_json::to_value(proof.session()?.reference()?)?).execute(&mut *tx).await?;
     sqlx::query("UPDATE mdm_access.user_groups SET document=jsonb_set(document,'{members}','[]'),revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")

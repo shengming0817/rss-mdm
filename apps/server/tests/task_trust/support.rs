@@ -131,7 +131,7 @@ pub async fn peer_material(
     Ok((peer, certificate, csr))
 }
 
-pub async fn qualified_peer_material(
+async fn qualified_peer_material(
     c: &Context,
     device: &rss_mdm_agent_wire::DeviceId,
     purpose: rss_mdm_agent_wire::pki::Purpose,
@@ -223,10 +223,24 @@ pub async fn authenticated_agent(
     device: &rss_mdm_agent_wire::DeviceId,
     capabilities: Vec<rss_mdm_agent_wire::runtime::Capability>,
 ) -> Result<rss_mdm_registration_service::DevicePrincipal> {
+    Ok(qualified_agent(c, grant, device, capabilities).await?.0)
+}
+
+pub async fn qualified_agent(
+    c: &Context,
+    grant: Uuid,
+    device: &rss_mdm_agent_wire::DeviceId,
+    capabilities: Vec<rss_mdm_agent_wire::runtime::Capability>,
+) -> Result<(
+    rss_mdm_registration_service::DevicePrincipal,
+    rss_mdm_device_trust::device_identity::VerifiedDevicePeer,
+    Vec<u8>,
+    rss_mdm_agent_wire::pki::Trust,
+)> {
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
-    let (peer, certificate, csr) =
-        peer_material(c, device, rss_mdm_agent_wire::pki::Purpose::Agent).await?;
+    let (peer, certificate, csr, trust) =
+        qualified_peer_material(c, device, rss_mdm_agent_wire::pki::Purpose::Agent).await?;
     let meta = peer.metadata();
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
     let credential = Uuid::new_v4();
@@ -310,5 +324,5 @@ pub async fn authenticated_agent(
     )
     .await?;
     tx.commit().await?;
-    Ok(principal)
+    Ok((principal, peer, certificate, trust))
 }
