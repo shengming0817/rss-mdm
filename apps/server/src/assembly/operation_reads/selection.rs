@@ -30,7 +30,6 @@ impl<'a> Scan<'a> {
         p: &AuthorizedPrincipal,
         grant: &Grant,
         query: &'a Query,
-        after: Option<Position>,
         limit: usize,
         stage: &'static str,
     ) -> Result<Self, Error> {
@@ -41,7 +40,7 @@ impl<'a> Scan<'a> {
         Ok(Self {
             scope,
             query,
-            after,
+            after: None,
             remaining: limit,
             limit,
             stage,
@@ -182,8 +181,8 @@ pub(super) async fn page(
     as_of: i64,
 ) -> Result<rss_mdm_query::Page<Value>, Error> {
     let (p, grant) = authority;
-    let after = q.after(codec, binding).map_err(query_error)?;
-    let mut scan = Scan::new(p, grant, q, after, s.budgets.page, "operations.sources")?;
+    let mut scan = Scan::new(p, grant, q, s.budgets.page, "operations.sources")?;
+    scan.after = q.after(codec, binding).map_err(query_error)?;
     let filtering = classified(q);
     let mut items = Vec::new();
     while items.len() <= q.limit() {
@@ -227,7 +226,7 @@ pub(super) async fn statistics(
     now: i64,
 ) -> Result<rss_mdm_query::Statistics<Statistics>, Error> {
     let stage = "operations.statistics.sources";
-    let mut scan = Scan::new(p, grant, q, None, s.budgets.statistics, stage)?;
+    let mut scan = Scan::new(p, grant, q, s.budgets.statistics, stage)?;
     let statistics = if !classified(q) {
         let mut sql = sqlx::QueryBuilder::new("");
         scan.scope.totals(&mut sql, s.budgets.statistics)?;

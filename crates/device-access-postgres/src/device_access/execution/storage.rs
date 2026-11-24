@@ -105,12 +105,17 @@ pub async fn agent_profile_in(
             }),
     )
 }
+/// All account-delivery identities, including the DA-targeted namespace omitted from MDM pages.
+pub const IDENTITY_RELATION: &str = "SELECT id FROM rss_da.access_runs WHERE tenant_id=$1::uuid";
+
 pub async fn owned_ids_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     ids: &[Uuid],
 ) -> std::result::Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar("SELECT id FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND id=ANY($2)")
+    sqlx::QueryBuilder::new(IDENTITY_RELATION)
+        .push(" AND id=ANY($2)")
+        .build_query_scalar()
         .bind(tenant.to_string())
         .bind(ids)
         .fetch_all(c)

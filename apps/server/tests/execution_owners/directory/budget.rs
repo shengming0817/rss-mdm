@@ -41,9 +41,7 @@ async fn http(
     ))
 }
 
-async fn plans(h: &Harness, device: Uuid, after: Uuid) -> Result<()> {
-    let query = SCHEMA.parse("limit=1")?;
-    let scope = Scope::new(h.c.tenant.to_string(), Some(vec![device]), &query);
+async fn plans(h: &Harness, device: Uuid, busy_device: Uuid, after: Uuid) -> Result<()> {
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("ANALYZE mdm_script.runs")
         .execute(&mut *tx)
@@ -54,15 +52,27 @@ async fn plans(h: &Harness, device: Uuid, after: Uuid) -> Result<()> {
     let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../artifacts/local-t2/operation-plans");
     std::fs::create_dir_all(&artifacts)?;
-    for label in ["first", "deep", "statistics"] {
+    for label in ["first", "deep", "statistics", "deadline", "wide-statistics"] {
+        let busy = matches!(label, "deadline" | "wide-statistics");
+        let query = SCHEMA.parse(if label == "deadline" {
+            "sort=deadline&limit=1"
+        } else {
+            "limit=1"
+        })?;
+        let scope = Scope::new(
+            h.c.tenant.to_string(),
+            Some(vec![if busy { busy_device } else { device }]),
+            &query,
+        );
         let mut sql = sqlx::QueryBuilder::new("EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) ");
         match label {
-            "first" => scope.page(&mut sql, None, 2)?,
+            "first" | "deadline" => scope.page(&mut sql, None, 2)?,
             "deep" => scope.page(
                 &mut sql,
                 Some(&Position(vec![json!(after), json!("action_run")])),
                 2,
             )?,
+            "wide-statistics" => scope.totals(&mut sql, 4096)?,
             _ => scope.totals(&mut sql, 4)?,
         }
         let plan: Value = sql.build_query_scalar().fetch_one(&mut *tx).await?;
@@ -85,11 +95,15 @@ async fn plans(h: &Harness, device: Uuid, after: Uuid) -> Result<()> {
             }
             nodes.extend(node["Plans"].as_array().into_iter().flatten());
         }
-        let expected = if label == "statistics" { 4 } else { 2 };
+        let expected = match label {
+            "statistics" => 4,
+            "wide-statistics" => 4096,
+            _ => 2,
+        };
         assert_eq!(selected, Some(expected), "{label} scoped probe");
         eprintln!("operations {label}: selected={expected} run table rows examined={script_rows}");
         assert!(
-            (1..128).contains(&script_rows),
+            script_rows > 0 && (busy || script_rows < 128),
             "{label} examined {script_rows} run rows with 4096 unrelated rows"
         );
     }
@@ -167,7 +181,7 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     let path = format!("/api/v1/tenants/{}/operations", h.c.tenant);
     let stats_path = format!("{path}/statistics");
     let matching = format!(
-        "id!={extra};(device=={},authorization.state==not_applicable)",
+        "id!={extra};((device=={};kind==command),authorization.state==not_applicable)",
         native.device
     );
     let filter = format!("id!={extra}");
@@ -198,6 +212,24 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
             json!({"total":3,"commands":1,"actionRuns":2,"unknown":0})
         );
     }
+    let classified_only = format!(
+        "id!={extra};(device=={},authorization.state==not_applicable)",
+        hidden.members[0].device
+    );
+    let (status, filtered) = http(
+        &router,
+        &path,
+        &[("filter", &classified_only), ("fields", "id")],
+    )
+    .await?;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(filtered["items"], json!([{"id":first},{"id":second}]));
+    let (status, filtered) = http(&router, &stats_path, &[("filter", &classified_only)]).await?;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(
+        filtered["statistics"],
+        json!({"total":2,"commands":0,"actionRuns":2,"unknown":0})
+    );
     // Unclassified lists stop at the first lookahead even if the eligible set is larger.
     assert_eq!(
         http(&router, &path, &[("limit", "1"), ("fields", "id")])
@@ -233,7 +265,13 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
         operations.directory(&request, &q, &codec, &audit).await,
         Err(Error::Unavailable(Failure::Capacity))
     ));
-    plans(h, native.device.into_uuid(), first).await?;
+    plans(
+        h,
+        native.device.into_uuid(),
+        hidden.members[0].device.into_uuid(),
+        first,
+    )
+    .await?;
 
     // A conflicting owner on a hidden device remains detectable even when the
     // query selects only commands, and even for an id-only response.

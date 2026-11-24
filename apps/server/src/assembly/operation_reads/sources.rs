@@ -15,6 +15,7 @@ pub(super) enum Owner {
 
 struct Source {
     relation: &'static str,
+    identities: Option<&'static str>,
     command: Option<Command>,
     run: Option<Run>,
 }
@@ -24,6 +25,7 @@ static COLLECTION: LazyLock<String> =
 static SOURCES: LazyLock<[Source; 11]> = LazyLock::new(|| {
     let source = |relation, command, run| Source {
         relation,
+        identities: None,
         command,
         run,
     };
@@ -49,11 +51,11 @@ static SOURCES: LazyLock<[Source; 11]> = LazyLock::new(|| {
             None,
             Some(Run::Registration),
         ),
-        source(
-            rss_mdm_device_access_postgres::device_access::execution::queries::RELATION_SQL,
-            None,
-            Some(Run::Access),
-        ),
+        Source {
+            identities: Some(rss_mdm_device_access_postgres::device_access::execution::storage::IDENTITY_RELATION),
+            ..source(rss_mdm_device_access_postgres::device_access::execution::queries::RELATION_SQL,
+                None, Some(Run::Access))
+        },
         source(
             rss_mdm_recovery_credentials::tasks::queries::RELATION_SQL,
             None,
@@ -172,7 +174,7 @@ impl<'a> Scope<'a> {
         sql.push(") merged");
         rss_mdm_query_postgres::order(sql, self.query, &*BINDINGS).map_err(query_error)?;
         sql.push(" LIMIT ").push_bind(size as i64).push(")");
-        ambiguity(sql);
+        ambiguity(sql, true);
         sql.push(" SELECT jsonb_build_object('id',id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status,'source',source,'inputBytes',input_bytes) AS document, EXISTS(SELECT FROM ambiguous) AS ambiguous FROM selected");
         rss_mdm_query_postgres::order(sql, self.query, &*BINDINGS).map_err(query_error)
     }
@@ -194,7 +196,7 @@ impl<'a> Scope<'a> {
         sql.push(") eligible LIMIT ")
             .push_bind(budget as i64 + 1)
             .push(")");
-        ambiguity(sql);
+        ambiguity(sql, false);
         sql.push(" SELECT count(*),count(*) FILTER(WHERE kind='command'),count(*) FILTER(WHERE kind='action_run'),count(*) FILTER(WHERE status='unknown'),CASE WHEN count(*)<=")
             .push_bind(budget as i64).push(" THEN EXISTS(SELECT FROM ambiguous) ELSE FALSE END FROM selected");
         Ok(())
@@ -203,15 +205,31 @@ impl<'a> Scope<'a> {
 
 // Membership uses only tenant + selected IDs. Never hide a conflicting owner behind
 // a different device, metadata predicate, seek position, or public projection.
-fn ambiguity(sql: &mut QueryBuilder<Postgres>) {
-    sql.push(",candidate_keys AS MATERIALIZED (SELECT array_agg(id) AS ids FROM selected),ambiguous AS (SELECT id FROM (");
-    for i in 0..SOURCES.len() {
+fn ambiguity(sql: &mut QueryBuilder<Postgres>, page: bool) {
+    if page {
+        // At most one key per candidate in a single bounded fetch.
+        sql.push(",candidate_keys AS MATERIALIZED (SELECT array_agg(id) AS ids FROM selected)");
+    }
+    sql.push(",ambiguous AS (SELECT memberships.id FROM (");
+    for (i, source) in SOURCES.iter().enumerate() {
         if i > 0 {
             sql.push(" UNION ALL ");
         }
-        sql.push("SELECT id FROM owner_")
-            .push(i)
-            .push(" WHERE id=ANY((SELECT ids FROM candidate_keys)::uuid[])");
+        sql.push("SELECT id FROM ");
+        if let Some(identities) = source.identities {
+            sql.push("(").push(identities).push(") owned");
+        } else {
+            sql.push("owner_").push(i);
+        }
+        if page {
+            sql.push(" WHERE id=ANY((SELECT ids FROM candidate_keys)::uuid[])");
+        }
     }
-    sql.push(") memberships GROUP BY id HAVING count(*)>1 LIMIT 1)");
+    sql.push(") memberships");
+    if !page {
+        // Let PostgreSQL join or spill large sets under work_mem. A single exact
+        // statistic can contain millions of candidates; never pack it into one array.
+        sql.push(" JOIN selected USING(id)");
+    }
+    sql.push(" GROUP BY memberships.id HAVING count(*)>1 LIMIT 1)");
 }
