@@ -161,8 +161,11 @@ async fn original_parent_receipt_and_member_progress() -> Result<()> {
     assert_eq!(row["operations"][0]["state"]["execution"], "not_started");
     let id = serde_json::from_value(row["id"].clone())?;
     let mut unknown: rss_mdm_task_state::RunState = serde_json::from_value(h.state(id).await?)?;
-    unknown.started_at = Some(at);
-    unknown.execution = rss_mdm_task_state::Execution::Unknown;
+    let attempt = Uuid::new_v4();
+    unknown.claim(attempt, at)?;
+    unknown.received(attempt, at)?;
+    unknown.start(attempt, at)?;
+    unknown.expire(unknown.deadline);
     unknown.cancel();
     let mut setup = command::seed_transaction(&h.c).await?;
     sqlx::query("UPDATE mdm_script.runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2")
@@ -179,6 +182,9 @@ async fn original_parent_receipt_and_member_progress() -> Result<()> {
     let native_device = object.members[0].device;
     let scope = planning::published(&h.c, &object).await?.scope;
     let mut setup = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,device,protocol_epoch,os_version,edition,session,observed_at)
+        SELECT tenant_id,id,epoch,'10.0.22631.0',4,1,extract(epoch from clock_timestamp())::bigint FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(h.c.tenant.to_string()).bind(native_device.into_uuid()).execute(&mut *setup).await?;
     sqlx::query("UPDATE mdm_policy.policies SET definition=definition || jsonb_build_object('scope',$3::uuid,'customEvent','native-event') WHERE tenant_id=$1::uuid AND id=$2")
         .bind(h.c.tenant.to_string()).bind(native_policy).bind(scope).execute(&mut *setup).await?;
     setup.commit().await?;

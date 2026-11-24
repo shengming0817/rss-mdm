@@ -1,7 +1,10 @@
 //! Static mappings for the foreign capabilities consumed by Policy.
 use rss_mdm_agent_wire::runtime as wire;
+use rss_mdm_device_access_postgres::device_access::execution::events as access_events;
+use rss_mdm_device_service::control::actions as device_actions;
 use rss_mdm_policy_service::events::participants::*;
 use rss_mdm_policy_service::{Error, Failure, inputs::*, transaction::Fault};
+use rss_mdm_recovery_credentials::tasks::events as credential_events;
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -105,17 +108,47 @@ impl OperationOwners for OperationReads {
                 })
                 .await?;
             use super::task_ownership::Owner;
-            match owner {
-                Owner::Device => rss_mdm_device_service::control::actions::event_parent_current_in(tx, device, id).await.map_err(Into::into),
-                Owner::Access => tx.with_connection(move |c| Box::pin(async move {
-                    rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c, &device, id).await
-                })).await.map_err(Into::into),
-                Owner::Software => self.members.software.event_parent_current_in(tx, device, id).await.map_err(Into::into),
-                Owner::Registration => self.members.enrollment.event_parent_current_in(tx, device, id).await.map_err(Into::into),
-                Owner::Credential(profile) => self.members.credentials(profile)?.event_parent_current_in(tx, device, id).await.map_err(Into::into),
-                Owner::Script => self.members.scripts.event_parent_current_in(tx, device, id).await.map_err(Into::into),
-                Owner::Collection => self.members.collections.event_parent_current_in(tx, device, id).await.map_err(Into::into),
-            }
+            Ok(match owner {
+                Owner::Device => device_actions::event_parent_current_in(tx, device, id).await?,
+                Owner::Access => {
+                    tx.with_connection(move |c| {
+                        Box::pin(
+                            async move { access_events::parent_current_on(c, &device, id).await },
+                        )
+                    })
+                    .await?
+                }
+                Owner::Software => {
+                    self.members
+                        .software
+                        .event_parent_current_in(tx, device, id)
+                        .await?
+                }
+                Owner::Registration => {
+                    self.members
+                        .enrollment
+                        .event_parent_current_in(tx, device, id)
+                        .await?
+                }
+                Owner::Credential(profile) => {
+                    self.members
+                        .credentials(profile)?
+                        .event_parent_current_in(tx, device, id)
+                        .await?
+                }
+                Owner::Script => {
+                    self.members
+                        .scripts
+                        .event_parent_current_in(tx, device, id)
+                        .await?
+                }
+                Owner::Collection => {
+                    self.members
+                        .collections
+                        .event_parent_current_in(tx, device, id)
+                        .await?
+                }
+            })
         })
     }
     fn policy_event_operation_in<'a>(
@@ -135,18 +168,30 @@ impl OperationOwners for OperationReads {
                         })
                         .await?;
                     let state = match owner {
-                        Owner::Script => self.members.scripts.event_progress_in(tx,id).await?,
-                        Owner::Collection => match self.members.collections.event_progress_in(tx,id).await? {
-                            EventProgress::Agent(state) => state,
-                            EventProgress::Native(state) => return Ok(EventOperationProgress::Collection {
-                                reference: reference.clone(), state, allowed_actions: [],
-                            }),
-                        },
-                        Owner::Credential(profile) => self.members.credentials(profile)?.event_progress_in(tx,id).await?,
-                        Owner::Registration => self.members.enrollment.event_progress_in(tx,id).await?,
-                        Owner::Software => self.members.software.run_progress_in(tx,id).await?,
-                        Owner::Device => rss_mdm_device_service::control::actions::event_progress_in(tx,id).await?,
-                        Owner::Access => rss_mdm_device_access_postgres::device_access::execution::events::event_progress_in(tx,id).await.map_err(access_fault)?,
+                        Owner::Script => self.members.scripts.event_progress_in(tx, id).await?,
+                        Owner::Collection => {
+                            match self.members.collections.event_progress_in(tx, id).await? {
+                                EventProgress::Agent(state) => state,
+                                EventProgress::Native(state) => {
+                                    return Ok(EventOperationProgress::Collection {
+                                        reference: reference.clone(),
+                                        state,
+                                        allowed_actions: [],
+                                    });
+                                }
+                            }
+                        }
+                        Owner::Credential(profile) => {
+                            credential_events::event_progress_in(profile, tx, id).await?
+                        }
+                        Owner::Registration => {
+                            self.members.enrollment.event_progress_in(tx, id).await?
+                        }
+                        Owner::Software => self.members.software.run_progress_in(tx, id).await?,
+                        Owner::Device => device_actions::event_progress_in(tx, id).await?,
+                        Owner::Access => access_events::event_progress_in(tx, id)
+                            .await
+                            .map_err(access_fault)?,
                     };
                     EventOperationProgress::Run {
                         reference: reference.clone(),

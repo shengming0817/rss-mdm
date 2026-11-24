@@ -1,4 +1,4 @@
-//! Execution-owned resource preparation inside the caller's original transaction.
+//! Software resource preparation inside the caller's original transaction.
 use crate::deployment::frozen::FrozenSoftwareAction;
 pub(crate) mod preview;
 mod publication;

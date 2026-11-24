@@ -133,3 +133,15 @@ pub(crate) fn device_ids(
 ) -> std::result::Result<Vec<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
     ids.into_iter().map(device_id).collect()
 }
+
+impl Transactions {
+    async fn notify_dependents_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        devices: &[rss_mdm_agent_wire::DeviceId],
+    ) -> Result<()> {
+        self.changes
+            .configuration_progressed_in(&self.reconcile_messaging, tx, devices)
+            .await
+    }
+}

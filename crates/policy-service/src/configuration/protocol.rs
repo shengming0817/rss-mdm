@@ -63,12 +63,7 @@ pub async fn settle_windows_in(
     let current = s.required_command(tx, &op).await?;
     if current.version() != command.version() {
         native_fact_in(s, tx, &op, current.status(), current.version(), audit).await?;
-        s.changes
-            .configuration_progressed_in(
-                &s.reconcile_messaging,
-                tx,
-                std::slice::from_ref(&op.device),
-            )
+        s.notify_dependents_in(tx, std::slice::from_ref(&op.device))
             .await?;
     }
     s.wake_devices_in(tx, std::slice::from_ref(&op.device))
@@ -111,12 +106,7 @@ pub async fn settle_dispatch_failures(
         .with_details(json!({"operation":id,"failure":op.dispatch_failure}))?;
         service.audit_store.append_in(tx, &fact).await?;
         service
-            .changes
-            .configuration_progressed_in(
-                &s.reconcile_messaging,
-                tx,
-                std::slice::from_ref(&op.device),
-            )
+            .notify_dependents_in(tx, std::slice::from_ref(&op.device))
             .await?;
         service
             .wake_devices_in(tx, std::slice::from_ref(&op.device))

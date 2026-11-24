@@ -106,15 +106,11 @@ impl crate::tasks::Transactions {
             && run.state.started_at.is_some())
     }
 }
-impl super::Transactions {
-    pub async fn event_progress_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-    ) -> super::Result<rss_mdm_task_state::RunState> {
-        self.validate_in(tx)?;
-        Ok(super::storage::read_run(self.profile(), tx, id)
-            .await?
-            .state)
-    }
+/// Historical progress stays readable when the product has disabled new credential tasks.
+pub async fn event_progress_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> super::Result<rss_mdm_task_state::RunState> {
+    Ok(super::storage::read_run(profile, tx, id).await?.state)
 }
