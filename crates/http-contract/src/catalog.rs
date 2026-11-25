@@ -42,7 +42,7 @@ pub static AGENT_CONFIGURATION_OPERATIONS: Resource = Resource {
 };
 pub static AGENT_CONNECTIONS: Resource = Resource {
     id: "agent_connections",
-    category: Category::Singleton,
+    category: Category::ReadModel,
     owner: "management-http",
     proof: "agent.configurations",
     query: QueryPolicy::NotCollection,
