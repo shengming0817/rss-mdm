@@ -192,7 +192,7 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
     Ok(saved.receipt)
 }
 async fn apply(input: &Input, runtime: &Value) -> Result<bool> {
-    match runtime_files::apply(&input.directory, &input.deployment, runtime).await {
+    match runtime_files::apply(&input.directory, &input.deployment, runtime, None).await {
         Ok(_) => Ok(true),
         Err(Error::Storage | Error::Conflict) => Ok(false),
         Err(error) => Err(error),

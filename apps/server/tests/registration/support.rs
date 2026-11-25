@@ -286,10 +286,6 @@ pub(super) async fn install_policy(c: &Context, n: &Native) -> Result<(Package, 
     tx.commit().await?;
     Ok((package, policy, version, command_device))
 }
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "legal prior installation facts use one fixture transaction and real protected protocol bytes"
-)]
 pub async fn installation(
     c: &Context,
     n: &Native,

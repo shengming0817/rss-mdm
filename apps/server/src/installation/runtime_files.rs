@@ -171,7 +171,7 @@ pub async fn observe_installation(input: super::install::Input) -> Result<Applie
     }
     let runtime = requested(&root)?;
     if runtime.pointer("/agent_pki/mode").and_then(Value::as_str) == Some("disabled") {
-        return observe_runtime(&input.directory, &runtime).await;
+        return observe_runtime(&input.directory, &runtime, None).await;
     }
     let mut c = sqlx::PgConnection::connect_with(
         &input
@@ -189,9 +189,7 @@ pub async fn observe_installation(input: super::install::Input) -> Result<Applie
     if !locked {
         return Err(Error::Busy);
     }
-    let applied = observe_runtime(&input.directory, &runtime).await?;
-    apply_agent_origins(&mut c, &runtime).await?;
-    Ok(applied)
+    observe_runtime(&input.directory, &runtime, Some(&mut c)).await
 }
 /// A completed deployment updates previously issued connections. Empty tenants get their first
 /// signature during enrollment. Re-observing unchanged addresses creates no signed version.
@@ -448,11 +446,20 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
     Ok(())
 }
 /// Publish files and observe an already running host. Pending until operations restarts it.
-pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result<Applied> {
+pub async fn apply(
+    directory: &Path,
+    config: &Config,
+    runtime: &Value,
+    operator: Option<&mut sqlx::PgConnection>,
+) -> Result<Applied> {
     prepare(directory, config, runtime).await?;
-    observe_runtime(directory, runtime).await
+    observe_runtime(directory, runtime, operator).await
 }
-async fn observe_runtime(directory: &Path, runtime: &Value) -> Result<Applied> {
+async fn observe_runtime(
+    directory: &Path,
+    runtime: &Value,
+    operator: Option<&mut sqlx::PgConnection>,
+) -> Result<Applied> {
     let decoded: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
     let owner = Journal::open(&directory.join(format!(
@@ -515,6 +522,9 @@ async fn observe_runtime(directory: &Path, runtime: &Value) -> Result<Applied> {
         }
     }
     let applied = observed.ok_or(Error::Corrupt)?;
+    if let Some(operator) = operator {
+        apply_agent_origins(operator, runtime).await?;
+    }
     owner.save(
         "applied.json",
         &Deployment {
