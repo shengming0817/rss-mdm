@@ -34,20 +34,23 @@ pub(super) async fn cold_command() -> Result<()> {
         anyhow::bail!("expected one native installation")
     };
     fixture.close().await?;
-    let changed = command::Prepared::open(&c, |config| {
-        config["agent_pki"] =
-            json!({"mode":"step_ca","endpoint":{"origin":connections::REMAINING}});
-    })
-    .await?;
     let changed_pki = support::pki(&c, &n, &materials, connections::REMAINING, &[]).await?;
-    changed.channels.installation(changed_pki)?;
-    assert_frozen(&c, &changed, *id).await?;
-    changed.close().await?;
+    assert_frozen_after_restart(&c, changed_pki, *id).await?;
     c.close().await;
     Ok(())
 }
 
-async fn assert_frozen(c: &Context, host: &command::Prepared, id: Uuid) -> Result<()> {
+async fn assert_frozen_after_restart(
+    c: &Context,
+    pki: Arc<crate::agent_pki::AgentPki>,
+    id: Uuid,
+) -> Result<()> {
+    let host = command::Prepared::open(c, |config| {
+        config["agent_pki"] =
+            json!({"mode":"step_ca","endpoint":{"origin":connections::REMAINING}});
+    })
+    .await?;
+    host.channels.installation(pki)?;
     let op = owner::transaction::inspect(
         &host.storage.runtime,
         c.execution(),
@@ -70,5 +73,5 @@ async fn assert_frozen(c: &Context, host: &command::Prepared, id: Uuid) -> Resul
     );
     let origin:String=sqlx::query_scalar("SELECT download_origin FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
     assert_eq!(origin, PRIMARY);
-    Ok(())
+    host.close().await
 }

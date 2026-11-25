@@ -20,16 +20,39 @@ pub(super) async fn issue_and_replay(
     let state = service.connection_state(&proof).await?;
     verify(&file, &state)?;
 
-    let other = fresh_tenant(&service).await?;
+    verify_tenant_address_change(
+        c,
+        &service,
+        &changed_host,
+        &proof,
+        &file.configuration.connections,
+    )
+    .await?;
+
+    let create = serde_json::from_value(input)?;
+    let replay = changed_host
+        .create_configuration(&proof, &create, &c.request(&proof)?)
+        .await?;
+    assert_eq!(serde_json::to_vec(&file)?, serde_json::to_vec(&replay)?);
+    Ok(())
+}
+
+async fn verify_tenant_address_change(
+    c: &Context,
+    service: &agent::Service,
+    changed_host: &agent::Service,
+    proof: &Principal,
+    initial: &Signed,
+) -> Result<()> {
+    let other = fresh_tenant(service).await?;
     let admin = editor(&other).await?;
-    let other_configuration = concurrent_files(&other, &service, &admin).await?;
+    let other_configuration = concurrent_files(&other, service, &admin).await?;
     assert_eq!(other_configuration.configuration.revision, 1);
-    let initial = &file.configuration.connections;
     assert_eq!(
         changed_host.connection_configuration(c.execution()).await?,
         *initial
     );
-    let updated = concurrent_files(c, &changed_host, &proof).await?;
+    let updated = concurrent_files(c, changed_host, proof).await?;
     updated
         .configuration
         .validate_successor(&initial.configuration)?;
@@ -46,11 +69,6 @@ pub(super) async fn issue_and_replay(
         other_configuration
     );
 
-    let create = serde_json::from_value(input)?;
-    let replay = changed_host
-        .create_configuration(&proof, &create, &c.request(&proof)?)
-        .await?;
-    assert_eq!(serde_json::to_vec(&file)?, serde_json::to_vec(&replay)?);
     other.close().await;
     Ok(())
 }
