@@ -1,6 +1,9 @@
 use super::*;
-use rss_mdm_authorization_service::Permission;
+use rss_mdm_agent_wire::connections::SignedConfiguration as Signed;
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal as Principal};
+use rss_mdm_management_http::agent_enrollment::{App, routes};
 use rss_mdm_registration_service::agent::connections;
+use tower::ServiceExt;
 
 pub(super) const PRIMARY: &str = "https://localhost:9445";
 const REMAINING: &str = "https://localhost";
@@ -28,8 +31,29 @@ pub(super) async fn first_install_and_rotation(
     c: &Context,
     service: Arc<agent::Service>,
 ) -> Result<()> {
-    // The native command role resolves a locator before any tenant signing material exists.
     assert_eq!(installation_origin(c).await?, PRIMARY);
+    recovery_before_issuance(c, service.clone()).await?;
+    let proof = editor(c).await?;
+    let input = create_input();
+    let file = download(c, &proof, &input, service.clone()).await?;
+    let state = service.connection_state(&proof).await?;
+    verify(&file, &state)?;
+    rotate(c, &service, &proof, &file.configuration.connections).await?;
+    // Replaying the original operation after rotation still returns the original bytes.
+    let create = serde_json::from_value(input)?;
+    let replay = service
+        .create_configuration(&proof, &create, &c.request(&proof)?)
+        .await?;
+    assert!(serde_json::to_vec(&file)? == serde_json::to_vec(&replay)?);
+    draft_before_issuance(&service).await
+}
+
+fn create_input() -> Value {
+    json!({"operationId":Uuid::new_v4(), "secret":URL_SAFE_NO_PAD.encode([13;32]),
+        "quantity":{"kind":"unlimited"}, "targets":[{"platform":"windows","architecture":"x86_64"}]})
+}
+
+async fn editor(c: &Context) -> Result<Arc<Principal>> {
     let account = c
         .account(&[
             Permission::AgentEnrollmentWrite,
@@ -37,9 +61,10 @@ pub(super) async fn first_install_and_rotation(
             Permission::RegistrationConfigurationWrite,
         ])
         .await?;
-    let proof = Arc::new(c.authenticate(&account).await?);
-    use rss_mdm_management_http::agent_enrollment::{App, routes};
-    use tower::ServiceExt;
+    Ok(Arc::new(c.authenticate(&account).await?))
+}
+
+async fn recovery_before_issuance(c: &Context, service: Arc<agent::Service>) -> Result<()> {
     let read = c
         .account(&[Permission::RegistrationConfigurationRead])
         .await?;
@@ -60,37 +85,58 @@ pub(super) async fn first_install_and_rotation(
     assert_eq!(recovery.oneshot(request).await?.status(), 409);
     let untouched = service.connection_state(&reader).await?;
     assert!(untouched.published.is_none() && untouched.verification_keys.is_empty());
-    let input = json!({
-        "operationId": Uuid::new_v4(), "secret": URL_SAFE_NO_PAD.encode([13;32]),
-        "quantity": {"kind": "unlimited"}, "targets": [{"platform":"windows","architecture":"x86_64"}]
-    });
-    let post = |app: App| -> Result<_> {
-        let router = axum::Router::new()
-            .nest("/{tenant}", routes(app).into_axum())
-            .layer(axum::Extension(c.read_auth(proof.clone())))
-            .layer(axum::Extension(c.request(&proof)?));
-        let request = axum::http::Request::post(format!("/{}/agent-configurations", c.tenant))
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_vec(&input)?))?;
-        Ok(router.oneshot(request))
-    };
+    Ok(())
+}
+
+async fn post(
+    c: &Context,
+    proof: &Arc<Principal>,
+    input: &Value,
+    app: App,
+) -> Result<axum::response::Response> {
+    let router = axum::Router::new()
+        .nest("/{tenant}", routes(app).into_axum())
+        .layer(axum::Extension(c.read_auth(proof.clone())))
+        .layer(axum::Extension(c.request(proof)?));
+    let request = axum::http::Request::post(format!("/{}/agent-configurations", c.tenant))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(serde_json::to_vec(input)?))?;
+    Ok(router.oneshot(request).await?)
+}
+
+async fn download(
+    c: &Context,
+    proof: &Arc<Principal>,
+    input: &Value,
+    service: Arc<agent::Service>,
+) -> Result<wire::configuration::ConfigurationFile> {
     for (endpoint_configured, status, code) in [
         (false, 409, "agent_endpoint_not_configured"),
         (true, 503, "service_unavailable"),
     ] {
-        let response = post(App {
-            registration: None,
-            endpoint_configured,
-        })?
+        let response = post(
+            c,
+            proof,
+            input,
+            App {
+                registration: None,
+                endpoint_configured,
+            },
+        )
         .await?;
         assert_eq!(response.status().as_u16(), status);
         let error = axum::body::to_bytes(response.into_body(), 4096).await?;
         assert_eq!(serde_json::from_slice::<Value>(&error)?["code"], code);
     }
-    let response = post(App {
-        registration: Some(service.clone()),
-        endpoint_configured: true,
-    })?
+    let response = post(
+        c,
+        proof,
+        input,
+        App {
+            registration: Some(service),
+            endpoint_configured: true,
+        },
+    )
     .await?;
     assert_eq!(response.status(), 200);
     assert_eq!(
@@ -99,8 +145,11 @@ pub(super) async fn first_install_and_rotation(
     );
     let file: wire::configuration::ConfigurationFile =
         serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 65536).await?)?;
+    Ok(file)
+}
+
+fn verify(file: &wire::configuration::ConfigurationFile, state: &connections::State) -> Result<()> {
     let initial = &file.configuration.connections;
-    let state = service.connection_state(&proof).await?;
     assert!(state.draft.is_none() && state.deployments.is_empty());
     assert_eq!(state.published.as_ref(), Some(initial));
     assert_eq!(initial.configuration.preferred_origin, PRIMARY);
@@ -119,6 +168,15 @@ pub(super) async fn first_install_and_rotation(
         key.verify(&bytes, &URL_SAFE_NO_PAD.decode(signature)?)
             .map_err(|_| anyhow::anyhow!("invalid installed configuration signature"))?;
     }
+    Ok(())
+}
+
+async fn rotate(
+    c: &Context,
+    service: &agent::Service,
+    proof: &Principal,
+    initial: &Signed,
+) -> Result<()> {
     let rotate = connections::Save {
         operation_id: Uuid::new_v4(),
         expected_revision: initial.configuration.revision,
@@ -126,7 +184,7 @@ pub(super) async fn first_install_and_rotation(
         origins: vec![REMAINING.into()],
     };
     let draft = service
-        .save_connections(&proof, &rotate, &c.request(&proof)?)
+        .save_connections(proof, &rotate, &c.request(proof)?)
         .await?;
     let publish = connections::Publish {
         operation_id: Uuid::new_v4(),
@@ -145,33 +203,27 @@ pub(super) async fn first_install_and_rotation(
     .await?;
     observation.commit().await?;
     let rotated = service
-        .publish_connections(&proof, &publish, &c.request(&proof)?)
+        .publish_connections(proof, &publish, &c.request(proof)?)
         .await?;
     rotated
         .configuration
         .validate_successor(&initial.configuration)?;
     assert!(rotated.configuration.revision > initial.configuration.revision);
     assert_eq!(installation_origin(c).await?, REMAINING);
-    // Idempotent delivery retains the exact original file even after a change of address.
-    let create = serde_json::from_value(input)?;
-    let replay = service
-        .create_configuration(&proof, &create, &c.request(&proof)?)
-        .await?;
-    assert!(serde_json::to_vec(&file)? == serde_json::to_vec(&replay)?);
-    draft_before_issuance(&service).await?;
     Ok(())
 }
 
-async fn draft_before_issuance(service: &agent::Service) -> Result<()> {
+async fn fresh_tenant(service: &agent::Service) -> Result<Context> {
     let c = Context::open("shared", &[]).await?;
-    let account = c
-        .account(&[
-            Permission::RegistrationConfigurationWrite,
-            Permission::RegistrationConfigurationRead,
-            Permission::AgentEnrollmentWrite,
-        ])
-        .await?;
-    let proof = c.authenticate(&account).await?;
+    let mut setup = command::seed_transaction(&c).await?;
+    agent::settings::initialize_on(service.profile(), &mut setup, &c.tenant.to_string()).await?;
+    setup.commit().await?;
+    Ok(c)
+}
+
+async fn draft_before_issuance(service: &agent::Service) -> Result<()> {
+    let c = fresh_tenant(service).await?;
+    let proof = editor(&c).await?;
     let save = connections::Save {
         operation_id: Uuid::new_v4(),
         expected_revision: 0,
@@ -183,21 +235,7 @@ async fn draft_before_issuance(service: &agent::Service) -> Result<()> {
         .await?;
     assert_eq!(draft.configuration.revision, 1);
     assert!(service.connection_state(&proof).await?.published.is_none());
-    let input = || {
-        serde_json::from_value::<agent::configurations::Create>(json!({
-            "operationId": Uuid::new_v4(), "secret": URL_SAFE_NO_PAD.encode([11;32]),
-            "quantity":{"kind":"unlimited"}, "targets":[{"platform":"windows","architecture":"x86_64"}]
-        }))
-    };
-    let (first, other) = (input()?, input()?);
-    let first_audit = c.request(&proof)?;
-    let other_audit = c.request(&proof)?;
-    let (first, other) = tokio::try_join!(
-        service.create_configuration(&proof, &first, &first_audit),
-        service.create_configuration(&proof, &other, &other_audit)
-    )?;
-    let active = first.configuration.connections;
-    assert_eq!(active, other.configuration.connections);
+    let active = concurrent_files(&c, service, &proof).await?;
     assert_eq!(active.configuration.revision, 2);
     assert_eq!(active.configuration.preferred_origin, PRIMARY);
     assert!(service.connection_state(&proof).await?.draft.is_none());
@@ -216,4 +254,22 @@ async fn draft_before_issuance(service: &agent::Service) -> Result<()> {
     );
     c.close().await;
     Ok(())
+}
+
+async fn concurrent_files(
+    c: &Context,
+    service: &agent::Service,
+    proof: &Principal,
+) -> Result<Signed> {
+    let first = serde_json::from_value(create_input())?;
+    let other = serde_json::from_value(create_input())?;
+    let first_audit = c.request(proof)?;
+    let other_audit = c.request(proof)?;
+    let (first, other) = tokio::try_join!(
+        service.create_configuration(proof, &first, &first_audit),
+        service.create_configuration(proof, &other, &other_audit)
+    )?;
+    let active = first.configuration.connections;
+    assert_eq!(active, other.configuration.connections);
+    Ok(active)
 }
