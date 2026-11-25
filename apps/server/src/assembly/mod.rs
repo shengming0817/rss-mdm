@@ -473,6 +473,7 @@ pub(crate) async fn from_compiled(
         runtime_observation: crate::installation::host::Observation::new(
             &config.runtime_binding,
             identity.instance.to_string(),
+            agent_enrollment.is_some(),
             config
                 .telemetry
                 .iter()

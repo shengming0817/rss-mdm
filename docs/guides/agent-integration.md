@@ -14,8 +14,6 @@
 
 1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交安装材料指定的 tenantId、稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/tenants/{tenant}/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
 2. 管理员调用 `POST /api/v1/tenants/{tenant}/agent-configurations` 创建一个完整签名 JSON 文件。首次签发直接使用已启用的 `agent_pki.endpoint.origin` 和附加入口，服务器自动准备租户签名密钥与初始连接版本。未配置 Agent 对外地址时，接口返回 `409 agent_endpoint_not_configured`。创建时必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/tenants/{tenant}/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/tenants/{tenant}/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
-
-首次签发会保留此前保存的换址草稿。草稿和部署观察使用保存时的 revision，发布请求使用该草稿 revision，响应返回设备实际使用的签名版本。成功发布后待发布草稿为空。
 3. 原生 MDM 安装使用专用短期引导证书，经 Nginx Agent 公开入口调用 `POST /api/v1/agent/enroll/native-grants`。提交 installationOperation、operationId、secret、独立日常密钥的 CSR 和 runtime；服务端从引导证书记录恢复来源注册、安装和 release，复查当前授权后返回 grant。Windows / Apple 原生协议路由不挂载此入口，MDM 日常证书不能交换授权。
 
 管理员配置使用配置自身的租户额度，默认责任人为 null；创建者仅作为审计身份，不占用其普通用户 20 台额度，也不构成终端 ownership。每台设备独立生成私钥、CSR、operation 和 grant secret，调用 `POST /api/v1/agent/enroll/configurations/exchange`，提交完整 file、runtime 和 installation（releaseId）。同一 operation 的精确重试只返回原授权；同一配置下换 operation 重用 CSR 公钥被拒绝。`POST .../configurations/status` 使用原 configurationId、operationId 和独立设备 secret 查回授权，不重新分配。
@@ -167,7 +165,7 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 服务身份固定为安装 `instance_id` 与 tenant，网络地址可变。注册文件包含当前 `connections::SignedConfiguration`；设备安装材料通过受保护的交付绑定该身份、配置验证公钥与 HTTPS CA。配置签名根归注册 owner 持有，复用原 Ed25519 与 Native 密文保护设施，独立于任务密钥轮换。
 
-公开地址由运维在宿主通道配置中维护。`GET /api/v1/tenants/{tenant}/registration-channels` 展示该宿主的公开入口，`GET /api/v1/tenants/{tenant}/agent-connections` 展示租户已签发的连接配置、验证公钥及设备确认数量。首签从已启用的入口生成。运维完成地址变更后，服务端为已经签发配置的租户更新签名版本。相同地址和首选项沿用原版本。
+公开地址由运维在宿主通道配置中维护。`GET /api/v1/tenants/{tenant}/registration-channels` 展示该宿主的公开入口，`GET /api/v1/tenants/{tenant}/agent-connections` 展示租户已签发的连接配置、验证公钥及设备确认数量。首签从已启用的入口生成。宿主应用配置且已挂载 Agent 路由时，服务端为已有签名配置的租户更新地址。路由未挂载时保留原签名配置，相同地址和首选项沿用原版本。
 
 设备通过已认证的 `GET /api/v1/agent/enroll/connections` 获取签名配置，使用已安装公钥验签，拒绝跨服务/租户、回滚、同 revision 异内容或非规范 origin，原子保存并读回后才使用。`POST .../connections/acknowledgements` 绑定 deviceId、revision、摘要与真实网关 origin；`POST .../connections/failures` 只记录闭合失败原因，不改变已安装 revision 或授权。管理端通过设备 observation 和带 target revision 的 `/agent-connections/devices` 分页分别读取实际 ACK、失败与未确认设备。
 

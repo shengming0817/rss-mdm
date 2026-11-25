@@ -31,6 +31,7 @@ pub(crate) struct Observation {
     #[serde(flatten)]
     binding: PublicBinding,
     unavailable_telemetry: Vec<Uuid>,
+    agent_mounted: bool,
     process_generation: Uuid,
     instance_id: String,
 }
@@ -46,6 +47,7 @@ impl Observation {
     pub(crate) fn new(
         binding: &Binding,
         instance: String,
+        agent_mounted: bool,
         unavailable_telemetry: Vec<Uuid>,
     ) -> Self {
         Self {
@@ -56,6 +58,7 @@ impl Observation {
                 material_digest: binding.material_digest.clone(),
             },
             unavailable_telemetry,
+            agent_mounted,
             process_generation: Uuid::new_v4(),
             instance_id: instance,
         }

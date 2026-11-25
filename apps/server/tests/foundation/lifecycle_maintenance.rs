@@ -229,10 +229,16 @@ pub(super) async fn exercise(
     );
     let original = desired(root, first.host_id)?;
     let mut running = Running::open(&original).await?;
-    // A real configuration operation changes the full input/binding before key rotation.
+    // A pending channel change can be carried by a later, unrelated configure-host operation.
+    let channels = json!({"installation":source,"operation_id":Uuid::new_v4(),"tenant":first.tenant_id,
+        "expected_revision":original["runtime_binding"]["revision"],"change":{"kind":"channels","settings":{
+        "windows":null,"apple":null,"agent":{"mode":"step_ca","endpoint":{"origin":"https://mdm.example.test:8443"}},
+        "apple_material_roots":[]}}});
+    let channel_change = configure::run(serde_json::from_value(channels)?).await?;
+    ensure!(channel_change.deployment_required && channel_change.applied.is_none());
     let operation = Uuid::new_v4();
     let change = json!({"installation":source,"operation_id":operation,"tenant":null,
-        "expected_revision":original["runtime_binding"]["revision"],"change":{"kind":"enrollment_entries","settings":{"windows":null,"macos":"https://mdm.example.test/enroll"}}});
+        "expected_revision":channel_change.requested_revision,"change":{"kind":"enrollment_entries","settings":{"windows":null,"macos":"https://mdm.example.test/enroll"}}});
     let pending = configure::run(serde_json::from_value(change.clone())?).await?;
     ensure!(
         pending.deployment_required && pending.applied.is_none(),
@@ -246,8 +252,8 @@ pub(super) async fn exercise(
     running = Running::open(&desired(root, first.host_id)?).await?;
     let applied = configure::run(serde_json::from_value(change)?).await?;
     ensure!(
-        applied.applied.is_some(),
-        "configuration observed through actual App"
+        applied.applied.is_some_and(|host| host.agent_mounted),
+        "the completed configuration reports the mounted Agent route"
     );
     let configured = desired(root, first.host_id)?;
     ensure!(

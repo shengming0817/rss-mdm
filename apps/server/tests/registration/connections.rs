@@ -174,8 +174,39 @@ async fn rotate(
     runtime["agent_pki"] = json!({"mode":"step_ca","endpoint":{"origin":REMAINING}});
     let pool = c.inputs.pool("shared", "mdm_owner").await?;
     let mut operator = pool.acquire().await?;
-    for _ in 0..2 {
-        crate::installation::runtime_files::apply_agent_origins(&mut operator, &runtime).await?;
+    let config: crate::config::Config = serde_json::from_value(runtime.clone())?;
+    let binding = &config.runtime_binding;
+    let directory = tempfile::tempdir()?;
+    let journal = rss_mdm_install_support::maintenance::journal::Journal::open(
+        &directory.path().canonicalize()?,
+    )?;
+    for agent_mounted in [false, true, true] {
+        let observed = crate::installation::host::Observation::new(
+            binding,
+            config.identity.instance_id.clone(),
+            agent_mounted,
+            vec![],
+        );
+        let applied = serde_json::from_value(serde_json::to_value(observed)?)?;
+        crate::installation::runtime_files::complete_observation(
+            &journal,
+            &config,
+            &runtime,
+            applied,
+            Some(&mut operator),
+        )
+        .await?;
+        if !agent_mounted {
+            let current = service
+                .connection_state(proof)
+                .await?
+                .configuration
+                .unwrap();
+            assert_eq!(
+                current.configuration.revision,
+                initial.configuration.revision
+            );
+        }
     }
     drop(operator);
     pool.close().await;

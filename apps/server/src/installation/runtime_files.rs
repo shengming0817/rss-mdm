@@ -116,6 +116,7 @@ pub struct Applied {
     pub revision: u64,
     pub material_digest: String,
     pub unavailable_telemetry: Vec<uuid::Uuid>,
+    pub agent_mounted: bool,
     pub process_generation: uuid::Uuid,
     pub instance_id: String,
 }
@@ -193,9 +194,10 @@ pub async fn observe_installation(input: super::install::Input) -> Result<Applie
 }
 /// A completed deployment updates previously issued connections. Empty tenants get their first
 /// signature during enrollment. Re-observing unchanged addresses creates no signed version.
-pub(crate) async fn apply_agent_origins(c: &mut sqlx::PgConnection, runtime: &Value) -> Result<()> {
-    let config: crate::config::Config =
-        serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
+async fn apply_agent_origins(
+    c: &mut sqlx::PgConnection,
+    config: &crate::config::Config,
+) -> Result<()> {
     let Some(origins) = config
         .agent_pki
         .installed_origins()
@@ -450,10 +452,10 @@ pub async fn apply(
     directory: &Path,
     config: &Config,
     runtime: &Value,
-    operator: Option<&mut sqlx::PgConnection>,
+    operator: &mut sqlx::PgConnection,
 ) -> Result<Applied> {
     prepare(directory, config, runtime).await?;
-    observe_runtime(directory, runtime, operator).await
+    observe_runtime(directory, runtime, Some(operator)).await
 }
 async fn observe_runtime(
     directory: &Path,
@@ -522,8 +524,17 @@ async fn observe_runtime(
         }
     }
     let applied = observed.ok_or(Error::Corrupt)?;
-    if let Some(operator) = operator {
-        apply_agent_origins(operator, runtime).await?;
+    complete_observation(&owner, &decoded, runtime, applied, operator).await
+}
+pub(crate) async fn complete_observation(
+    owner: &Journal,
+    config: &crate::config::Config,
+    runtime: &Value,
+    applied: Applied,
+    operator: Option<&mut sqlx::PgConnection>,
+) -> Result<Applied> {
+    if applied.agent_mounted {
+        apply_agent_origins(operator.ok_or(Error::Corrupt)?, config).await?;
     }
     owner.save(
         "applied.json",

@@ -713,13 +713,8 @@ pub async fn run(request: Request) -> Result<Receipt> {
     host.save("requested-runtime.json", &candidate)?;
     publish_gateway(&journal, &host)?;
     drop(host);
-    let outcome = super::runtime_files::apply(
-        &input.directory,
-        &input.deployment,
-        &candidate,
-        matches!(request.change, Change::Channels { .. }).then_some(&mut c),
-    )
-    .await;
+    let outcome =
+        super::runtime_files::apply(&input.directory, &input.deployment, &candidate, &mut c).await;
     match outcome {
         Ok(observed)
             if observed.host_id == result.host_id
