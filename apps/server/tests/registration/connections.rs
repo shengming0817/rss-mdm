@@ -178,7 +178,7 @@ async fn rotate(
     let binding = &config.runtime_binding;
     let directory = tempfile::tempdir()?;
     let journal = rss_mdm_install_support::maintenance::journal::Journal::open(
-        &directory.path().canonicalize()?,
+        &directory.path().canonicalize()?.join("host"),
     )?;
     for agent_mounted in [false, true, true] {
         let observed = crate::installation::host::Observation::new(
