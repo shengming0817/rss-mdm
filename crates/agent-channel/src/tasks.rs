@@ -353,8 +353,7 @@ async fn installation_package(
         .await
         .map_err(task_error)?;
     app.enrollment
-        .require_connection_origin(audit.binding().map_err(Error::from)?, &origin)
-        .await
+        .require_connection_origin(&origin)
         .map_err(|e| crate::AgentError::Enrollment(e.code))?;
     crate::content::response(content, &headers)
         .await

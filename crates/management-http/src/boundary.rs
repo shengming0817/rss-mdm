@@ -471,10 +471,6 @@ fn route_action(route: &str) -> &'static str {
     match route {
         "/api/v1/tenants/{tenant}/agent-connections"
         | "/api/v1/tenants/{tenant}/agent-connections/configuration" => "agent_connections_read",
-        "/api/v1/tenants/{tenant}/agent-connections/publish" => "agent_connections_publish",
-        "/api/v1/tenants/{tenant}/agent-connection-operations/{id}" => {
-            "agent_connections_operation_read"
-        }
         "/api/v1/tenants/{tenant}/agent-connections/devices"
         | "/api/v1/tenants/{tenant}/agent-connections/devices/{device}/observation" => {
             "agent_connections_devices_read"

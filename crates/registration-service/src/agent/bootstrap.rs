@@ -107,8 +107,7 @@ impl Service {
         audit
             .bind_scope(execution)
             .map_err(|_| Error::Unauthorized)?;
-        self.require_connection_origin(audit.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         let active = config
             .trust
             .public()
@@ -268,8 +267,7 @@ impl Service {
         audit
             .bind_scope(execution)
             .map_err(|_| Error::Unauthorized)?;
-        self.require_connection_origin(audit.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         let fingerprint: Vec<u8> = Sha256::digest(&der).to_vec();
         let spki = Sha256::digest(
             leaf.tbs_certificate
@@ -391,8 +389,7 @@ impl Service {
         audit
             .bind_scope(execution)
             .map_err(|_| Error::Unauthorized)?;
-        self.require_connection_origin(audit.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         if installation != input.installation_operation {
             return Err(Error::Forbidden.into());
         }

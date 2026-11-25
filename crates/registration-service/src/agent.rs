@@ -82,14 +82,6 @@ pub trait RuntimeBinding: Send + Sync {
 }
 /// The installation owner rechecks the exact frozen native installation authority.
 pub trait NativeAdmission: Send + Sync {
-    /// Active installs that reuse an Agent identity have no registration bootstrap.
-    fn pending_repairs_outside<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: &'a str,
-        remaining: &'a [String],
-    ) -> Pending<'a, i64>;
-
     fn bootstrap<'a>(
         &'a self,
         c: &'a mut PgConnection,

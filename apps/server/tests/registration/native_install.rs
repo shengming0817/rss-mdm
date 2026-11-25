@@ -34,14 +34,6 @@ pub(super) async fn cold_command() -> Result<()> {
         anyhow::bail!("expected one native installation")
     };
     assert_frozen(&c, &fixture, *id).await?;
-    let changed = support::pki(&c, &n, &materials, "https://localhost", &[]).await?;
-    let changed = support::service_with_pki(
-        &c,
-        fixture.software.authority.clone(),
-        fixture.resources.protection.clone(),
-        changed,
-    )?;
-    connections::protect_frozen(&c, &changed).await?;
     fixture.close().await?;
     c.close().await;
     Ok(())

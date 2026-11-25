@@ -48,14 +48,6 @@ pub static AGENT_CONNECTIONS: Resource = Resource {
     query: QueryPolicy::NotCollection,
     collection: None,
 };
-pub static AGENT_CONNECTION_OPERATIONS: Resource = Resource {
-    id: "agent_connection_operations",
-    category: Category::ReadModel,
-    owner: "management-http",
-    proof: "agent.configurations",
-    query: QueryPolicy::NotCollection,
-    collection: None,
-};
 pub static AGENT_ENROLLMENT_SETTINGS: Resource = Resource {
     id: "agent_enrollment_settings",
     category: Category::Singleton,

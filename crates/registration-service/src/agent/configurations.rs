@@ -526,8 +526,7 @@ impl Service {
         let execution =
             rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch);
         a.bind_scope(execution).map_err(Error::from)?;
-        self.require_connection_origin(a.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         verification.rollback().await.map_err(db)?;
         if input.secret.expose() == input.file.secret.expose() {
             return Err(Error::Malformed.into());
@@ -700,15 +699,7 @@ impl Service {
         .map_err(db)?
         .ok_or(Error::Unauthorized)?;
         check_secret(&tenant, &row, &input.secret)?;
-        self.require_connection_origin(
-            rss_transactional_messaging::fence::ExecutionBinding::new(
-                self.storage,
-                rss_request_context::TenantId::parse(&tenant).map_err(|_| Error::Malformed)?,
-                epoch,
-            ),
-            origin,
-        )
-        .await?;
+        self.require_connection_origin(origin)?;
         if row.try_get::<i64, _>("expected_epoch").map_err(db)? != epoch.get() {
             return Err(Error::Conflict.into());
         }
@@ -746,8 +737,7 @@ impl Service {
             epoch,
         ))
         .map_err(Error::from)?;
-        self.require_connection_origin(a.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         a.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,

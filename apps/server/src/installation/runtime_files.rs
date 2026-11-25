@@ -3,6 +3,7 @@ use super::{Error, Result, host::Binding, local::Journal};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use sqlx::Connection;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -169,7 +170,67 @@ pub async fn observe_installation(input: super::install::Input) -> Result<Applie
         return Err(Error::Busy);
     }
     let runtime = requested(&root)?;
-    observe_runtime(&input.directory, &runtime).await
+    if runtime.pointer("/agent_pki/mode").and_then(Value::as_str) == Some("disabled") {
+        return observe_runtime(&input.directory, &runtime).await;
+    }
+    let mut c = sqlx::PgConnection::connect_with(
+        &input
+            .database("mdm_owner")?
+            .options()
+            .map_err(|_| Error::Input)?,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    // Serialize observation of the requested files with the existing configure-host operation.
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(2823,1)")
+        .fetch_one(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    if !locked {
+        return Err(Error::Busy);
+    }
+    let applied = observe_runtime(&input.directory, &runtime).await?;
+    apply_agent_origins(&mut c, &runtime).await?;
+    Ok(applied)
+}
+/// A completed deployment updates previously issued connections. Empty tenants get their first
+/// signature during enrollment. Re-observing unchanged addresses creates no signed version.
+pub(crate) async fn apply_agent_origins(c: &mut sqlx::PgConnection, runtime: &Value) -> Result<()> {
+    let config: crate::config::Config =
+        serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
+    let Some(origins) = config
+        .agent_pki
+        .installed_origins()
+        .map_err(|_| Error::Input)?
+    else {
+        return Ok(());
+    };
+    let instance: uuid::Uuid =
+        sqlx::query_scalar("SELECT instance_id FROM public.mdm_installation")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    if instance.to_string() != config.identity.instance_id {
+        return Err(Error::Conflict);
+    }
+    let protector = config.native_protector().map_err(|_| Error::Corrupt)?;
+    let tenants: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT tenant_id FROM public.mdm_tenants WHERE NOT deleted UNION SELECT management_tenant_id FROM public.mdm_installation ORDER BY 1")
+        .fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
+    for tenant in tenants {
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        let tenant = tenant.to_string();
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(&tenant)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+        origins
+            .apply_on(&mut tx, &tenant, &protector)
+            .await
+            .map_err(|_| Error::Storage)?;
+        tx.commit().await.map_err(|_| Error::Storage)?;
+    }
+    Ok(())
 }
 fn public_file(name: &str) -> bool {
     matches!(

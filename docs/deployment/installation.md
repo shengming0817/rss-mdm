@@ -357,7 +357,7 @@ MDM 和 Identity 使用各自原业务连接直接追加 Audit，不配置审计
 
 运行配置中的 Windows enrollment/management、Apple management 与 Agent endpoint 只保存公开 `origin`；不再接受设备 listener、TLS 私钥或 PROXY 配置。Windows 首注 origin 禁止与 Windows 管理、Apple 管理或 Agent 证书入口重叠；其余证书入口可共享域名和端口。仅控制台可与任一类入口共享，TLS 策略由该 origin 的通道决定。标准部署以 `https://enroll.example.test` 作为 Windows 首注、`https://mdm.example.test` 作为设备入口，两者共用公网 443；DNS 与服务器证书必须覆盖两个域名。注册地址来自实际 `windows.enrollment.origin`，变更时须显式更新通道配置、重新导出并渲染运行文件，再应用生成的 ports 文件重建 gateway；改 Docker 映射不会改注册地址。首注使用 `ssl_verify_client off`，证书入口使用 `optional_no_ca`，由后端验证链、用途与当前凭据。TLS 策略在 HTTP 路由选择之前生效，不能按 location 区分。部署层 `deployment/render_gateway.py` 消费安装工具导出的 `deployment.json`，生成 Nginx HTTPS 路由及 `gateway-ports.compose.yaml`。业务 API 不执行渲染、shell 或容器操作。新增域名必须已包含在网关证书中；新增端口须在部署环境应用生成的 Compose ports override。公开 origin 的端口同时决定 Nginx listener、Compose target/published 和维护 `probe_addresses`；绑定 IP 由 `MDM_GATEWAY_BIND_IP` 提供。标准初始化从 origin 生成控制台 probe 地址；新增或删除入口不会改变其余入口端口。生产、开发与候选使用同一 renderer，隔离验证仅可改变宿主 published 端口，不改 Nginx listener。网关容器的独立网络命名空间设置 `net.ipv4.ip_unprivileged_port_start=0`，允许非 root Nginx 绑定这些端口，不改变宿主设置。
 
-新格式安装后的连接更新使用稳定安装 `instance_id` 与 tenant。先在现有部署设置保存 Agent 首选和候选 HTTPS origins，再由运维修改宿主输入、准备运行文件、运行部署 renderer、应用 Compose 与 Nginx 配置。部署层可用以下命令刷新网关（对应宿主准备必须先完成）：
+新格式安装后的连接更新使用稳定安装 `instance_id` 与 tenant。运维通过 `configure-host channels` 设置 Agent 首选和候选 HTTPS 地址，准备运行文件并应用 Compose 与 Nginx 配置。部署层可用以下命令刷新网关（对应宿主准备必须先完成）：
 
 ```sh
 docker compose run --rm --no-deps --user 10001:10001 --entrypoint python3 init /usr/local/lib/rss-mdm/render_gateway.py --root /var/lib/rss-mdm/runtime/gateway
@@ -365,9 +365,9 @@ docker compose exec -T gateway nginx -t -c /run/gateway/nginx.conf
 docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 ```
 
-随后执行原宿主维护观察流程，对每个公开入口进行真实 HTTPS `/readyz` 校验，核对 instance、tenant、host、材料摘要与运行 revision；成功后写入宿主本地观察回执。当前正式命令尚未将观察写入租户草稿，显式发布的端到端接通由 [#3287](https://dev.azure.com/shengming0923/rss/_workitems/edit/3287) 跟踪。`probe_addresses` 可按完整公开 origin 显式给出隔离网络物理探测地址；证书和 Host 始终验证公开身份。控制台发布签名连接配置后，Agent 验签、拒绝回滚并原子保存，回报实际连接地址与安装 revision。
+宿主维护命令通过各公开入口的 HTTPS `/readyz` 核对运行的实例、宿主、材料摘要和配置版本。完成部署时自动更新现有租户的签名连接配置。`probe_addresses` 可按公开 origin 提供隔离网络的物理探测地址，证书和 Host 使用公开身份。Agent 验签、拒绝回滚并原子保存，随后回报实际连接地址和版本。
 
-入口轮换采用 `A → A+B → B`。重叠阶段将 B 设为首选，等待设备经 B 回报安装确认后才能退役 A；未确认的活动设备会阻止删除它仍依赖的入口。所有已知入口失联时，管理员从原管理入口下载签名连接文件，在设备通过受保护的离线导入恢复；不得重建注册、密钥、缓存或未决操作。程序更新保留这些状态。Windows/Apple 原生注册 URL 继续由各自原生配置持有，Agent 连接配置不改变其换址机制。
+入口轮换采用 `A → A+B → B`。重叠阶段将 B 设为首选，运维结合设备经 B 的确认、离线窗口和未完成安装决定何时下线 A。所有已知入口失联时，管理员从原管理入口下载签名连接文件，在设备通过受保护的离线导入恢复；不得重建注册、密钥、缓存或未决操作。程序更新保留这些状态。Windows/Apple 原生注册 URL 继续由各自原生配置持有，Agent 连接配置不改变其换址机制。
 
 本次只支持新格式全新安装，不接受旧格式双读、升级或迁移。
 

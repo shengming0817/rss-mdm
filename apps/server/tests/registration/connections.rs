@@ -8,30 +8,10 @@ use tower::ServiceExt;
 pub(super) const PRIMARY: &str = "https://localhost:9445";
 const REMAINING: &str = "https://localhost";
 
-async fn installation_origin(c: &Context) -> Result<String> {
-    let pool = c.inputs.pool("shared", "mdm_command_runtime").await?;
-    let mut tx = pool.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(c.tenant.to_string())
-        .execute(&mut *tx)
-        .await?;
-    let origin = connections::installation_origin_on(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        &mut tx,
-        &c.tenant.to_string(),
-        Some(PRIMARY),
-    )
-    .await?;
-    tx.commit().await?;
-    pool.close().await;
-    origin.ok_or_else(|| anyhow::anyhow!("missing installation origin"))
-}
-
 pub(super) async fn first_install_and_rotation(
     c: &Context,
     service: Arc<agent::Service>,
 ) -> Result<()> {
-    assert_eq!(installation_origin(c).await?, PRIMARY);
     recovery_before_issuance(c, service.clone()).await?;
     let proof = editor(c).await?;
     let input = create_input();
@@ -45,7 +25,17 @@ pub(super) async fn first_install_and_rotation(
         .create_configuration(&proof, &create, &c.request(&proof)?)
         .await?;
     assert!(serde_json::to_vec(&file)? == serde_json::to_vec(&replay)?);
-    draft_before_issuance(&service).await
+    let cold = fresh_tenant(&service).await?;
+    let admin = editor(&cold).await?;
+    assert_eq!(
+        concurrent_files(&cold, &service, &admin)
+            .await?
+            .configuration
+            .revision,
+        1
+    );
+    cold.close().await;
+    Ok(())
 }
 
 fn create_input() -> Value {
@@ -58,7 +48,6 @@ async fn editor(c: &Context) -> Result<Arc<Principal>> {
         .account(&[
             Permission::AgentEnrollmentWrite,
             Permission::RegistrationConfigurationRead,
-            Permission::RegistrationConfigurationWrite,
         ])
         .await?;
     Ok(Arc::new(c.authenticate(&account).await?))
@@ -84,7 +73,7 @@ async fn recovery_before_issuance(c: &Context, service: Arc<agent::Service>) -> 
             .body(axum::body::Body::empty())?;
     assert_eq!(recovery.oneshot(request).await?.status(), 409);
     let untouched = service.connection_state(&reader).await?;
-    assert!(untouched.published.is_none() && untouched.verification_keys.is_empty());
+    assert!(untouched.configuration.is_none() && untouched.verification_keys.is_empty());
     Ok(())
 }
 
@@ -150,8 +139,7 @@ async fn download(
 
 fn verify(file: &wire::configuration::ConfigurationFile, state: &connections::State) -> Result<()> {
     let initial = &file.configuration.connections;
-    assert!(state.draft.is_none() && state.deployments.is_empty());
-    assert_eq!(state.published.as_ref(), Some(initial));
+    assert_eq!(state.configuration.as_ref(), Some(initial));
     assert_eq!(initial.configuration.preferred_origin, PRIMARY);
     assert_eq!(initial.configuration.origins, [REMAINING, PRIMARY]);
     let key = ring::signature::UnparsedPublicKey::new(
@@ -177,101 +165,41 @@ async fn rotate(
     proof: &Principal,
     initial: &Signed,
 ) -> Result<()> {
-    let rotate = connections::Save {
-        operation_id: Uuid::new_v4(),
-        expected_revision: initial.configuration.revision,
-        preferred_origin: REMAINING.into(),
-        origins: vec![REMAINING.into()],
-    };
-    let draft = service
-        .save_connections(proof, &rotate, &c.request(proof)?)
-        .await?;
-    let publish = connections::Publish {
-        operation_id: Uuid::new_v4(),
-        expected_revision: draft.configuration.revision,
-    };
-    observed(c, service, REMAINING).await?;
+    let mut runtime: Value =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
+    runtime["identity"]["instance_id"] = json!(c.inputs.installation.instance_id);
+    runtime["native_protection"]["active_file"] = json!(c.inputs.directory.join("native.key"));
+    runtime["native_protection"]["fingerprint_file"] =
+        json!(c.inputs.directory.join("fingerprint.key"));
+    runtime["agent_pki"] = json!({"mode":"step_ca","endpoint":{"origin":REMAINING}});
+    let pool = c.inputs.pool("shared", "mdm_owner").await?;
+    let mut operator = pool.acquire().await?;
+    for _ in 0..2 {
+        crate::installation::runtime_files::apply_agent_origins(&mut operator, &runtime).await?;
+    }
+    drop(operator);
+    pool.close().await;
     let rotated = service
-        .publish_connections(proof, &publish, &c.request(proof)?)
-        .await?;
+        .connection_state(proof)
+        .await?
+        .configuration
+        .expect("issued tenant");
     rotated
         .configuration
         .validate_successor(&initial.configuration)?;
-    assert!(rotated.configuration.revision > initial.configuration.revision);
-    assert_eq!(installation_origin(c).await?, REMAINING);
+    assert_eq!(
+        rotated.configuration.revision,
+        initial.configuration.revision + 1
+    );
+    assert_eq!(rotated.configuration.preferred_origin, REMAINING);
     Ok(())
 }
-
-async fn observed(c: &Context, service: &agent::Service, origin: &str) -> Result<()> {
-    let mut observation = command::seed_transaction(c).await?;
-    connections::record_deployment_on(
-        service.profile(),
-        &mut observation,
-        Uuid::parse_str(&c.tenant.to_string())?,
-        origin,
-        service.service_id()?,
-        Uuid::new_v4(),
-        1,
-    )
-    .await?;
-    observation.commit().await?;
-    Ok(())
-}
-
 pub(super) async fn fresh_tenant(service: &agent::Service) -> Result<Context> {
     let c = Context::open("shared", &[]).await?;
     let mut setup = command::seed_transaction(&c).await?;
     agent::settings::initialize_on(service.profile(), &mut setup, &c.tenant.to_string()).await?;
     setup.commit().await?;
     Ok(c)
-}
-
-async fn draft_before_issuance(service: &agent::Service) -> Result<()> {
-    let c = fresh_tenant(service).await?;
-    let proof = editor(&c).await?;
-    let save = connections::Save {
-        operation_id: Uuid::new_v4(),
-        expected_revision: 0,
-        preferred_origin: REMAINING.into(),
-        origins: vec![REMAINING.into()],
-    };
-    let draft = service
-        .save_connections(&proof, &save, &c.request(&proof)?)
-        .await?;
-    assert_eq!(draft.configuration.revision, 1);
-    assert!(service.connection_state(&proof).await?.published.is_none());
-    observed(&c, service, REMAINING).await?;
-    let active = concurrent_files(&c, service, &proof).await?;
-    assert_eq!(active.configuration.revision, 2);
-    assert_eq!(active.configuration.preferred_origin, PRIMARY);
-    publish_original_draft(&c, service, &proof, draft.configuration.revision).await?;
-    c.close().await;
-    Ok(())
-}
-
-async fn publish_original_draft(
-    c: &Context,
-    service: &agent::Service,
-    proof: &Principal,
-    revision: u64,
-) -> Result<()> {
-    let state = service.connection_state(proof).await?;
-    assert_eq!(state.draft.unwrap().configuration.revision, revision);
-    let publish = connections::Publish {
-        operation_id: Uuid::new_v4(),
-        expected_revision: revision,
-    };
-    let published = service
-        .publish_connections(proof, &publish, &c.request(proof)?)
-        .await?;
-    assert_eq!(published.configuration.revision, 3);
-    assert_eq!(published.configuration.preferred_origin, REMAINING);
-    assert!(service.connection_state(proof).await?.draft.is_none());
-    let replay = service
-        .publish_connections(proof, &publish, &c.request(proof)?)
-        .await?;
-    assert_eq!(published, replay);
-    Ok(())
 }
 
 async fn concurrent_files(
@@ -290,41 +218,4 @@ async fn concurrent_files(
     let active = first.configuration.connections;
     assert_eq!(active, other.configuration.connections);
     Ok(active)
-}
-
-pub(super) async fn protect_frozen(c: &Context, changed: &agent::Service) -> Result<()> {
-    let proof = editor(c).await?;
-    let input = serde_json::from_value(create_input())?;
-    let first = changed
-        .create_configuration(&proof, &input, &c.request(&proof)?)
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        first.code,
-        wire::ErrorCode::ConnectionRetirementBlocked
-    ));
-    let save = connections::Save {
-        operation_id: Uuid::new_v4(),
-        expected_revision: 0,
-        preferred_origin: REMAINING.into(),
-        origins: vec![REMAINING.into()],
-    };
-    let draft = changed
-        .save_connections(&proof, &save, &c.request(&proof)?)
-        .await?;
-    observed(c, changed, REMAINING).await?;
-    let publish = connections::Publish {
-        operation_id: Uuid::new_v4(),
-        expected_revision: draft.configuration.revision,
-    };
-    let blocked = changed
-        .publish_connections(&proof, &publish, &c.request(&proof)?)
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        blocked.code,
-        wire::ErrorCode::ConnectionRetirementBlocked
-    ));
-    assert!(changed.connection_state(&proof).await?.published.is_none());
-    Ok(())
 }

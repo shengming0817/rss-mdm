@@ -720,6 +720,9 @@ pub async fn run(request: Request) -> Result<Receipt> {
             if observed.host_id == result.host_id
                 && observed.operation_id == result.operation_id =>
         {
+            if matches!(request.change, Change::Channels { .. }) {
+                super::runtime_files::apply_agent_origins(&mut c, &candidate).await?;
+            }
             result.applied = Some(observed)
         }
         Ok(_) => return Err(Error::Conflict),

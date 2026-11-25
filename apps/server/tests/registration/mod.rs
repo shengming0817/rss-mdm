@@ -187,17 +187,15 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     let initial = service.connection_configuration(cold.execution()).await?;
     assert_eq!(initial.configuration.preferred_origin, connections::PRIMARY);
     cold.close().await;
-    // A published tenant policy retires the old origin even while the gateway still hosts it.
-    let retired = gateway.request_origin(connections::PRIMARY.into());
+    // The host accepts requests only through an installed Agent origin.
+    let retired = gateway.request_origin("https://other.example.test".into());
     let before = support::counts(&c).await?;
     let denied = service
         .native_grant(&peer, &input, &audit(&c), &retired)
         .await
         .unwrap_err();
     assert!(matches!(denied.code, wire::ErrorCode::InvalidIdentity));
-    service
-        .require_connection_origin(c.execution(), &origin)
-        .await?;
+    service.require_connection_origin(&origin)?;
     assert_eq!(support::counts(&c).await?, before);
 
     native_install::cold_command().await?;

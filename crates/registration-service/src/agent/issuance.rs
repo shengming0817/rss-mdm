@@ -32,16 +32,7 @@ impl Service {
         a: &RequestAudit,
         origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<wire::Candidate, Failure> {
-        let (tenant, epoch) = self
-            .store
-            .locate_grant(input.grant_id)
-            .await?
-            .ok_or(Error::Unauthorized)?;
-        self.require_connection_origin(
-            rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch),
-            origin,
-        )
-        .await?;
+        self.require_connection_origin(origin)?;
 
         if self.issuer.purpose() != rss_mdm_agent_wire::pki::Purpose::Agent {
             return Err(Error::Forbidden.into());

@@ -41,7 +41,7 @@ pub fn routes(app: App) -> Router<(), impl rss_mdm_http_contract::module::Declar
 }
 pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_request_directory, get_request_details, get_registration_recovery_operation, get_issuance_recovery_operations, get_connection_state, put_save_connections, post_publish_connections, get_unconfirmed_devices, get_download_connections, get_connection_operation, get_connection_observation, post_create_configuration, get_list_configurations, get_read_configuration, get_configuration_operation, post_revoke_configuration, post_authorize, post_revoke, get_settings, put_update_settings, post_recovery, post_recover_issuance, get_issuance_recovery_operation } }
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_request_directory, get_request_details, get_registration_recovery_operation, get_issuance_recovery_operations, get_connection_state, get_unconfirmed_devices, get_download_connections, get_connection_observation, post_create_configuration, get_list_configurations, get_read_configuration, get_configuration_operation, post_revoke_configuration, post_authorize, post_revoke, get_settings, put_update_settings, post_recovery, post_recover_issuance, get_issuance_recovery_operation } }
         RegisterModule1 {
             get_request_directory: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/agent-requests",
@@ -83,22 +83,6 @@ pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Decl
                     &[RouteOperation::Get],
                 ),
             ),
-            put_save_connections: rss_mdm_http_contract::module::Route::new(
-                "/agent-connections",
-                rss_mdm_http_contract::routing::put(
-                    save_connections,
-                    &contracts::AGENT_CONNECTIONS,
-                    &[RouteOperation::Update],
-                ),
-            ),
-            post_publish_connections: rss_mdm_http_contract::module::Route::new(
-                "/agent-connections/publish",
-                post(
-                    publish_connections,
-                    &contracts::AGENT_CONNECTIONS,
-                    &[RouteOperation::Update],
-                ),
-            ),
             get_unconfirmed_devices: rss_mdm_http_contract::module::Route::new(
                 "/agent-connections/devices",
                 get(
@@ -113,14 +97,6 @@ pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Decl
                     download_connections,
                     &contracts::DOWNLOAD_MANAGEMENT_HTTP,
                     &[RouteOperation::Action],
-                ),
-            ),
-            get_connection_operation: rss_mdm_http_contract::module::Route::new(
-                "/agent-connection-operations/{id}",
-                get(
-                    connection_operation,
-                    &contracts::AGENT_CONNECTION_OPERATIONS,
-                    &[RouteOperation::Get],
                 ),
             ),
             get_connection_observation: rss_mdm_http_contract::module::Route::new(
@@ -238,43 +214,6 @@ async fn connection_state(
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<rss_mdm_registration_service::agent::connections::State>, HttpFailure> {
     Ok(Json(service(&app)?.connection_state(&auth.proof).await?))
-}
-async fn save_connections(
-    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
-
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(a): Extension<RequestAudit>,
-    input: Body<rss_mdm_registration_service::agent::connections::Save>,
-) -> Result<Json<rss_mdm_registration_service::agent::connections::Draft>, HttpFailure> {
-    Ok(Json(
-        service(&app)?
-            .save_connections(&auth.proof, &body(input)?, &a)
-            .await?,
-    ))
-}
-async fn publish_connections(
-    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
-
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(a): Extension<RequestAudit>,
-    input: Body<rss_mdm_registration_service::agent::connections::Publish>,
-) -> Result<Json<rss_mdm_agent_wire::connections::SignedConfiguration>, HttpFailure> {
-    Ok(Json(
-        service(&app)?
-            .publish_connections(&auth.proof, &body(input)?, &a)
-            .await?,
-    ))
-}
-async fn connection_operation(
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
-) -> Result<Json<Option<rss_mdm_registration_service::agent::connections::Receipt>>, HttpFailure> {
-    Ok(Json(
-        service(&app)?.connection_operation(&auth.proof, id).await?,
-    ))
 }
 async fn connection_observation(
     State(app): State<App>,
@@ -546,7 +485,7 @@ async fn download_connections(
 > {
     let state = service(&app)?.connection_state(&auth.proof).await?;
     let configuration = state
-        .published
+        .configuration
         .ok_or(rss_mdm_registration_service::Error::Conflict)?;
     Ok(rss_mdm_http_contract::download::Attachment {
         body: Json(configuration),
@@ -624,9 +563,7 @@ fn failure_status(code: wire::ErrorCode) -> StatusCode {
         C::PermissionDenied | C::GrantRevoked | C::GrantExpired => StatusCode::FORBIDDEN,
         C::EnrollmentPaused => StatusCode::CONFLICT,
         C::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
-        C::OperationConflict
-        | C::ConnectionDeploymentUnobserved
-        | C::ConnectionRetirementBlocked => StatusCode::CONFLICT,
+        C::OperationConflict => StatusCode::CONFLICT,
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
