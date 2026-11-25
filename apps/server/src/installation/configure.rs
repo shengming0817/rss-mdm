@@ -714,7 +714,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
     publish_gateway(&journal, &host)?;
     drop(host);
     let outcome =
-        super::runtime_files::apply(&input.directory, &input.deployment, &candidate, &mut c).await;
+        super::runtime_files::apply(&input.directory, &input.deployment, &candidate).await;
     match outcome {
         Ok(observed)
             if observed.host_id == result.host_id

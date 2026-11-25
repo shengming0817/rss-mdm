@@ -165,11 +165,11 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 服务身份固定为安装 `instance_id` 与 tenant，网络地址可变。注册文件包含当前 `connections::SignedConfiguration`；设备安装材料通过受保护的交付绑定该身份、配置验证公钥与 HTTPS CA。配置签名根归注册 owner 持有，复用原 Ed25519 与 Native 密文保护设施，独立于任务密钥轮换。
 
-公开地址由运维在宿主通道配置中维护。`GET /api/v1/tenants/{tenant}/registration-channels` 展示该宿主的公开入口，`GET /api/v1/tenants/{tenant}/agent-connections` 展示租户已签发的连接配置、验证公钥及设备确认数量。首签从已启用的入口生成。宿主应用配置且已挂载 Agent 路由时，服务端为已有签名配置的租户更新地址。路由未挂载时保留原签名配置，相同地址和首选项沿用原版本。
+公开地址由运维在宿主通道配置中维护。`GET /api/v1/tenants/{tenant}/registration-channels` 展示该宿主的公开入口，`GET /api/v1/tenants/{tenant}/agent-connections` 展示租户已签发的连接配置、验证公钥及设备确认数量。新建管理员安装文件时，服务端使用当前宿主已启用的 Agent 入口。地址或首选项变化时，仅在该租户本次签发中生成下一版连接配置；入口相同则复用原版本。重试原签发操作仍得到原文件。
 
 设备通过已认证的 `GET /api/v1/agent/enroll/connections` 获取签名配置，使用已安装公钥验签，拒绝跨服务/租户、回滚、同 revision 异内容或非规范 origin，原子保存并读回后才使用。`POST .../connections/acknowledgements` 绑定 deviceId、revision、摘要与真实网关 origin；`POST .../connections/failures` 只记录闭合失败原因，不改变已安装 revision 或授权。管理端通过设备 observation 和带 target revision 的 `/agent-connections/devices` 分页分别读取实际 ACK、失败与未确认设备。
 
-更换公开域名时，运维可先同时提供 A 和 B，将 B 配为首选，根据实际设备回执、离线窗口和已下发任务决定何时关闭 A。所有已知地址失联时，通过受保护的 `GET /api/v1/tenants/{tenant}/agent-connections/configuration` 下载和离线导入恢复。导入不能扩大 CA、凭据或业务权限；通信状态、密钥命名空间、执行 authority 与内容缓存都绑定稳定身份。正常入口和程序更新保留原注册、世代、执行日志及未决操作。Windows/Apple 原生 URL 由各自协议配置持有。
+更换公开域名时，运维可先同时提供 A 和 B，将 B 配为首选，根据实际设备回执、离线窗口和已下发任务决定何时关闭 A。受保护的 `GET /api/v1/tenants/{tenant}/agent-connections/configuration` 下载该租户最近签发的连接配置。文件包含可达入口时，设备可以离线导入恢复。导入不能扩大 CA、凭据或业务权限；通信状态、密钥命名空间、执行 authority 与内容缓存都绑定稳定身份。正常入口和程序更新保留原注册、世代、执行日志及未决操作。Windows/Apple 原生 URL 由各自协议配置持有。
 
 管理员签发恢复的未知响应先查询 `GET /api/v1/tenants/{tenant}/agent-issuances/{id}/recovery-operations/{operation}`。查询复核当前设备凭据权限及原主体/实例，找到原回执才显示成功；null 不证明回滚，只能由用户显式原样重试。浏览器不签名、不持有 CA 或配置私钥。
 

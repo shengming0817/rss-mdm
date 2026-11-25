@@ -171,13 +171,11 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
         return Err(Error::Conflict);
     }
     verify_candidates(&saved)?;
-    if saved.receipt.phase == Phase::Distributing && apply(input, &saved.read, &mut c).await? {
-        saved.receipt.phase = Phase::Activating;
-        operation.save("rotation.json", &saved)?;
+    if saved.receipt.phase == Phase::Distributing {
+        distribute(input, &operation, &mut saved).await?;
     }
-    if saved.receipt.phase == Phase::Activating && apply(input, &saved.write, &mut c).await? {
-        saved.receipt.phase = Phase::Rewrapping;
-        operation.save("rotation.json", &saved)?;
+    if saved.receipt.phase == Phase::Activating {
+        activate_writers(input, &operation, &mut saved).await?;
     }
     if saved.receipt.phase == Phase::Rewrapping {
         rewrap_batch(&operation, &mut saved, &mut c).await?;
@@ -193,8 +191,8 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(saved.receipt)
 }
-async fn apply(input: &Input, runtime: &Value, operator: &mut sqlx::PgConnection) -> Result<bool> {
-    match runtime_files::apply(&input.directory, &input.deployment, runtime, operator).await {
+async fn apply(input: &Input, runtime: &Value) -> Result<bool> {
+    match runtime_files::apply(&input.directory, &input.deployment, runtime).await {
         Ok(_) => Ok(true),
         Err(Error::Storage | Error::Conflict) => Ok(false),
         Err(error) => Err(error),
@@ -447,6 +445,29 @@ async fn admit_rotation(journal: &Journal) -> Result<()> {
     {
         return Err(Error::Busy);
     }
+
+    Ok(())
+}
+
+async fn distribute(input: &Input, operation: &Journal, saved: &mut Saved) -> Result<()> {
+    let observed = apply(input, &saved.read).await?;
+    if !observed {
+        return Ok(());
+    }
+    saved.receipt.phase = Phase::Activating;
+    operation.save("rotation.json", saved)?;
+
+    Ok(())
+}
+
+async fn activate_writers(input: &Input, operation: &Journal, saved: &mut Saved) -> Result<()> {
+    let observed = apply(input, &saved.write).await?;
+    if !observed {
+        return Ok(());
+    }
+    // apply has atomically retained the complete write input with its real observation.
+    saved.receipt.phase = Phase::Rewrapping;
+    operation.save("rotation.json", saved)?;
 
     Ok(())
 }

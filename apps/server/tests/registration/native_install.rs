@@ -33,17 +33,25 @@ pub(super) async fn cold_command() -> Result<()> {
     let [w::PolicyEventOperation::Native { id }] = operations.as_slice() else {
         anyhow::bail!("expected one native installation")
     };
-    assert_frozen(&c, &fixture, *id).await?;
     fixture.close().await?;
+    let changed = command::Prepared::open(&c, |config| {
+        config["agent_pki"] =
+            json!({"mode":"step_ca","endpoint":{"origin":connections::REMAINING}});
+    })
+    .await?;
+    let changed_pki = support::pki(&c, &n, &materials, connections::REMAINING, &[]).await?;
+    changed.channels.installation(changed_pki)?;
+    assert_frozen(&c, &changed, *id).await?;
+    changed.close().await?;
     c.close().await;
     Ok(())
 }
 
-async fn assert_frozen(c: &Context, fixture: &Fixture, id: Uuid) -> Result<()> {
+async fn assert_frozen(c: &Context, host: &command::Prepared, id: Uuid) -> Result<()> {
     let op = owner::transaction::inspect(
-        &fixture.resources.storage.runtime,
+        &host.storage.runtime,
         c.execution(),
-        (fixture.resources.protection.clone(), id),
+        (host.protection.clone(), id),
         |args, tx| Box::pin(async move { owner::storage::load(tx, &args.0, args.1).await }),
     )
     .await?;

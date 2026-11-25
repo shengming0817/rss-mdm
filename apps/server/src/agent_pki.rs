@@ -52,24 +52,6 @@ pub(crate) struct AgentPki {
     required_seconds: i64,
 }
 impl Config {
-    pub(crate) fn installed_origins(
-        &self,
-    ) -> Result<Option<rss_mdm_registration_service::agent::connections::InstalledOrigins>, Error>
-    {
-        match self {
-            Self::Disabled {} => Ok(None),
-            Self::StepCa {
-                endpoint,
-                additional_origins,
-                ..
-            } => rss_mdm_registration_service::agent::connections::InstalledOrigins::new(
-                endpoint.origin.clone(),
-                additional_origins,
-            )
-            .map(Some)
-            .map_err(|_| Error::Configuration(ConfigIssue::AgentPki)),
-        }
-    }
     pub(crate) fn load(
         &self,
         service_id: &str,
@@ -79,11 +61,21 @@ impl Config {
         registry: Arc<rss_mdm_pki_service::registry::Registry>,
         bootstrap: Option<Arc<rss_mdm_pki_service::scep::Verifier>>,
     ) -> Result<Option<Arc<AgentPki>>, Error> {
-        let Self::StepCa { lifetime, .. } = self else {
+        let Self::StepCa {
+            endpoint,
+            additional_origins,
+            lifetime,
+            ..
+        } = self
+        else {
             return Ok(None);
         };
         let invalid = || Error::Configuration(ConfigIssue::AgentPki);
-        let origins = self.installed_origins()?.ok_or_else(invalid)?;
+        let origins = rss_mdm_registration_service::agent::connections::InstalledOrigins::new(
+            endpoint.origin.clone(),
+            additional_origins,
+        )
+        .map_err(|_| invalid())?;
         let days = lifetime.days()?;
         let issuer = DeviceIssuer::new(
             rss_mdm_install_support::StorageProfile::Mdm,

@@ -170,7 +170,7 @@ async fn service_id_on(
         .await
         .map_err(db)
 }
-pub(super) async fn lock(
+async fn lock(
     _profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
@@ -256,7 +256,7 @@ impl InstalledOrigins {
         profile: rss_mdm_install_support::StorageProfile,
         c: &mut PgConnection,
         tenant: &str,
-        signer: configurations::Signer,
+        signer: &configurations::Signer,
         revision: u64,
     ) -> Result<w::SignedConfiguration, Error> {
         let signed = signer.sign_connections(w::Configuration {
@@ -271,47 +271,54 @@ impl InstalledOrigins {
         store_version(profile, c, tenant, &signed).await?;
         Ok(signed)
     }
-
-    /// The installation owner applies its effective gateway configuration to existing enrollments.
-    pub async fn apply_on(
-        &self,
-        c: &mut PgConnection,
-        tenant: &str,
-        protection: &Protector,
-    ) -> Result<(), Error> {
-        let profile = rss_mdm_install_support::StorageProfile::Mdm;
-        lock(profile, c, tenant).await?;
-        let Some(current) = signed_on(profile, c, tenant, None).await? else {
-            return Ok(());
-        };
-        if current.configuration.preferred_origin != self.preferred
-            || current.configuration.origins != self.origins
-        {
-            let rev = current
-                .configuration
-                .revision
-                .checked_add(1)
-                .ok_or(Error::Conflict)?;
-            let signer = signer_on(profile, c, tenant, protection).await?;
-            self.sign_on(profile, c, tenant, signer, rev).await?;
-        }
-        Ok(())
-    }
 }
 
 impl Service {
-    pub(super) async fn current_or_initial_locked(
+    /// A new file uses the gateway loaded by the issuing host. Replays bypass issuance.
+    pub(super) async fn connections_for_new_file(
         &self,
         c: &mut PgConnection,
         tenant: &str,
-    ) -> Result<w::SignedConfiguration, Error> {
+    ) -> Result<(w::SignedConfiguration, configurations::Signer), Error> {
         let profile = self.profile();
-        if let Some(current) = signed_on(profile, c, tenant, None).await? {
-            return Ok(current);
-        }
         let origins = self.origins.as_ref().ok_or(Error::Configuration)?;
+        lock(profile, c, tenant).await?;
+        let current = signed_on(profile, c, tenant, None).await?;
         let signer = ensure_signer_on(profile, c, tenant, &self.protection).await?;
-        origins.sign_on(profile, c, tenant, signer, 1).await
+        let revision = match current {
+            Some(current)
+                if current.configuration.preferred_origin == origins.preferred
+                    && current.configuration.origins == origins.origins =>
+            {
+                return Ok((current, signer));
+            }
+            Some(current) => current
+                .configuration
+                .revision
+                .checked_add(1)
+                .ok_or(Error::Conflict)?,
+            None => 1,
+        };
+        let signed = origins
+            .sign_on(profile, c, tenant, &signer, revision)
+            .await?;
+        Ok((signed, signer))
+    }
+
+    /// Native and self-service enrollment can activate before the tenant issues its first file.
+    pub(super) async fn initialize_connections(
+        &self,
+        c: &mut PgConnection,
+        tenant: &str,
+    ) -> Result<(), Error> {
+        let profile = self.profile();
+        lock(profile, c, tenant).await?;
+        if signed_on(profile, c, tenant, None).await?.is_none() {
+            let origins = self.origins.as_ref().ok_or(Error::Configuration)?;
+            let signer = ensure_signer_on(profile, c, tenant, &self.protection).await?;
+            origins.sign_on(profile, c, tenant, &signer, 1).await?;
+        }
+        Ok(())
     }
 
     pub fn require_connection_origin(

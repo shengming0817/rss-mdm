@@ -62,7 +62,14 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
         )
         .await?,
     );
-    connections::first_install_and_rotation(&c, service.clone()).await?;
+    let changed_pki = support::pki(&c, &n, &materials, connections::REMAINING, &[]).await?;
+    let changed_host = support::service_with_pki(
+        &c,
+        authority.clone(),
+        resources.protection.clone(),
+        changed_pki,
+    )?;
+    connections::issue_and_replay(&c, service.clone(), Arc::new(changed_host)).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let _client = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
     let (server, _) = listener.accept().await?;

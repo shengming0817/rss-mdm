@@ -6,11 +6,12 @@ use rss_mdm_registration_service::agent::connections;
 use tower::ServiceExt;
 
 pub(super) const PRIMARY: &str = "https://localhost:9445";
-const REMAINING: &str = "https://localhost";
+pub(super) const REMAINING: &str = "https://localhost";
 
-pub(super) async fn first_install_and_rotation(
+pub(super) async fn issue_and_replay(
     c: &Context,
     service: Arc<agent::Service>,
+    changed_host: Arc<agent::Service>,
 ) -> Result<()> {
     recovery_before_issuance(c, service.clone()).await?;
     let proof = editor(c).await?;
@@ -18,23 +19,39 @@ pub(super) async fn first_install_and_rotation(
     let file = download(c, &proof, &input, service.clone()).await?;
     let state = service.connection_state(&proof).await?;
     verify(&file, &state)?;
-    rotate(c, &service, &proof, &file.configuration.connections).await?;
-    // Replaying the original operation after rotation still returns the original bytes.
+
+    let other = fresh_tenant(&service).await?;
+    let admin = editor(&other).await?;
+    let other_configuration = concurrent_files(&other, &service, &admin).await?;
+    assert_eq!(other_configuration.configuration.revision, 1);
+    let initial = &file.configuration.connections;
+    assert_eq!(
+        changed_host.connection_configuration(c.execution()).await?,
+        *initial
+    );
+    let updated = concurrent_files(c, &changed_host, &proof).await?;
+    updated
+        .configuration
+        .validate_successor(&initial.configuration)?;
+    assert_eq!(
+        updated.configuration.revision,
+        initial.configuration.revision + 1
+    );
+    assert_eq!(updated.configuration.preferred_origin, REMAINING);
+    assert_eq!(updated.configuration.origins, [REMAINING]);
+    assert_eq!(
+        changed_host
+            .connection_configuration(other.execution())
+            .await?,
+        other_configuration
+    );
+
     let create = serde_json::from_value(input)?;
-    let replay = service
+    let replay = changed_host
         .create_configuration(&proof, &create, &c.request(&proof)?)
         .await?;
-    assert!(serde_json::to_vec(&file)? == serde_json::to_vec(&replay)?);
-    let cold = fresh_tenant(&service).await?;
-    let admin = editor(&cold).await?;
-    assert_eq!(
-        concurrent_files(&cold, &service, &admin)
-            .await?
-            .configuration
-            .revision,
-        1
-    );
-    cold.close().await;
+    assert_eq!(serde_json::to_vec(&file)?, serde_json::to_vec(&replay)?);
+    other.close().await;
     Ok(())
 }
 
@@ -159,72 +176,6 @@ fn verify(file: &wire::configuration::ConfigurationFile, state: &connections::St
     Ok(())
 }
 
-async fn rotate(
-    c: &Context,
-    service: &agent::Service,
-    proof: &Principal,
-    initial: &Signed,
-) -> Result<()> {
-    let mut runtime: Value =
-        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
-    runtime["identity"]["instance_id"] = json!(c.inputs.installation.instance_id);
-    runtime["native_protection"]["active_file"] = json!(c.inputs.directory.join("native.key"));
-    runtime["native_protection"]["fingerprint_file"] =
-        json!(c.inputs.directory.join("fingerprint.key"));
-    runtime["agent_pki"] = json!({"mode":"step_ca","endpoint":{"origin":REMAINING}});
-    let pool = c.inputs.pool("shared", "mdm_owner").await?;
-    let mut operator = pool.acquire().await?;
-    let config: crate::config::Config = serde_json::from_value(runtime.clone())?;
-    let binding = &config.runtime_binding;
-    let directory = tempfile::tempdir()?;
-    let journal = rss_mdm_install_support::maintenance::journal::Journal::open(
-        &directory.path().canonicalize()?.join("host"),
-    )?;
-    for agent_mounted in [false, true, true] {
-        let observed = crate::installation::host::Observation::new(
-            binding,
-            config.identity.instance_id.clone(),
-            agent_mounted,
-            vec![],
-        );
-        let applied = serde_json::from_value(serde_json::to_value(observed)?)?;
-        crate::installation::runtime_files::complete_observation(
-            &journal,
-            &config,
-            &runtime,
-            applied,
-            Some(&mut operator),
-        )
-        .await?;
-        if !agent_mounted {
-            let current = service
-                .connection_state(proof)
-                .await?
-                .configuration
-                .unwrap();
-            assert_eq!(
-                current.configuration.revision,
-                initial.configuration.revision
-            );
-        }
-    }
-    drop(operator);
-    pool.close().await;
-    let rotated = service
-        .connection_state(proof)
-        .await?
-        .configuration
-        .expect("issued tenant");
-    rotated
-        .configuration
-        .validate_successor(&initial.configuration)?;
-    assert_eq!(
-        rotated.configuration.revision,
-        initial.configuration.revision + 1
-    );
-    assert_eq!(rotated.configuration.preferred_origin, REMAINING);
-    Ok(())
-}
 pub(super) async fn fresh_tenant(service: &agent::Service) -> Result<Context> {
     let c = Context::open("shared", &[]).await?;
     let mut setup = command::seed_transaction(&c).await?;
