@@ -40,10 +40,7 @@ impl Error {
                 StatusCode::FORBIDDEN
             }
             Code::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
-            Code::EnrollmentPaused
-            | Code::OperationConflict
-            | Code::ConnectionDeploymentUnobserved
-            | Code::ConnectionRetirementBlocked => StatusCode::CONFLICT,
+            Code::EnrollmentPaused | Code::OperationConflict => StatusCode::CONFLICT,
             _ => StatusCode::SERVICE_UNAVAILABLE,
         }
     }

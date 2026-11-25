@@ -764,10 +764,8 @@ impl Authentication {
             Self::Agent(s) => {
                 let p = s.authenticate(peer).await?;
                 s.require_connection_origin(
-                    p.binding(),
                     origin.ok_or(rss_mdm_registration_service::Error::Unauthorized)?,
-                )
-                .await?;
+                )?;
                 Ok(p)
             }
             Self::Da(s) => s.authenticate(peer).await,

@@ -9,16 +9,7 @@ impl Service {
         a: &RequestAudit,
         origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<wire::ActivationReceipt, Failure> {
-        let (tenant, epoch) = self
-            .store
-            .locate_issuance(input.issuance_id)
-            .await?
-            .ok_or(Error::Unauthorized)?;
-        self.require_connection_origin(
-            rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch),
-            origin,
-        )
-        .await?;
+        self.require_connection_origin(origin)?;
 
         if self.issuer.purpose() != rss_mdm_agent_wire::pki::Purpose::Agent {
             return Err(Error::Forbidden.into());
@@ -140,6 +131,7 @@ impl Service {
                             crate::quotas::Channel::Agent,
                         )
                         .await?;
+                        service.initialize_connections(c, &tenant).await?;
                     }
                     let runtime_profile: Option<wire::RuntimeProfile> =
                         serde_json::from_value(row.try_get("profile").map_err(db)?)
@@ -406,7 +398,7 @@ impl Service {
             .map_err(|_| Error::Unauthorized)?;
         let p = device::authenticate_endpoint_in(profile, &mut tx, binding, &proof).await?;
         if let Some(origin) = origin {
-            self.check_origin_on(&mut tx, &tenant, origin).await?;
+            self.require_connection_origin(origin)?;
         }
         tx.commit().await.map_err(db)?;
         Ok(p)

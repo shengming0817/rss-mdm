@@ -293,9 +293,7 @@ fn failure_status(code: wire::ErrorCode) -> StatusCode {
         C::EnrollmentPaused => StatusCode::CONFLICT,
         C::PermissionDenied | C::GrantRevoked | C::GrantExpired => StatusCode::FORBIDDEN,
         C::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
-        C::OperationConflict
-        | C::ConnectionDeploymentUnobserved
-        | C::ConnectionRetirementBlocked => StatusCode::CONFLICT,
+        C::OperationConflict => StatusCode::CONFLICT,
         C::IssuanceUnknown | C::ActivationUnknown | C::ServiceUnavailable => {
             StatusCode::SERVICE_UNAVAILABLE
         }
@@ -334,8 +332,7 @@ async fn connections(
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
     let principal = s.authenticate(&peer.0).await?;
-    s.require_connection_origin(principal.binding(), &origin)
-        .await?;
+    s.require_connection_origin(&origin)?;
     Ok(Json(s.connection_configuration(principal.binding()).await?))
 }
 async fn acknowledge_connections(
@@ -385,8 +382,7 @@ async fn acknowledge(
     bootstrap(&headers)?;
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    s.require_connection_origin(s.authenticate(&peer.0).await?.binding(), &origin)
-        .await?;
+    s.require_connection_origin(&origin)?;
     s.acknowledge_trust(&peer.0, &body(input)?, &a).await?;
     Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
@@ -492,8 +488,7 @@ async fn observe_trust(
     bootstrap(&headers)?;
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    s.require_connection_origin(s.authenticate(&peer.0).await?.binding(), &origin)
-        .await?;
+    s.require_connection_origin(&origin)?;
     let input = body(input)?;
     s.observe_trust(&peer.0, &input, &a).await?;
     Ok(Json(input))

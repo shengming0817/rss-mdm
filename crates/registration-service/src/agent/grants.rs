@@ -14,8 +14,7 @@ impl Service {
             .map_err(|_| Error::Malformed)?;
         a.bind_scope(self.execution(tenant))
             .map_err(|_| Error::Unauthorized)?;
-        self.require_connection_origin(a.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         let bound = hex(csr(&input.csr)?.spki());
         let d = digest(input)?;
         a.owned_operation(
@@ -324,8 +323,7 @@ impl Service {
         let row = grant_row(profile, &mut tx, &tenant, input.grant_id).await?;
         check_secret(&tenant, &row, &input.secret)?;
         audit.bind_scope(execution).map_err(Error::from)?;
-        self.require_connection_origin(audit.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         if row.try_get::<Uuid, _>("operation_id").map_err(db)? != input.operation_id {
             return Err(Error::Conflict.into());
         }
@@ -365,8 +363,7 @@ impl Service {
                 .ok_or(Error::Unauthorized)?;
         check_secret(&tenant, &row, &input.secret)?;
         audit.bind_scope(execution).map_err(Error::from)?;
-        self.require_connection_origin(audit.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         let out = receipt(&row)?;
         tx.commit().await.map_err(db)?;
         Ok(out)
@@ -541,8 +538,7 @@ impl Service {
         }
         a.bind_scope(principal.binding())
             .map_err(|_| Error::Unauthorized)?;
-        self.require_connection_origin(a.binding().map_err(Error::from)?, origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         let bound = hex(csr(&input.csr)?.spki());
         let d = digest(&(principal.device(), principal.credential(), input))?;
         a.identify_device(principal.device());

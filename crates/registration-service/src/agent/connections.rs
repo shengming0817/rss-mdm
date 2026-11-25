@@ -8,82 +8,44 @@ use rss_mdm_authorization_service::Permission;
 use rss_mdm_native_protection::{DerivedAad, ProtectionContext, Protector};
 use std::collections::BTreeMap;
 
-/// Public draft; saving does not deploy a gateway or publish a trusted destination.
-#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Draft {
-    pub configuration: w::Configuration,
+/// HTTPS origins installed on the Agent gateway, preserving its preferred entry.
+#[derive(Clone)]
+pub struct InstalledOrigins {
+    preferred: String,
+    origins: Vec<String>,
 }
-/// Management writes are recoverable by their original operation, never by making a new ID.
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Save {
-    pub operation_id: Uuid,
-    pub expected_revision: u64,
-    pub preferred_origin: String,
-    pub origins: Vec<String>,
+
+impl InstalledOrigins {
+    pub fn new(preferred: String, additional: &[String]) -> Result<Self, Error> {
+        let mut origins = additional.to_vec();
+        origins.push(preferred.clone());
+        origins.sort();
+        if origins.len() > w::MAX_ORIGINS || origins.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(Error::Configuration);
+        }
+        for origin in &origins {
+            w::validate_origin(origin).map_err(|_| Error::Configuration)?;
+        }
+        Ok(Self { preferred, origins })
+    }
+
+    pub fn preferred(&self) -> &str {
+        &self.preferred
+    }
+
+    pub fn origins(&self) -> &[String] {
+        &self.origins
+    }
 }
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Publish {
-    pub operation_id: Uuid,
-    pub expected_revision: u64,
-}
+
 /// Read projection, not a claim that an offline device has applied a revision.
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub service_id: Uuid,
-    pub draft: Option<Draft>,
-    pub published: Option<w::SignedConfiguration>,
+    pub configuration: Option<w::SignedConfiguration>,
     pub verification_keys: BTreeMap<String, String>,
-    pub deployments: Vec<Deployment>,
     pub convergence: Convergence,
-    pub retirement_blockers: RetirementBlockers,
-}
-/// Live installation materials that cannot learn any proposed remaining location.
-#[derive(schemars::JsonSchema, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RetirementBlockers {
-    pub configurations: u64,
-    pub installations: u64,
-}
-async fn retirement_blockers_on(
-    profile: rss_mdm_install_support::StorageProfile,
-    c: &mut PgConnection,
-    tenant: &str,
-    remaining: &[String],
-) -> Result<RetirementBlockers, Error> {
-    let configurations: i64 = sqlx::query_scalar(
-        crate::storage_profile::sql(profile).agent_connections_retirement_blockers_on_1,
-    )
-    .bind(tenant)
-    .bind(remaining)
-    .fetch_one(&mut *c)
-    .await
-    .map_err(db)?;
-    let installations: i64 = sqlx::query_scalar(
-        crate::storage_profile::sql(profile).agent_connections_retirement_blockers_on_2,
-    )
-    .bind(tenant)
-    .bind(remaining)
-    .fetch_one(c)
-    .await
-    .map_err(db)?;
-    Ok(RetirementBlockers {
-        configurations: u64::try_from(configurations).map_err(|_| Error::Corrupt)?,
-        installations: u64::try_from(installations).map_err(|_| Error::Corrupt)?,
-    })
-}
-
-#[derive(schemars::JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Deployment {
-    pub origin: String,
-    pub host_id: Uuid,
-    pub revision: u64,
-    pub observed_at: i64,
-    pub configuration_revision: u64,
 }
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,24 +91,6 @@ pub struct FailureObservation {
     pub origin: String,
     pub received_at: i64,
 }
-#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Receipt {
-    Saved {
-        draft: Draft,
-    },
-    Published {
-        configuration: w::SignedConfiguration,
-    },
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-enum StoredReceipt {
-    Save { revision: u64 },
-    Publish { revision: u64 },
-}
-
 fn key_aad(tenant: &str, key_id: &str) -> Result<DerivedAad, Error> {
     ProtectionContext::new(
         rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Configuration)?,
@@ -226,7 +170,7 @@ async fn service_id_on(
         .await
         .map_err(db)
 }
-pub(super) async fn lock(
+async fn lock(
     _profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
@@ -238,34 +182,13 @@ pub(super) async fn lock(
         .map_err(db)?;
     Ok(())
 }
-async fn draft_on(
-    profile: rss_mdm_install_support::StorageProfile,
-    c: &mut PgConnection,
-    tenant: &str,
-    revision: Option<u64>,
-) -> Result<Option<Draft>, Error> {
-    let raw: Option<serde_json::Value> =
-        sqlx::query_scalar(crate::storage_profile::sql(profile).agent_connections_draft_on_1)
-            .bind(tenant)
-            .bind(
-                revision
-                    .map(i64::try_from)
-                    .transpose()
-                    .map_err(|_| Error::Malformed)?,
-            )
-            .fetch_optional(c)
-            .await
-            .map_err(db)?;
-    raw.map(|v| serde_json::from_value(v).map_err(|_| Error::Corrupt))
-        .transpose()
-}
-async fn published_on(
+async fn signed_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     revision: Option<u64>,
 ) -> Result<Option<w::SignedConfiguration>, Error> {
-    let row = sqlx::query(crate::storage_profile::sql(profile).agent_connections_published_on_1)
+    let row = sqlx::query(crate::storage_profile::sql(profile).agent_connections_signed_on_1)
         .bind(tenant)
         .bind(
             revision
@@ -306,89 +229,107 @@ pub(super) async fn current_on(
     c: &mut PgConnection,
     tenant: &str,
 ) -> Result<w::SignedConfiguration, Error> {
-    published_on(profile, c, tenant, None)
+    signed_on(profile, c, tenant, None)
         .await?
         .ok_or(Error::Conflict)
 }
 
-/// Freeze a new native installation locator while fencing publication/retirement.
-/// The command runtime can read the public configuration and never its private key.
-pub async fn installation_configuration_on(
+async fn store_version(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-) -> Result<w::SignedConfiguration, Error> {
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2894))")
-        .bind(tenant)
-        .execute(&mut *c)
-        .await
-        .map_err(db)?;
-    current_on(profile, c, tenant).await
-}
-
-/// Installation owner records a successful real HTTPS host observation in its own transaction.
-/// There is deliberately no management HTTP endpoint capable of inventing this observation.
-pub async fn record_deployment_on(
-    profile: rss_mdm_install_support::StorageProfile,
-    c: &mut PgConnection,
-    tenant: Uuid,
-    origin: &str,
-    service_id: Uuid,
-    host_id: Uuid,
-    revision: u64,
+    signed: &w::SignedConfiguration,
 ) -> Result<(), Error> {
-    w::validate_origin(origin).map_err(|_| Error::Malformed)?;
-    if service_id != service_id_on(profile, c).await? || host_id.is_nil() || revision == 0 {
-        return Err(Error::Conflict);
-    }
-    lock(profile, c, &tenant.to_string()).await?;
-    let configuration_revision: i64 = sqlx::query_scalar(
-        crate::storage_profile::sql(profile).agent_connections_record_deployment_on_1,
-    )
-    .bind(tenant)
-    .fetch_one(&mut *c)
-    .await
-    .map_err(db)?;
-    sqlx::query(crate::storage_profile::sql(profile).agent_connections_record_deployment_on_2)
+    sqlx::query(crate::storage_profile::sql(profile).agent_connections_insert_version)
         .bind(tenant)
-        .bind(origin)
-        .bind(service_id)
-        .bind(host_id)
-        .bind(i64::try_from(revision).map_err(|_| Error::Malformed)?)
-        .bind(configuration_revision)
+        .bind(i64::try_from(signed.configuration.revision).map_err(|_| Error::Malformed)?)
+        .bind(serde_json::to_value(signed).map_err(|_| Error::Malformed)?)
         .execute(c)
         .await
         .map_err(db)?;
     Ok(())
 }
 
-impl Service {
-    pub async fn require_connection_origin(
+impl InstalledOrigins {
+    async fn sign_on(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        origin: &rss_mdm_certificate::GatewayOrigin,
-    ) -> Result<(), Failure> {
-        let tenant = binding.tenant().to_string();
-        let mut tx = self.store.begin(&tenant).await?;
-        self.check_origin_on(&mut tx, &tenant, origin).await?;
-        tx.rollback().await.map_err(db)?;
-        Ok(())
+        profile: rss_mdm_install_support::StorageProfile,
+        c: &mut PgConnection,
+        tenant: &str,
+        signer: &configurations::Signer,
+        revision: u64,
+    ) -> Result<w::SignedConfiguration, Error> {
+        let signed = signer.sign_connections(w::Configuration {
+            wire_version: 1,
+            service_id: service_id_on(profile, c).await?,
+            tenant_id: Uuid::parse_str(tenant).map_err(|_| Error::Configuration)?,
+            revision,
+            preferred_origin: self.preferred.clone(),
+            origins: self.origins.clone(),
+            key_id: signer.key_id.clone(),
+        })?;
+        store_version(profile, c, tenant, &signed).await?;
+        Ok(signed)
     }
-    pub(super) async fn check_origin_on(
+}
+
+impl Service {
+    /// A new file uses the gateway loaded by the issuing host. Replays bypass issuance.
+    pub(super) async fn connections_for_new_file(
         &self,
         c: &mut PgConnection,
         tenant: &str,
+    ) -> Result<(w::SignedConfiguration, configurations::Signer), Error> {
+        let profile = self.profile();
+        let origins = self.origins.as_ref().ok_or(Error::Configuration)?;
+        lock(profile, c, tenant).await?;
+        let current = signed_on(profile, c, tenant, None).await?;
+        let signer = ensure_signer_on(profile, c, tenant, &self.protection).await?;
+        let revision = match current {
+            Some(current)
+                if current.configuration.preferred_origin == origins.preferred
+                    && current.configuration.origins == origins.origins =>
+            {
+                return Ok((current, signer));
+            }
+            Some(current) => current
+                .configuration
+                .revision
+                .checked_add(1)
+                .ok_or(Error::Conflict)?,
+            None => 1,
+        };
+        let signed = origins
+            .sign_on(profile, c, tenant, &signer, revision)
+            .await?;
+        Ok((signed, signer))
+    }
+
+    /// Native and self-service enrollment can activate before the tenant issues its first file.
+    pub(super) async fn initialize_connections(
+        &self,
+        c: &mut PgConnection,
+        tenant: &str,
+    ) -> Result<(), Error> {
+        let profile = self.profile();
+        lock(profile, c, tenant).await?;
+        if signed_on(profile, c, tenant, None).await?.is_none() {
+            let origins = self.origins.as_ref().ok_or(Error::Configuration)?;
+            let signer = ensure_signer_on(profile, c, tenant, &self.protection).await?;
+            origins.sign_on(profile, c, tenant, &signer, 1).await?;
+        }
+        Ok(())
+    }
+
+    pub fn require_connection_origin(
+        &self,
         origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<(), Failure> {
-        let configuration = published_on(self.profile(), c, tenant, None).await?;
-        // Until this tenant publishes a policy, the gateway's installed origins apply.
-        if configuration.is_some_and(|value| {
-            !value
-                .configuration
-                .origins
-                .iter()
-                .any(|value| value == origin.as_str())
-        }) {
+        if self
+            .origins
+            .as_ref()
+            .is_some_and(|installed| !installed.origins.iter().any(|v| v == origin.as_str()))
+        {
             return Err(Error::Unauthorized.into());
         }
         Ok(())
@@ -420,31 +361,8 @@ impl Service {
             Permission::RegistrationConfigurationRead,
         )
         .await?;
-        let published = published_on(profile, &mut tx, p.tenant_id(), None).await?;
-        let revision = published.as_ref().map(|v| v.configuration.revision);
-        let rows =
-            sqlx::query(crate::storage_profile::sql(profile).agent_connections_connection_state_1)
-                .bind(p.tenant_id())
-                .bind(self.service_id()?)
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(db)?;
-        let deployments = rows
-            .into_iter()
-            .map(|r| {
-                Ok(Deployment {
-                    origin: r.try_get("origin").map_err(db)?,
-                    host_id: r.try_get("host_id").map_err(db)?,
-                    revision: u64::try_from(r.try_get::<i64, _>("revision").map_err(db)?)
-                        .map_err(|_| Error::Corrupt)?,
-                    observed_at: r.try_get("observed_at").map_err(db)?,
-                    configuration_revision: u64::try_from(
-                        r.try_get::<i64, _>("configuration_revision").map_err(db)?,
-                    )
-                    .map_err(|_| Error::Corrupt)?,
-                })
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
+        let configuration = signed_on(profile, &mut tx, p.tenant_id(), None).await?;
+        let revision = configuration.as_ref().map(|v| v.configuration.revision);
         let (active, confirmed): (i64, i64) = sqlx::query_as(
             crate::storage_profile::sql(profile).agent_connections_connection_state_2,
         )
@@ -465,20 +383,10 @@ impl Service {
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
-        let draft = draft_on(profile, &mut tx, p.tenant_id(), None).await?;
-        let retirement_blockers = if let Some(ref d) = draft {
-            retirement_blockers_on(profile, &mut tx, p.tenant_id(), &d.configuration.origins)
-                .await?
-        } else {
-            RetirementBlockers::default()
-        };
         let state = State {
             service_id: self.service_id()?,
-            draft,
-            retirement_blockers,
-            published,
+            configuration,
             verification_keys: keys.into_iter().collect(),
-            deployments,
             convergence: Convergence {
                 target_revision: revision,
                 active_devices: u64::try_from(active).map_err(|_| Error::Corrupt)?,
@@ -487,303 +395,6 @@ impl Service {
         };
         tx.rollback().await.map_err(db)?;
         Ok(state)
-    }
-    pub async fn save_connections(
-        &self,
-        p: &AuthorizedPrincipal,
-        input: &Save,
-        audit: &RequestAudit,
-    ) -> Result<Draft, Failure> {
-        let profile = self.profile();
-
-        self.proof(p, audit)?;
-        p.session()?;
-        if input.operation_id.is_nil() {
-            return Err(Error::Malformed.into());
-        }
-        audit.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::Registration,
-            input.operation_id,
-            "agent_connections_save",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        let d = digest(&("save", input))?;
-        self.write(audit, (self, p, input, audit, d), |ctx, c| {
-            Box::pin(async move {
-                let (service, p, input, audit, d) = ctx;
-                authorize_write(profile, c, p).await?;
-                lock(profile, c, p.tenant_id()).await?;
-                let op = crate::operations::Operation {
-                    actor: crate::operations::Actor::from_authorized(p),
-                    key: input.operation_id,
-                    digest: d,
-                };
-                if let Some(old) = crate::operations::replay(profile, c, &op).await? {
-                    let StoredReceipt::Save { revision } =
-                        serde_json::from_str(&old).map_err(|_| Error::Corrupt)?
-                    else {
-                        return Err(Error::Conflict);
-                    };
-                    return Ok(Change {
-                        value: draft_on(profile, c, p.tenant_id(), Some(revision))
-                            .await?
-                            .ok_or(Error::Corrupt)?,
-                        replay: true,
-                    });
-                }
-                let old = draft_on(profile, c, p.tenant_id(), None).await?;
-                let current = old.map_or(0, |v| v.configuration.revision);
-                if current != input.expected_revision || current >= i64::MAX as u64 {
-                    return Err(Error::Conflict);
-                }
-                if service.service_id()? != service_id_on(profile, c).await? {
-                    return Err(Error::Configuration);
-                }
-                let signer =
-                    ensure_signer_on(profile, c, p.tenant_id(), &service.protection).await?;
-                let out = Draft {
-                    configuration: w::Configuration {
-                        wire_version: 1,
-                        service_id: service.service_id()?,
-                        tenant_id: Uuid::parse_str(p.tenant_id())
-                            .map_err(|_| Error::Configuration)?,
-                        revision: current + 1,
-                        preferred_origin: input.preferred_origin.clone(),
-                        origins: input.origins.clone(),
-                        key_id: signer.key_id.clone(),
-                    },
-                };
-                out.configuration.validate().map_err(|_| Error::Malformed)?;
-                sqlx::query(
-                    crate::storage_profile::sql(profile).agent_connections_save_connections_1,
-                )
-                .bind(p.tenant_id())
-                .bind((current + 1) as i64)
-                .bind(serde_json::to_value(&out).map_err(|_| Error::Malformed)?)
-                .execute(&mut *c)
-                .await
-                .map_err(db)?;
-                crate::operations::save(
-                    profile,
-                    c,
-                    &op,
-                    &serde_json::to_string(&StoredReceipt::Save {
-                        revision: current + 1,
-                    })
-                    .map_err(|_| Error::Corrupt)?,
-                    audit,
-                    false,
-                )
-                .await?;
-                Ok(Change {
-                    value: out,
-                    replay: false,
-                })
-            })
-        })
-        .await
-        .map_err(Into::into)
-    }
-    pub async fn publish_connections(
-        &self,
-        p: &AuthorizedPrincipal,
-        input: &Publish,
-        audit: &RequestAudit,
-    ) -> Result<w::SignedConfiguration, Failure> {
-        let profile = self.profile();
-
-        self.proof(p, audit)?;
-        p.session()?;
-        if input.operation_id.is_nil() {
-            return Err(Error::Malformed.into());
-        }
-        audit.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::Registration,
-            input.operation_id,
-            "agent_connections_publish",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        let d = digest(&("publish", input))?;
-        self.write(audit, (self, p, input, audit, d), |ctx, c| {
-            Box::pin(async move {
-                let (service, p, input, audit, d) = ctx;
-                authorize_write(profile, c, p).await?;
-                lock(profile, c, p.tenant_id()).await?;
-                let op = crate::operations::Operation {
-                    actor: crate::operations::Actor::from_authorized(p),
-                    key: input.operation_id,
-                    digest: d,
-                };
-                if let Some(old) = crate::operations::replay(profile, c, &op).await? {
-                    let StoredReceipt::Publish { revision } =
-                        serde_json::from_str(&old).map_err(|_| Error::Corrupt)?
-                    else {
-                        return Err(Error::Conflict);
-                    };
-                    return Ok(Change {
-                        value: published_on(profile, c, p.tenant_id(), Some(revision))
-                            .await?
-                            .ok_or(Error::Corrupt)?,
-                        replay: true,
-                    });
-                }
-                let draft = draft_on(profile, c, p.tenant_id(), None)
-                    .await?
-                    .ok_or(Error::Conflict)?;
-                if draft.configuration.revision != input.expected_revision {
-                    return Err(Error::Conflict);
-                }
-                if let Some(previous) = published_on(profile, c, p.tenant_id(), None).await? {
-                    if draft.configuration.revision <= previous.configuration.revision {
-                        return Err(Error::Conflict);
-                    }
-                    draft
-                        .configuration
-                        .validate_successor(&previous.configuration)
-                        .map_err(|_| Error::Conflict)?;
-                    if previous
-                        .configuration
-                        .origins
-                        .iter()
-                        .any(|o| !draft.configuration.origins.contains(o))
-                    {
-                        let blocked = retirement_blockers_on(
-                            profile,
-                            c,
-                            p.tenant_id(),
-                            &draft.configuration.origins,
-                        )
-                        .await?;
-                        if blocked.configurations > 0 || blocked.installations > 0 {
-                            return Err(Error::Agent(wire::ErrorCode::ConnectionRetirementBlocked));
-                        }
-                    }
-                    // A device that has only removed locations cannot discover this update.
-                    let stranded: bool = sqlx::query_scalar(
-                        crate::storage_profile::sql(profile)
-                            .agent_connections_publish_connections_1,
-                    )
-                    .bind(p.tenant_id())
-                    .bind(&draft.configuration.origins)
-                    .fetch_one(&mut *c)
-                    .await
-                    .map_err(db)?;
-                    if stranded
-                        && !previous
-                            .configuration
-                            .origins
-                            .iter()
-                            .any(|o| draft.configuration.origins.contains(o))
-                    {
-                        return Err(Error::Agent(wire::ErrorCode::ConnectionRetirementBlocked));
-                    }
-                    if stranded
-                        && previous
-                            .configuration
-                            .origins
-                            .iter()
-                            .any(|o| !draft.configuration.origins.contains(o))
-                    {
-                        return Err(Error::Agent(wire::ErrorCode::ConnectionRetirementBlocked));
-                    }
-                }
-                for origin in &draft.configuration.origins {
-                    let verified: bool = sqlx::query_scalar(
-                        crate::storage_profile::sql(profile)
-                            .agent_connections_publish_connections_2,
-                    )
-                    .bind(p.tenant_id())
-                    .bind(origin)
-                    .bind(service.service_id()?)
-                    .bind(draft.configuration.revision as i64)
-                    .fetch_one(&mut *c)
-                    .await
-                    .map_err(db)?;
-                    if !verified {
-                        return Err(Error::Agent(
-                            wire::ErrorCode::ConnectionDeploymentUnobserved,
-                        ));
-                    }
-                }
-                let signer = signer_on(profile, c, p.tenant_id(), &service.protection).await?;
-                let out = signer.sign_connections(draft.configuration)?;
-                sqlx::query(
-                    crate::storage_profile::sql(profile).agent_connections_publish_connections_3,
-                )
-                .bind(p.tenant_id())
-                .bind(input.expected_revision as i64)
-                .bind(serde_json::to_value(&out).map_err(|_| Error::Malformed)?)
-                .execute(&mut *c)
-                .await
-                .map_err(db)?;
-                crate::operations::save(
-                    profile,
-                    c,
-                    &op,
-                    &serde_json::to_string(&StoredReceipt::Publish {
-                        revision: input.expected_revision,
-                    })
-                    .map_err(|_| Error::Corrupt)?,
-                    audit,
-                    false,
-                )
-                .await?;
-                Ok(Change {
-                    value: out,
-                    replay: false,
-                })
-            })
-        })
-        .await
-        .map_err(Into::into)
-    }
-    pub async fn connection_operation(
-        &self,
-        p: &AuthorizedPrincipal,
-        id: Uuid,
-    ) -> Result<Option<Receipt>, Failure> {
-        let profile = self.profile();
-
-        p.manage(Permission::RegistrationConfigurationRead)?;
-
-        let mut tx = self.store.begin(p.tenant_id()).await?;
-        super::authorize_on(
-            profile,
-            &mut tx,
-            p,
-            Permission::RegistrationConfigurationRead,
-        )
-        .await?;
-        let revision: Option<String> = sqlx::query_scalar(
-            crate::storage_profile::sql(profile).agent_connections_connection_operation_1,
-        )
-        .bind(p.tenant_id())
-        .bind(p.principal_id())
-        .bind(p.instance_id())
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db)?;
-        let Some(revision) = revision else {
-            tx.rollback().await.map_err(db)?;
-            return Ok(None);
-        };
-        let receipt: StoredReceipt =
-            serde_json::from_str(&revision).map_err(|_| Error::Conflict)?;
-        let out = match receipt {
-            StoredReceipt::Save { revision } => Receipt::Saved {
-                draft: draft_on(profile, &mut tx, p.tenant_id(), Some(revision))
-                    .await?
-                    .ok_or(Error::NotFound)?,
-            },
-            StoredReceipt::Publish { revision } => Receipt::Published {
-                configuration: published_on(profile, &mut tx, p.tenant_id(), Some(revision))
-                    .await?
-                    .ok_or(Error::NotFound)?,
-            },
-        };
-        tx.rollback().await.map_err(db)?;
-        Ok(Some(out))
     }
     pub async fn acknowledge_connections(
         &self,
@@ -826,7 +437,7 @@ impl Service {
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
                 )
                 .await?;
-                let configuration = published_on(
+                let configuration = signed_on(
                     profile,
                     c,
                     &audit.binding()?.tenant().to_string(),
@@ -902,8 +513,7 @@ impl Service {
             return Err(Error::Malformed.into());
         }
         let principal = self.authenticate(peer).await?;
-        self.require_connection_origin(principal.binding(), origin)
-            .await?;
+        self.require_connection_origin(origin)?;
         audit
             .bind_scope(principal.binding())
             .map_err(|_| Error::Unauthorized)?;
@@ -925,7 +535,7 @@ impl Service {
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
                 )
                 .await?;
-                published_on(
+                signed_on(
                     profile,
                     c,
                     &audit.binding()?.tenant().to_string(),
@@ -997,8 +607,8 @@ impl Service {
             Permission::RegistrationConfigurationRead,
         )
         .await?;
-        let published = current_on(profile, &mut tx, p.tenant_id()).await?;
-        if published.configuration.revision != input.revision {
+        let current = current_on(profile, &mut tx, p.tenant_id()).await?;
+        if current.configuration.revision != input.revision {
             return Err(Error::Conflict.into());
         }
         let snapshot = rss_mdm_authorization_service::snapshot_on(
@@ -1137,22 +747,6 @@ impl Service {
         tx.rollback().await.map_err(db)?;
         Ok(out)
     }
-}
-
-async fn authorize_write(
-    profile: rss_mdm_install_support::StorageProfile,
-    c: &mut PgConnection,
-    p: &AuthorizedPrincipal,
-) -> Result<(), Error> {
-    if profile != p.profile() {
-        return Err(crate::Error::Forbidden);
-    }
-
-    super::authorize_on(profile, c, p, Permission::RegistrationConfigurationWrite).await?;
-    if !p.recently_authenticated(now(c).await?, 300)? {
-        return Err(Error::Unauthorized);
-    }
-    Ok(())
 }
 
 /// Re-encrypt only the configuration private key under the existing Native protection rotation.

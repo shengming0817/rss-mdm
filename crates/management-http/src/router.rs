@@ -24,7 +24,7 @@ pub struct Services {
     pub windows_entra: Option<Arc<rss_mdm_registration_service::windows_entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::certificate_issuance::Clock>,
-    pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
+    pub agent_enrollment: crate::agent_enrollment::App,
     pub filevault: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
     pub recovery_native: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
@@ -227,7 +227,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
         rss_mdm_http_contract::route_module! { struct AssembleModule3 for [Browser] { agent_enrollment_register, windows_entra_register, http_register, http_register_2, http_register_previews, software_catalog_routes, http_routes, http_register_3, directory_routes, timeline_routes, device_views_register } }
         AssembleModule3 {
             agent_enrollment_register: crate::agent_enrollment::register()
-                .bind_with(context, |(s, _)| Arc::new(s.agent_enrollment.clone())),
+                .bind_with(context, |(s, _)| s.agent_enrollment.clone()),
             windows_entra_register: crate::windows_entra::register()
                 .bind_with(context, |(s, _)| Arc::new(s.windows_entra.clone())),
             http_register: crate::execution::http::register(

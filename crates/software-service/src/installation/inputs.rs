@@ -11,6 +11,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 /// Installation publication consumes readiness, never the registration service itself.
 pub trait Admission: Send + Sync {
+    fn installed_origin(&self) -> Option<&str>;
     fn ready_signing_revision<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
@@ -73,9 +74,6 @@ impl Inputs {
             })
         })
         .await??;
-        tx.with_connection(move |c| Box::pin(async move {
-            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant.to_string()).await.map(|_| ()).map_err(|_| Error::Dependency))
-        })).await??;
         Ok(())
     }
     pub async fn freeze_in(

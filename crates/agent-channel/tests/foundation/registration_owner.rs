@@ -93,6 +93,10 @@ pub async fn assemble(
             ring::hmac::HMAC_SHA256,
             &[5; 32],
         )),
+        origins: agent::connections::InstalledOrigins::new(
+            "https://localhost:9445".into(),
+            &["https://localhost".into()],
+        )?,
         probe: c.execution(),
         store: Arc::new(registration::Store::from_pool(
             DA,

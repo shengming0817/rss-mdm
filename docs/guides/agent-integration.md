@@ -13,7 +13,7 @@
 三种来源统一进入独立 Agent 证书链路：
 
 1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交安装材料指定的 tenantId、稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/tenants/{tenant}/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
-2. 管理员调用 `POST /api/v1/tenants/{tenant}/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/tenants/{tenant}/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/tenants/{tenant}/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
+2. 管理员调用 `POST /api/v1/tenants/{tenant}/agent-configurations` 创建一个完整签名 JSON 文件。首次签发直接使用已启用的 `agent_pki.endpoint.origin` 和附加入口，服务器自动准备租户签名密钥与初始连接版本。未配置 Agent 对外地址时，接口返回 `409 agent_endpoint_not_configured`。创建时必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/tenants/{tenant}/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/tenants/{tenant}/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
 3. 原生 MDM 安装使用专用短期引导证书，经 Nginx Agent 公开入口调用 `POST /api/v1/agent/enroll/native-grants`。提交 installationOperation、operationId、secret、独立日常密钥的 CSR 和 runtime；服务端从引导证书记录恢复来源注册、安装和 release，复查当前授权后返回 grant。Windows / Apple 原生协议路由不挂载此入口，MDM 日常证书不能交换授权。
 
 管理员配置使用配置自身的租户额度，默认责任人为 null；创建者仅作为审计身份，不占用其普通用户 20 台额度，也不构成终端 ownership。每台设备独立生成私钥、CSR、operation 和 grant secret，调用 `POST /api/v1/agent/enroll/configurations/exchange`，提交完整 file、runtime 和 installation（releaseId）。同一 operation 的精确重试只返回原授权；同一配置下换 operation 重用 CSR 公钥被拒绝。`POST .../configurations/status` 使用原 configurationId、operationId 和独立设备 secret 查回授权，不重新分配。
@@ -74,7 +74,7 @@ Agent 注册在已有 `channel.mdm.enrollment` 定义中同时下发 `channel.cl
 
 新 V1 继续拒绝软件 ownership 和 AppCopy 的 materialSha256，旧字段即使为 null 也拒绝；AppCopy 仍绑定完整 DMG 摘要、明确的包路径和目标名、bundle ID、版本、执行身份与独立前后检测。独立 Agent #2663 须更新到本项交付的完整 Git rev 和两个 V1 指纹，当前服务端测试不代表 Agent 或真机已完成。
 
-原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，origin 在接受新任务时从当前已发布签名连接配置的 `preferredOrigin` 冻结；已有任务保留原地址，其未完成期间阻止该地址退役。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。
+原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，接受新任务时使用实际启用的 Agent 主入口生成固定 URL。已接受的安装保留该 URL，运维在其完成或到期前维持旧地址可达。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。
 
 原生 MDM 的 Agent 安装按尝试保留幂等历史，不再按注册代际永久锁死。原尝试仍在有效期内、引导身份尚未清理，或最新原生探测是在原尝试截止后 60 秒之前开始时，不产生新的安装操作。新的完整探测确认包缺失后，策略可在同一 MDM 注册下创建独立恢复尝试；原 Unknown 和旧回执保留，不改写为成功。原生 MDM 仍可能晚执行已收到的命令，这不是跨 OS 的 exactly-once 承诺。
 
@@ -96,7 +96,7 @@ Agent 注册在已有 `channel.mdm.enrollment` 定义中同时下发 `channel.cl
 
 产品控制台和 Agent 的公开 HTTPS origin 都提供匿名 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 和 `GET .../packages/{id}/content`。请求通过必填的 `tenantId` 查询参数选定租户，下载复用 Content 的长度、摘要、Range 和 ETag。包目录只描述已发布安装材料，不承载注册 origin、公钥或构建期候选声明。注册 installation 只引用不可变 releaseId；文件摘要由软件 owner 持有，不另交付候选 manifest。
 
-注册配置仍由注册 owner 签名并验证稳定服务身份、签名连接配置、租户、目标、期限、secret、数量及 CSR；当前发布状态在同一租户事务中复查。任务签名与运行身份不因包未签名而改变。配置、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
+注册配置仍由注册 owner 签名并验证稳定服务身份、签名连接配置、租户、目标、期限、secret、数量及 CSR；签发和原操作重放在租户事务内完成。任务签名与运行身份不因包未签名而改变。配置、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
 
 本项直接替换当前自有 V1，不接受旧 manifestArtifact、candidateSha256、包内 origin/signingKeys 或旧 nsis_exe 发行合同。前端与独立 Agent 必须同步消费本次完整 revision；服务端通过不代表旧客户端已接入或真机通过。发布成功不表示目标操作系统一定允许安装，真实拒绝和执行结果由原通道如实返回，系统不关闭或绕过 OS 策略。
 
@@ -165,11 +165,11 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 服务身份固定为安装 `instance_id` 与 tenant，网络地址可变。注册文件包含当前 `connections::SignedConfiguration`；设备安装材料通过受保护的交付绑定该身份、配置验证公钥与 HTTPS CA。配置签名根归注册 owner 持有，复用原 Ed25519 与 Native 密文保护设施，独立于任务密钥轮换。
 
-管理员通过同源 `GET/PUT /api/v1/tenants/{tenant}/agent-connections` 读取和保存 draft，通过 `POST /api/v1/tenants/{tenant}/agent-connections/publish` 发布指定 revision；保存不表示部署或生效。写入使用原 operationId、CAS revision 和近期会话，未知结果先查询 `GET /api/v1/tenants/{tenant}/agent-connection-operations/{id}`，null 只表示仍未知。`GET /api/v1/tenants/{tenant}/registration-channels` 展示实际配置的各公开入口。Nginx 部署与逐 origin 的 HTTPS 观察由原宿主维护流程持有，发布要求观察对应当前 draft revision 且在最近五分钟内，网页不执行部署操作。
+公开地址由运维在宿主通道配置中维护。`GET /api/v1/tenants/{tenant}/registration-channels` 展示该宿主的公开入口，`GET /api/v1/tenants/{tenant}/agent-connections` 展示租户已签发的连接配置、验证公钥及设备确认数量。新建管理员安装文件时，服务端使用当前宿主已启用的 Agent 入口。地址或首选项变化时，仅在该租户本次签发中生成下一版连接配置；入口相同则复用原版本。重试原签发操作仍得到原文件。
 
 设备通过已认证的 `GET /api/v1/agent/enroll/connections` 获取签名配置，使用已安装公钥验签，拒绝跨服务/租户、回滚、同 revision 异内容或非规范 origin，原子保存并读回后才使用。`POST .../connections/acknowledgements` 绑定 deviceId、revision、摘要与真实网关 origin；`POST .../connections/failures` 只记录闭合失败原因，不改变已安装 revision 或授权。管理端通过设备 observation 和带 target revision 的 `/agent-connections/devices` 分页分别读取实际 ACK、失败与未确认设备。
 
-发布采用 `A → A+B → B`，重叠阶段优先 B，设备经 B 确认后才允许移除 A。`connection_deployment_unobserved` 和 `connection_retirement_blocked` 为明确发布阻断。所有已知地址失联时，通过受保护的 `GET /api/v1/tenants/{tenant}/agent-connections/configuration` 下载和离线导入恢复。导入不能扩大 CA、凭据或业务权限；通信状态、密钥命名空间、执行 authority 与内容缓存都绑定稳定身份。正常入口和程序更新保留原注册、世代、执行日志及未决操作。Windows/Apple 原生 URL 由各自协议配置持有。
+更换公开域名时，运维可先同时提供 A 和 B，将 B 配为首选，根据实际设备回执、离线窗口和已下发任务决定何时关闭 A。受保护的 `GET /api/v1/tenants/{tenant}/agent-connections/configuration` 下载该租户最近签发的连接配置。文件包含可达入口时，设备可以离线导入恢复。导入不能扩大 CA、凭据或业务权限；通信状态、密钥命名空间、执行 authority 与内容缓存都绑定稳定身份。正常入口和程序更新保留原注册、世代、执行日志及未决操作。Windows/Apple 原生 URL 由各自协议配置持有。
 
 管理员签发恢复的未知响应先查询 `GET /api/v1/tenants/{tenant}/agent-issuances/{id}/recovery-operations/{operation}`。查询复核当前设备凭据权限及原主体/实例，找到原回执才显示成功；null 不证明回滚，只能由用户显式原样重试。浏览器不签名、不持有 CA 或配置私钥。
 

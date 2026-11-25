@@ -282,9 +282,7 @@ pub async fn diagnostic_receipt(
                             let (permission, target) = match action.as_str() {
                                 "registration_admission_change"
                                 | "registration_quota_change"
-                                | "windows_entra_policy"
-                                | "agent_connections_save"
-                                | "agent_connections_publish" => {
+                                | "windows_entra_policy" => {
                                     (Permission::RegistrationConfigurationRead, None)
                                 }
                                 "registration_user_change"

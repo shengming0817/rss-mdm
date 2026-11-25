@@ -42,12 +42,6 @@ pub async fn materials(
         directory,
     })
 }
-struct Clock;
-impl agent_pki::Clock for Clock {
-    fn unix_seconds(&self) -> Result<i64, rss_mdm_registration_service::Error> {
-        Ok(now())
-    }
-}
 pub async fn publish_agent_trust(
     c: &Context,
     mut trust: rss_mdm_agent_wire::pki::Trust,
@@ -82,6 +76,23 @@ pub async fn service(
     protection: Arc<rss_mdm_native_protection::Protector>,
     m: &Materials,
 ) -> Result<agent::Service> {
+    let pki = pki(
+        c,
+        n,
+        m,
+        super::connections::PRIMARY,
+        &["https://localhost".into()],
+    )
+    .await?;
+    service_with_pki(c, authority, protection, pki)
+}
+pub(super) async fn pki(
+    c: &Context,
+    n: &Native,
+    m: &Materials,
+    origin: &str,
+    additional: &[String],
+) -> Result<Arc<crate::agent_pki::AgentPki>> {
     use rss_mdm_agent_wire::pki::Purpose;
     use rss_mdm_pki_service::{
         Configuration, StepCa,
@@ -111,17 +122,6 @@ pub async fn service(
         c.execution(),
         providers.clone(),
     ));
-    let clock = Arc::new(Clock);
-    let issuer = Arc::new(agent_pki::DeviceIssuer::new(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        providers,
-        2,
-        true,
-        Purpose::Agent,
-        registry,
-        Uuid::parse_str(&c.inputs.installation.instance_id)?,
-        clock.clone(),
-    )?);
     let bootstrap = Arc::new(rss_mdm_pki_service::scep::Verifier::new(vec![
         rss_mdm_pki_service::scep::Credentials {
             issuer: digest,
@@ -131,21 +131,47 @@ pub async fn service(
             notify_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[8; 32]),
         },
     ])?);
+    let config = crate::agent_pki::Config::StepCa {
+        endpoint: Box::new(crate::native::PublicEndpoint {
+            origin: origin.to_owned(),
+        }),
+        additional_origins: additional.to_vec(),
+        bootstrap: None,
+        lifetime: crate::agent_pki::Lifetime::Development { days: 2 },
+    };
+    config
+        .load(
+            &c.inputs.installation.instance_id,
+            c.audit.clone(),
+            Arc::new(crate::clock::SystemClock),
+            providers,
+            registry,
+            Some(bootstrap),
+        )?
+        .ok_or_else(|| anyhow::anyhow!("Agent gateway failed to load"))
+}
+pub(super) fn service_with_pki(
+    c: &Context,
+    authority: Arc<owner::managed_registration::AuthorityReader>,
+    protection: Arc<Protector>,
+    pki: Arc<crate::agent_pki::AgentPki>,
+) -> Result<agent::Service> {
     Ok(agent::Service::new(agent::Assembly {
         cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
             ring::hmac::HMAC_SHA256,
             &[9; 32],
         )),
+        origins: pki.origins.clone(),
         probe: c.execution(),
         store: c.database.registration(),
         audit: c.audit.clone(),
-        issuer,
-        clock,
+        issuer: pki.issuer.clone(),
+        clock: pki.pki_clock.clone(),
         binding: Arc::new(rss_mdm_agent_channel::Bindings::new(
             rss_mdm_install_support::StorageProfile::Mdm,
         )),
         native: Some(authority),
-        bootstrap: Some(bootstrap),
+        bootstrap: pki.bootstrap.clone(),
         protection,
         installations: Some(Arc::new(crate::agent_configurations::Installations)),
     })?)
@@ -167,18 +193,7 @@ struct Metadata {
     input_version: String,
     target: owner::NativeTarget,
 }
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "legal prior installation facts use one fixture transaction and real protected protocol bytes"
-)]
-pub async fn installation(
-    c: &Context,
-    n: &Native,
-    key: &Protector,
-    id: Uuid,
-    bootstrap: Uuid,
-    m: &Materials,
-) -> Result<()> {
+pub(super) async fn install_policy(c: &Context, n: &Native) -> Result<(Package, Uuid, Uuid, Uuid)> {
     let resource = software(c, "registered-agent").await?;
     let r::Declaration::Software { definition } = resource.variants()[0].declaration() else {
         unreachable!()
@@ -212,42 +227,6 @@ pub async fn installation(
     };
     let policy = Uuid::new_v4();
     let version = Uuid::new_v4();
-    let deadline = now() + 300;
-    let input = owner::Create {
-        operation_id: id,
-        input_version: "1".into(),
-        target: owner::NativeTarget::Device,
-        task: package.native_task(id, "https://localhost")?,
-        deadline,
-    };
-    let metadata = Metadata {
-        platform: "windows".into(),
-        purpose: input.task.purpose()?,
-        deadline,
-        input_version: input.input_version.clone(),
-        target: input.target.clone(),
-    };
-    let owner = serde_json::to_string(&InputIdentity {
-        operation: id,
-        device: &n.device,
-    })?;
-    let field = serde_json::to_string(&("native.operation.input/v1", &metadata))?;
-    let sealed = key.seal_bytes(
-        &serde_json::to_vec(&input)?,
-        &ProtectionContext::new(c.tenant, &owner, &field, 1)?.derive(),
-    )?;
-    let authority = owner::authority::Authority::AgentInstall {
-        origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-        source_objects: vec![],
-        required: vec![rss_mdm_authorization_service::Permission::SoftwareDeploy],
-        package: Box::new(package),
-        download_origin: "https://localhost".into(),
-        tenant: c.tenant.to_string(),
-        policy,
-        version,
-        device: n.device,
-        operation: id,
-    };
     let object = rss_mdm_inventory_service::objects::DeviceObject {
         object: rss_mdm_agent_wire::ObjectRef::Endpoint(n.device),
         association_version: None,
@@ -304,6 +283,56 @@ pub async fn installation(
     let command_device = Uuid::new_v4();
     sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(command_device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)").bind(c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok((package, policy, version, command_device))
+}
+pub async fn installation(
+    c: &Context,
+    n: &Native,
+    key: &Protector,
+    id: Uuid,
+    bootstrap: Uuid,
+    m: &Materials,
+) -> Result<()> {
+    let (package, policy, version, command_device) = install_policy(c, n).await?;
+    let release = package.release.release_id;
+    let deadline = now() + 300;
+    let input = owner::Create {
+        operation_id: id,
+        input_version: "1".into(),
+        target: owner::NativeTarget::Device,
+        task: package.native_task(id, "https://localhost")?,
+        deadline,
+    };
+    let metadata = Metadata {
+        platform: "windows".into(),
+        purpose: input.task.purpose()?,
+        deadline,
+        input_version: input.input_version.clone(),
+        target: input.target.clone(),
+    };
+    let owner = serde_json::to_string(&InputIdentity {
+        operation: id,
+        device: &n.device,
+    })?;
+    let field = serde_json::to_string(&("native.operation.input/v1", &metadata))?;
+    let sealed = key.seal_bytes(
+        &serde_json::to_vec(&input)?,
+        &ProtectionContext::new(c.tenant, &owner, &field, 1)?.derive(),
+    )?;
+    let authority = owner::authority::Authority::AgentInstall {
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+        source_objects: vec![],
+        required: vec![rss_mdm_authorization_service::Permission::SoftwareDeploy],
+        package: Box::new(package),
+        download_origin: "https://localhost".into(),
+        tenant: c.tenant.to_string(),
+        policy,
+        version,
+        device: n.device,
+        operation: id,
+    };
+    let mut tx = command::seed_transaction(c).await?;
     let fingerprint = input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec();
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$5,$6,'mdm.software.deployment.v1',$2,$4,'published',$6,2)").bind(c.tenant.to_string()).bind(id.to_string()).bind(command_device).bind(&fingerprint).bind(deadline*1_000_000).bind(now()*1_000_000).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_software_deployment.operations (expected_epoch,tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version, observed_command_version) VALUES (current_setting('rss.execution_epoch')::bigint,CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8, 2)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(&fingerprint).bind(serde_json::to_value(authority)?).bind(version).execute(&mut *tx).await?;

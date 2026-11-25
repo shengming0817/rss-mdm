@@ -106,6 +106,10 @@ impl Channels {
             protection,
         }
     }
+    pub(crate) fn agent_endpoint_configured(&self) -> bool {
+        !self.endpoints.agent.is_empty()
+    }
+
     pub(crate) fn endpoints(
         &self,
         tenant: rss_request_context::TenantId,
@@ -198,6 +202,10 @@ impl Channels {
 }
 
 impl rss_mdm_software_service::installation::inputs::Admission for Channels {
+    fn installed_origin(&self) -> Option<&str> {
+        self.agent.get().map(|agent| agent.origins.preferred())
+    }
+
     fn ready_signing_revision<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,

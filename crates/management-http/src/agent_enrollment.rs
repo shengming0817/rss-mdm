@@ -16,10 +16,14 @@ use rss_mdm_http_contract::{
 use rss_mdm_registration_service::agent::{Failure, Service};
 use std::sync::Arc;
 use uuid::Uuid;
-type App = Arc<Option<Arc<Service>>>;
+#[derive(Clone)]
+pub struct App {
+    pub registration: Option<Arc<Service>>,
+    pub endpoint_configured: bool,
+}
 type Body<T> = Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn service(app: &App) -> Result<&Service, HttpFailure> {
-    app.as_ref()
+    app.registration
         .as_deref()
         .ok_or_else(|| rss_mdm_registration_service::Error::Configuration.into())
 }
@@ -32,14 +36,12 @@ fn body<T>(v: Body<T>) -> Result<T, HttpFailure> {
 struct Operation {
     operation_id: Uuid,
 }
-pub fn routes(
-    app: Option<Arc<Service>>,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    register().with_state(Arc::new(app))
+pub fn routes(app: App) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    register().with_state(app)
 }
 pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_request_directory, get_request_details, get_registration_recovery_operation, get_issuance_recovery_operations, get_connection_state, put_save_connections, post_publish_connections, get_unconfirmed_devices, get_download_connections, get_connection_operation, get_connection_observation, post_create_configuration, get_list_configurations, get_read_configuration, get_configuration_operation, post_revoke_configuration, post_authorize, post_revoke, get_settings, put_update_settings, post_recovery, post_recover_issuance, get_issuance_recovery_operation } }
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_request_directory, get_request_details, get_registration_recovery_operation, get_issuance_recovery_operations, get_connection_state, get_unconfirmed_devices, get_download_connections, get_connection_observation, post_create_configuration, get_list_configurations, get_read_configuration, get_configuration_operation, post_revoke_configuration, post_authorize, post_revoke, get_settings, put_update_settings, post_recovery, post_recover_issuance, get_issuance_recovery_operation } }
         RegisterModule1 {
             get_request_directory: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/agent-requests",
@@ -81,22 +83,6 @@ pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Decl
                     &[RouteOperation::Get],
                 ),
             ),
-            put_save_connections: rss_mdm_http_contract::module::Route::new(
-                "/agent-connections",
-                rss_mdm_http_contract::routing::put(
-                    save_connections,
-                    &contracts::AGENT_CONNECTIONS,
-                    &[RouteOperation::Update],
-                ),
-            ),
-            post_publish_connections: rss_mdm_http_contract::module::Route::new(
-                "/agent-connections/publish",
-                post(
-                    publish_connections,
-                    &contracts::AGENT_CONNECTIONS,
-                    &[RouteOperation::Update],
-                ),
-            ),
             get_unconfirmed_devices: rss_mdm_http_contract::module::Route::new(
                 "/agent-connections/devices",
                 get(
@@ -111,14 +97,6 @@ pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Decl
                     download_connections,
                     &contracts::DOWNLOAD_MANAGEMENT_HTTP,
                     &[RouteOperation::Action],
-                ),
-            ),
-            get_connection_operation: rss_mdm_http_contract::module::Route::new(
-                "/agent-connection-operations/{id}",
-                get(
-                    connection_operation,
-                    &contracts::AGENT_CONNECTION_OPERATIONS,
-                    &[RouteOperation::Get],
                 ),
             ),
             get_connection_observation: rss_mdm_http_contract::module::Route::new(
@@ -237,43 +215,6 @@ async fn connection_state(
 ) -> Result<Json<rss_mdm_registration_service::agent::connections::State>, HttpFailure> {
     Ok(Json(service(&app)?.connection_state(&auth.proof).await?))
 }
-async fn save_connections(
-    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
-
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(a): Extension<RequestAudit>,
-    input: Body<rss_mdm_registration_service::agent::connections::Save>,
-) -> Result<Json<rss_mdm_registration_service::agent::connections::Draft>, HttpFailure> {
-    Ok(Json(
-        service(&app)?
-            .save_connections(&auth.proof, &body(input)?, &a)
-            .await?,
-    ))
-}
-async fn publish_connections(
-    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
-
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(a): Extension<RequestAudit>,
-    input: Body<rss_mdm_registration_service::agent::connections::Publish>,
-) -> Result<Json<rss_mdm_agent_wire::connections::SignedConfiguration>, HttpFailure> {
-    Ok(Json(
-        service(&app)?
-            .publish_connections(&auth.proof, &body(input)?, &a)
-            .await?,
-    ))
-}
-async fn connection_operation(
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
-) -> Result<Json<Option<rss_mdm_registration_service::agent::connections::Receipt>>, HttpFailure> {
-    Ok(Json(
-        service(&app)?.connection_operation(&auth.proof, id).await?,
-    ))
-}
 async fn connection_observation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
@@ -371,7 +312,7 @@ async fn issuance_recovery_operation(
     >,
 ) -> Result<Json<Option<wire::Candidate>>, Error> {
     let Query(identity) = identity.map_err(|_| Error::Malformed)?;
-    app.as_ref()
+    app.registration
         .as_deref()
         .ok_or(Error::Unsupported)?
         .issuance_recovery_operation(&auth, id, operation, &identity)
@@ -416,6 +357,44 @@ impl IntoResponse for HttpFailure {
     }
 }
 
+/// Configure the public Agent HTTPS address in agent_pki.endpoint.origin.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(tag = "code", rename_all = "snake_case")]
+enum EndpointError {
+    AgentEndpointNotConfigured,
+}
+
+enum CreateFailure {
+    EndpointNotConfigured,
+    Enrollment(HttpFailure),
+}
+impl From<HttpFailure> for CreateFailure {
+    fn from(value: HttpFailure) -> Self {
+        Self::Enrollment(value)
+    }
+}
+impl IntoResponse for CreateFailure {
+    fn into_response(self) -> Response {
+        match self {
+            Self::EndpointNotConfigured => (
+                StatusCode::CONFLICT,
+                Json(EndpointError::AgentEndpointNotConfigured),
+            )
+                .into_response(),
+            Self::Enrollment(error) => error.into_response(),
+        }
+    }
+}
+impl rss_mdm_http_contract::signature::Output for CreateFailure {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        let mut responses = HttpFailure::responses();
+        responses.push(rss_mdm_http_contract::signature::Response::json::<
+            EndpointError,
+        >(409));
+        responses
+    }
+}
+
 async fn create_configuration(
     axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
 
@@ -427,12 +406,28 @@ async fn create_configuration(
     rss_mdm_http_contract::download::Attachment<
         Json<rss_mdm_agent_wire::enroll::configuration::ConfigurationFile>,
     >,
-    HttpFailure,
+    CreateFailure,
 > {
+    let registration = match &app.registration {
+        Some(service) => service,
+        None => {
+            auth.proof
+                .manage(rss_mdm_authorization_service::Permission::AgentEnrollmentWrite)
+                .map_err(rss_mdm_registration_service::Error::from)
+                .map_err(HttpFailure::from)?;
+            if !app.endpoint_configured {
+                return Err(CreateFailure::EndpointNotConfigured);
+            }
+            return Err(
+                HttpFailure::from(rss_mdm_registration_service::Error::Configuration).into(),
+            );
+        }
+    };
     let file = Json(
-        service(&app)?
+        registration
             .create_configuration(&auth.proof, &body(input)?, &a)
-            .await?,
+            .await
+            .map_err(HttpFailure::from)?,
     );
     let disposition = format!(
         "attachment; filename=\"{}\"",
@@ -490,7 +485,7 @@ async fn download_connections(
 > {
     let state = service(&app)?.connection_state(&auth.proof).await?;
     let configuration = state
-        .published
+        .configuration
         .ok_or(rss_mdm_registration_service::Error::Conflict)?;
     Ok(rss_mdm_http_contract::download::Attachment {
         body: Json(configuration),
@@ -568,9 +563,7 @@ fn failure_status(code: wire::ErrorCode) -> StatusCode {
         C::PermissionDenied | C::GrantRevoked | C::GrantExpired => StatusCode::FORBIDDEN,
         C::EnrollmentPaused => StatusCode::CONFLICT,
         C::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
-        C::OperationConflict
-        | C::ConnectionDeploymentUnobserved
-        | C::ConnectionRetirementBlocked => StatusCode::CONFLICT,
+        C::OperationConflict => StatusCode::CONFLICT,
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
@@ -625,7 +618,7 @@ async fn request_directory(
     >,
     Error,
 > {
-    let service = app.as_ref().as_deref().ok_or(Error::Unsupported)?;
+    let service = app.registration.as_deref().ok_or(Error::Unsupported)?;
     let query = query.parse().map_err(|_| Error::Malformed)?;
     service
         .request_directory(&auth, &device, &query)
@@ -639,7 +632,7 @@ async fn request_details(
     Extension(auth): Extension<RequestAuth>,
     Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_registration_service::agent::queries::Request>, Error> {
-    app.as_ref()
+    app.registration
         .as_deref()
         .ok_or(Error::Unsupported)?
         .request_details(&auth, id)
@@ -657,7 +650,7 @@ async fn registration_recovery_operation(
     >,
 ) -> Result<Json<Option<wire::GrantReceipt>>, Error> {
     let Query(identity) = identity.map_err(|_| Error::Malformed)?;
-    app.as_ref()
+    app.registration
         .as_deref()
         .ok_or(Error::Unsupported)?
         .registration_recovery_operation(&auth, &id, operation, &identity)
@@ -684,7 +677,7 @@ async fn issuance_recovery_operations(
     >,
     Error,
 > {
-    let service = app.as_ref().as_deref().ok_or(Error::Unsupported)?;
+    let service = app.registration.as_deref().ok_or(Error::Unsupported)?;
     let query = query.parse().map_err(|_| Error::Malformed)?;
     service
         .issuance_recovery_operations(&auth, id, &query)

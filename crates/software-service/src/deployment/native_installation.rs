@@ -491,18 +491,20 @@ impl crate::deployment::transactions::Transactions {
         else {
             return Ok(None);
         };
-        let tenant = tx.tenant_id();
-        let download_origin = tx.with_connection(move |c| Box::pin(async move {
-            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant.to_string()).await
-                .map(|v| v.configuration.preferred_origin).map_err(Error::from))
-        })).await??;
+        if !reuse_identity && !self.inputs.materials.bootstrap_configured {
+            return Ok(None);
+        }
+        let Some(download_origin) = self.inputs.materials.agent_installation.installed_origin()
+        else {
+            return Ok(None);
+        };
         let operation_id = Uuid::new_v4();
         let input = Create {
             operation_id,
             deadline,
             input_version: version.to_string(),
             target: NativeTarget::Device,
-            task: package.native_task(operation_id, &download_origin)?,
+            task: package.native_task(operation_id, download_origin)?,
         };
         let authority = authority::Authority::AgentInstall {
             origin: event.map_or(
@@ -513,7 +515,7 @@ impl crate::deployment::transactions::Transactions {
             source_objects: vec![],
             required: input.task.permissions()?,
             package: Box::new(package),
-            download_origin,
+            download_origin: download_origin.to_owned(),
             tenant: tx.tenant_id().to_string(),
             policy,
             version,
