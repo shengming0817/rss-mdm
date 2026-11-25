@@ -146,7 +146,7 @@ pub async fn endpoints(
         sqlx::query("INSERT INTO mdm_devices.members (tenant_id, association_id, device, channel) VALUES (CAST($1 AS uuid), $2, $3, $4)").bind(c.tenant.to_string()).bind(association).bind(target.device.into_uuid()).bind(target.channel.as_str()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    native_observation(c, native.device).await?;
+    native_observation(c, native.device, vec![]).await?;
     let object = rss_mdm_inventory_service::objects::DeviceObject {
         object: rss_mdm_agent_wire::ObjectRef::Endpoint(device),
         association_version: None,
@@ -241,7 +241,7 @@ pub fn stage(scope: Uuid) -> rss_mdm_policy::SoftwareRolloutStage {
         minimum_verified_percent: None,
     }
 }
-pub(super) async fn accept(
+pub(in crate::assembly) async fn accept(
     c: &Context,
     a: &super::Fixture,
     policy: Uuid,
@@ -440,7 +440,11 @@ fn audit_request(c: &Context) -> RequestAudit {
     audit(c)
 }
 
-async fn native_observation(c: &Context, registration: rss_mdm_agent_wire::DeviceId) -> Result<()> {
+pub(in crate::assembly) async fn native_observation(
+    c: &Context,
+    registration: rss_mdm_agent_wire::DeviceId,
+    checked_identities: Vec<String>,
+) -> Result<()> {
     use rss_mdm_inventory::*;
     let tenant = c.tenant;
     let at = now();
@@ -511,7 +515,7 @@ async fn native_observation(c: &Context, registration: rss_mdm_agent_wire::Devic
     let evidence = rss_mdm_inventory::channel::AgentEvidence {
         catalog_digest: [0; 32],
         provisioned: false,
-        checked_identities: vec![],
+        checked_identities,
         identity: "".into(),
         publisher: None,
         version: None,

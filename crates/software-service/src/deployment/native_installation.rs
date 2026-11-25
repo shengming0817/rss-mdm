@@ -491,15 +491,17 @@ impl crate::deployment::transactions::Transactions {
         else {
             return Ok(None);
         };
+        if !reuse_identity && !self.inputs.materials.bootstrap_configured {
+            return Ok(None);
+        }
         let tenant = tx.tenant_id();
         let installed_origin = self
             .inputs
             .materials
             .agent_installation
             .installed_origin()
-            .ok_or(Error::Unsupported)?
-            .to_owned();
-        let download_origin = tx
+            .map(str::to_owned);
+        let Some(download_origin) = tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(
@@ -507,14 +509,17 @@ impl crate::deployment::transactions::Transactions {
                             rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &tenant.to_string(),
-                            &installed_origin,
+                            installed_origin.as_deref(),
                         )
                         .await
                         .map_err(Error::from),
                     )
                 })
             })
-            .await??;
+            .await??
+        else {
+            return Ok(None);
+        };
         let operation_id = Uuid::new_v4();
         let input = Create {
             operation_id,

@@ -79,11 +79,12 @@ pub struct RetirementBlockers {
     pub installations: u64,
 }
 async fn retirement_blockers_on(
-    profile: rss_mdm_install_support::StorageProfile,
+    service: &Service,
     c: &mut PgConnection,
     tenant: &str,
     remaining: &[String],
 ) -> Result<RetirementBlockers, Error> {
+    let profile = service.profile();
     let configurations: i64 = sqlx::query_scalar(
         crate::storage_profile::sql(profile).agent_connections_retirement_blockers_on_1,
     )
@@ -97,13 +98,31 @@ async fn retirement_blockers_on(
     )
     .bind(tenant)
     .bind(remaining)
-    .fetch_one(c)
+    .fetch_one(&mut *c)
     .await
     .map_err(db)?;
+    let repairs = match &service.native {
+        Some(native) => native.pending_repairs_outside(c, tenant, remaining).await?,
+        None => 0,
+    };
     Ok(RetirementBlockers {
         configurations: u64::try_from(configurations).map_err(|_| Error::Corrupt)?,
-        installations: u64::try_from(installations).map_err(|_| Error::Corrupt)?,
+        installations: u64::try_from(installations.checked_add(repairs).ok_or(Error::Corrupt)?)
+            .map_err(|_| Error::Corrupt)?,
     })
+}
+
+async fn protect_installations(
+    service: &Service,
+    c: &mut PgConnection,
+    tenant: &str,
+    remaining: &[String],
+) -> Result<(), Error> {
+    let blocked = retirement_blockers_on(service, c, tenant, remaining).await?;
+    if blocked.configurations > 0 || blocked.installations > 0 {
+        return Err(Error::Agent(wire::ErrorCode::ConnectionRetirementBlocked));
+    }
+    Ok(())
 }
 
 #[derive(schemars::JsonSchema, Serialize)]
@@ -347,17 +366,17 @@ pub async fn installation_origin_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-    installed_origin: &str,
-) -> Result<String, Error> {
+    installed_origin: Option<&str>,
+) -> Result<Option<String>, Error> {
     sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2894))")
         .bind(tenant)
         .execute(&mut *c)
         .await
         .map_err(db)?;
-    Ok(published_on(profile, c, tenant, None).await?.map_or_else(
-        || installed_origin.to_owned(),
-        |value| value.configuration.preferred_origin,
-    ))
+    Ok(published_on(profile, c, tenant, None)
+        .await?
+        .map(|value| value.configuration.preferred_origin)
+        .or_else(|| installed_origin.map(str::to_owned)))
 }
 
 /// Installation owner records a successful real HTTPS host observation in its own transaction.
@@ -418,11 +437,18 @@ async fn store_version(
     c: &mut PgConnection,
     tenant: &str,
     signed: &w::SignedConfiguration,
+    draft_revision: Option<u64>,
 ) -> Result<(), Error> {
     sqlx::query(crate::storage_profile::sql(profile).agent_connections_insert_version)
         .bind(tenant)
         .bind(i64::try_from(signed.configuration.revision).map_err(|_| Error::Malformed)?)
         .bind(serde_json::to_value(signed).map_err(|_| Error::Malformed)?)
+        .bind(
+            draft_revision
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| Error::Malformed)?,
+        )
         .execute(c)
         .await
         .map_err(db)?;
@@ -444,6 +470,7 @@ impl Service {
         if self.service_id()? != service_id_on(profile, c).await? {
             return Err(Error::Configuration);
         }
+        protect_installations(self, c, tenant, &origins.origins).await?;
         let signer = ensure_signer_on(profile, c, tenant, &self.protection).await?;
         let signed = signer.sign_connections(w::Configuration {
             wire_version: 1,
@@ -454,7 +481,7 @@ impl Service {
             origins: origins.origins.clone(),
             key_id: signer.key_id.clone(),
         })?;
-        store_version(profile, c, tenant, &signed).await?;
+        store_version(profile, c, tenant, &signed, None).await?;
         Ok(signed)
     }
 
@@ -560,12 +587,9 @@ impl Service {
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
-        let draft = draft_on(profile, &mut tx, p.tenant_id(), None)
-            .await?
-            .filter(|draft| revision.is_none_or(|active| draft.configuration.revision >= active));
+        let draft = draft_on(profile, &mut tx, p.tenant_id(), None).await?;
         let retirement_blockers = if let Some(ref d) = draft {
-            retirement_blockers_on(profile, &mut tx, p.tenant_id(), &d.configuration.origins)
-                .await?
+            retirement_blockers_on(self, &mut tx, p.tenant_id(), &d.configuration.origins).await?
         } else {
             RetirementBlockers::default()
         };
@@ -629,7 +653,10 @@ impl Service {
                     });
                 }
                 let revision = next_revision(profile, c, p.tenant_id()).await?;
-                if input.expected_revision != revision - 1 {
+                let editable_revision = draft_on(profile, c, p.tenant_id(), None)
+                    .await?
+                    .map_or(revision - 1, |draft| draft.configuration.revision);
+                if input.expected_revision != editable_revision {
                     return Err(Error::Conflict);
                 }
                 if service.service_id()? != service_id_on(profile, c).await? {
@@ -721,7 +748,7 @@ impl Service {
                         replay: true,
                     });
                 }
-                let draft = draft_on(profile, c, p.tenant_id(), None)
+                let mut draft = draft_on(profile, c, p.tenant_id(), None)
                     .await?
                     .ok_or(Error::Conflict)?;
                 if draft.configuration.revision != input.expected_revision {
@@ -730,7 +757,8 @@ impl Service {
                 let previous = published_on(profile, c, p.tenant_id(), None).await?;
                 let previous_origins = if let Some(previous) = &previous {
                     if draft.configuration.revision <= previous.configuration.revision {
-                        return Err(Error::Conflict);
+                        draft.configuration.revision =
+                            next_revision(profile, c, p.tenant_id()).await?;
                     }
                     draft
                         .configuration
@@ -744,17 +772,12 @@ impl Service {
                         .ok_or(Error::Configuration)?
                         .origins
                 };
+                protect_installations(service, c, p.tenant_id(), &draft.configuration.origins)
+                    .await?;
                 if previous_origins
                     .iter()
                     .any(|o| !draft.configuration.origins.contains(o))
                 {
-                    let blocked = retirement_blockers_on(
-                        profile,
-                        c,
-                        p.tenant_id(),
-                        &draft.configuration.origins,
-                    )
-                    .await?;
                     let stranded: bool = sqlx::query_scalar(
                         crate::storage_profile::sql(profile)
                             .agent_connections_publish_connections_1,
@@ -764,7 +787,7 @@ impl Service {
                     .fetch_one(&mut *c)
                     .await
                     .map_err(db)?;
-                    if blocked.configurations > 0 || blocked.installations > 0 || stranded {
+                    if stranded {
                         return Err(Error::Agent(wire::ErrorCode::ConnectionRetirementBlocked));
                     }
                 }
@@ -776,7 +799,7 @@ impl Service {
                     .bind(p.tenant_id())
                     .bind(origin)
                     .bind(service.service_id()?)
-                    .bind(draft.configuration.revision as i64)
+                    .bind(input.expected_revision as i64)
                     .fetch_one(&mut *c)
                     .await
                     .map_err(db)?;
@@ -788,13 +811,20 @@ impl Service {
                 }
                 let signer = signer_on(profile, c, p.tenant_id(), &service.protection).await?;
                 let out = signer.sign_connections(draft.configuration)?;
-                store_version(profile, c, p.tenant_id(), &out).await?;
+                store_version(
+                    profile,
+                    c,
+                    p.tenant_id(),
+                    &out,
+                    Some(input.expected_revision),
+                )
+                .await?;
                 crate::operations::save(
                     profile,
                     c,
                     &op,
                     &serde_json::to_string(&StoredReceipt::Publish {
-                        revision: input.expected_revision,
+                        revision: out.configuration.revision,
                     })
                     .map_err(|_| Error::Corrupt)?,
                     audit,

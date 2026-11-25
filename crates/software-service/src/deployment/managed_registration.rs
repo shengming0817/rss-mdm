@@ -160,6 +160,25 @@ impl AuthorityReader {
     }
 }
 impl rss_mdm_registration_service::agent::NativeAdmission for AuthorityReader {
+    fn pending_repairs_outside<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: &'a str,
+        remaining: &'a [String],
+    ) -> rss_mdm_registration_service::agent::Pending<'a, i64> {
+        Box::pin(async move {
+            sqlx::query_scalar(
+                "SELECT count(*) FROM mdm_software_deployment.operations o
+                 WHERE o.tenant_id=$1::uuid AND o.authority->>'kind'='agent_install'
+                   AND NOT (o.authority->>'download_origin'=ANY($2))
+                   AND (o.input_context->>'deadline')::bigint > extract(epoch FROM clock_timestamp())
+                   AND NOT EXISTS (SELECT FROM mdm_access.agent_bootstraps b
+                                   WHERE b.tenant_id=o.tenant_id AND b.installation=o.id)
+                   AND mdm_software_deployment.installation_status(o.id) IN ('queued','published','received')"
+            ).bind(tenant).bind(remaining).fetch_one(c).await.map_err(|_| rss_mdm_registration_service::Error::Storage)
+        })
+    }
+
     fn bootstrap<'a>(
         &'a self,
         c: &'a mut PgConnection,

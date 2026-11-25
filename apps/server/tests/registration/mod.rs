@@ -10,7 +10,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use rss_mdm_agent_wire::{enroll as wire, runtime as w};
-use rss_mdm_registration_service::{agent, certificate_issuance as agent_pki};
+use rss_mdm_registration_service::agent;
 use rss_mdm_software_service::deployment as owner;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -18,6 +18,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 mod activation;
 mod connections;
+mod native_install;
 pub(super) mod support;
 
 #[tokio::test]
@@ -179,7 +180,13 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     assert!(hidden.bootstrap.is_none() && hidden.registration.is_none());
     snapshot.rollback().await?;
     pool.close().await;
-    activation::prove(&c, &n, &service, &input).await?;
+    let cold = connections::fresh_tenant(&service).await?;
+    let native = identity::seed(&cold, "windows").await?;
+    support::publish_agent_trust(&cold, native.trust.clone()).await?;
+    activation::prove(&cold, &native, &service, &input).await?;
+    let initial = service.connection_configuration(cold.execution()).await?;
+    assert_eq!(initial.configuration.preferred_origin, connections::PRIMARY);
+    cold.close().await;
     // A published tenant policy retires the old origin even while the gateway still hosts it.
     let retired = gateway.request_origin(connections::PRIMARY.into());
     let before = support::counts(&c).await?;
@@ -193,6 +200,7 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
         .await?;
     assert_eq!(support::counts(&c).await?, before);
 
+    native_install::cold_command().await?;
     resources.close().await?;
     c.close().await;
     Ok(())

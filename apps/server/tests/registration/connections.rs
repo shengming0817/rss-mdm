@@ -19,12 +19,12 @@ async fn installation_origin(c: &Context) -> Result<String> {
         rss_mdm_install_support::StorageProfile::Mdm,
         &mut tx,
         &c.tenant.to_string(),
-        PRIMARY,
+        Some(PRIMARY),
     )
     .await?;
     tx.commit().await?;
     pool.close().await;
-    Ok(origin)
+    origin.ok_or_else(|| anyhow::anyhow!("missing installation origin"))
 }
 
 pub(super) async fn first_install_and_rotation(
@@ -190,18 +190,7 @@ async fn rotate(
         operation_id: Uuid::new_v4(),
         expected_revision: draft.configuration.revision,
     };
-    let mut observation = command::seed_transaction(c).await?;
-    connections::record_deployment_on(
-        service.profile(),
-        &mut observation,
-        initial.configuration.tenant_id,
-        REMAINING,
-        service.service_id()?,
-        Uuid::new_v4(),
-        1,
-    )
-    .await?;
-    observation.commit().await?;
+    observed(c, service, REMAINING).await?;
     let rotated = service
         .publish_connections(proof, &publish, &c.request(proof)?)
         .await?;
@@ -213,7 +202,23 @@ async fn rotate(
     Ok(())
 }
 
-async fn fresh_tenant(service: &agent::Service) -> Result<Context> {
+async fn observed(c: &Context, service: &agent::Service, origin: &str) -> Result<()> {
+    let mut observation = command::seed_transaction(c).await?;
+    connections::record_deployment_on(
+        service.profile(),
+        &mut observation,
+        Uuid::parse_str(&c.tenant.to_string())?,
+        origin,
+        service.service_id()?,
+        Uuid::new_v4(),
+        1,
+    )
+    .await?;
+    observation.commit().await?;
+    Ok(())
+}
+
+pub(super) async fn fresh_tenant(service: &agent::Service) -> Result<Context> {
     let c = Context::open("shared", &[]).await?;
     let mut setup = command::seed_transaction(&c).await?;
     agent::settings::initialize_on(service.profile(), &mut setup, &c.tenant.to_string()).await?;
@@ -235,24 +240,37 @@ async fn draft_before_issuance(service: &agent::Service) -> Result<()> {
         .await?;
     assert_eq!(draft.configuration.revision, 1);
     assert!(service.connection_state(&proof).await?.published.is_none());
+    observed(&c, service, REMAINING).await?;
     let active = concurrent_files(&c, service, &proof).await?;
     assert_eq!(active.configuration.revision, 2);
     assert_eq!(active.configuration.preferred_origin, PRIMARY);
-    assert!(service.connection_state(&proof).await?.draft.is_none());
-    let next = connections::Save {
-        operation_id: Uuid::new_v4(),
-        expected_revision: active.configuration.revision,
-        ..save
-    };
-    assert_eq!(
-        service
-            .save_connections(&proof, &next, &c.request(&proof)?)
-            .await?
-            .configuration
-            .revision,
-        3
-    );
+    publish_original_draft(&c, service, &proof, draft.configuration.revision).await?;
     c.close().await;
+    Ok(())
+}
+
+async fn publish_original_draft(
+    c: &Context,
+    service: &agent::Service,
+    proof: &Principal,
+    revision: u64,
+) -> Result<()> {
+    let state = service.connection_state(proof).await?;
+    assert_eq!(state.draft.unwrap().configuration.revision, revision);
+    let publish = connections::Publish {
+        operation_id: Uuid::new_v4(),
+        expected_revision: revision,
+    };
+    let published = service
+        .publish_connections(proof, &publish, &c.request(proof)?)
+        .await?;
+    assert_eq!(published.configuration.revision, 3);
+    assert_eq!(published.configuration.preferred_origin, REMAINING);
+    assert!(service.connection_state(proof).await?.draft.is_none());
+    let replay = service
+        .publish_connections(proof, &publish, &c.request(proof)?)
+        .await?;
+    assert_eq!(published, replay);
     Ok(())
 }
 
@@ -272,4 +290,41 @@ async fn concurrent_files(
     let active = first.configuration.connections;
     assert_eq!(active, other.configuration.connections);
     Ok(active)
+}
+
+pub(super) async fn protect_frozen(c: &Context, changed: &agent::Service) -> Result<()> {
+    let proof = editor(c).await?;
+    let input = serde_json::from_value(create_input())?;
+    let first = changed
+        .create_configuration(&proof, &input, &c.request(&proof)?)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        first.code,
+        wire::ErrorCode::ConnectionRetirementBlocked
+    ));
+    let save = connections::Save {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        preferred_origin: REMAINING.into(),
+        origins: vec![REMAINING.into()],
+    };
+    let draft = changed
+        .save_connections(&proof, &save, &c.request(&proof)?)
+        .await?;
+    observed(c, changed, REMAINING).await?;
+    let publish = connections::Publish {
+        operation_id: Uuid::new_v4(),
+        expected_revision: draft.configuration.revision,
+    };
+    let blocked = changed
+        .publish_connections(&proof, &publish, &c.request(&proof)?)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        blocked.code,
+        wire::ErrorCode::ConnectionRetirementBlocked
+    ));
+    assert!(changed.connection_state(&proof).await?.published.is_none());
+    Ok(())
 }

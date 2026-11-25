@@ -365,7 +365,7 @@ docker compose exec -T gateway nginx -t -c /run/gateway/nginx.conf
 docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 ```
 
-随后执行原宿主维护观察流程，对每个公开入口进行真实 HTTPS `/readyz` 校验，核对 instance、tenant、host、材料摘要与运行 revision；成功才记录部署观察。`probe_addresses` 可按完整公开 origin 显式给出隔离网络物理探测地址；证书和 Host 始终验证公开身份。控制台发布签名连接配置后，Agent 验签、拒绝回滚并原子保存，回报实际连接地址与安装 revision。
+随后执行原宿主维护观察流程，对每个公开入口进行真实 HTTPS `/readyz` 校验，核对 instance、tenant、host、材料摘要与运行 revision；成功后写入宿主本地观察回执。当前正式命令尚未将观察写入租户草稿，显式发布的端到端接通由 [#3287](https://dev.azure.com/shengming0923/rss/_workitems/edit/3287) 跟踪。`probe_addresses` 可按完整公开 origin 显式给出隔离网络物理探测地址；证书和 Host 始终验证公开身份。控制台发布签名连接配置后，Agent 验签、拒绝回滚并原子保存，回报实际连接地址与安装 revision。
 
 入口轮换采用 `A → A+B → B`。重叠阶段将 B 设为首选，等待设备经 B 回报安装确认后才能退役 A；未确认的活动设备会阻止删除它仍依赖的入口。所有已知入口失联时，管理员从原管理入口下载签名连接文件，在设备通过受保护的离线导入恢复；不得重建注册、密钥、缓存或未决操作。程序更新保留这些状态。Windows/Apple 原生注册 URL 继续由各自原生配置持有，Agent 连接配置不改变其换址机制。
 

@@ -2,19 +2,25 @@
 use crate::{assembly, authority_t2_support::Context, command_runtime_t2_support::Prepared};
 use anyhow::Result;
 use std::sync::Arc;
-pub(super) struct Fixture {
-    pub(super) resources: Prepared,
-    pub(super) software: crate::assembly::software::Assembly,
+pub(in crate::assembly) struct Fixture {
+    pub(in crate::assembly) resources: Prepared,
+    pub(in crate::assembly) software: crate::assembly::software::Assembly,
 }
 impl Fixture {
-    pub(super) async fn open(c: &Context) -> Result<Self> {
+    pub(in crate::assembly) async fn open(c: &Context) -> Result<Self> {
         Self::open_with(c, |_| {}).await
     }
-    pub(super) async fn open_with(
+    pub(in crate::assembly) async fn open_with(
         c: &Context,
         configure: fn(&mut serde_json::Value),
     ) -> Result<Self> {
-        let resources = Prepared::open(c, configure).await?;
+        Self::with_endpoints(c, Prepared::open(c, configure).await?, None).await
+    }
+    pub(in crate::assembly) async fn with_endpoints(
+        c: &Context,
+        resources: Prepared,
+        endpoints: Option<std::collections::BTreeMap<String, String>>,
+    ) -> Result<Self> {
         let result: Result<_> = async {
             let config = &resources.config;
             let storage = &resources.storage;
@@ -41,7 +47,7 @@ impl Fixture {
                 protection.clone(),
                 source.clone(),
                 authority.clone(),
-                None,
+                endpoints,
                 resources.sessions.clone(),
                 storage.reconcile.clone(),
                 storage.worker_budget.clone(),
@@ -81,7 +87,7 @@ impl Fixture {
             software,
         })
     }
-    pub(super) async fn close(self) -> Result<()> {
+    pub(in crate::assembly) async fn close(self) -> Result<()> {
         self.resources.close().await
     }
 }

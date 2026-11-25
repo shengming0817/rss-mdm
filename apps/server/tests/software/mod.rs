@@ -6,7 +6,7 @@ use crate::{
     device_material_support as material, planning_t2_support as planning,
 };
 use anyhow::Result;
-use fixture::Fixture;
+pub(in crate::assembly) use fixture::Fixture;
 use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use rss_mdm_software_service::deployment as owner;
