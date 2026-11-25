@@ -317,7 +317,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 服务端向桌面客户端部署方提供 HTTPS `product_origin`、所选组织的 tenant ID 和签发网关证书的 CA 公共证书。桌面构建与组织信任配置由 [rss-mdm-agent 桌面开发指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/desktop-development.md&version=GBdevelop) 维护。
 
-服务端通过受保护安装渠道向 Agent 部署方交付绑定 `instance_id` 与 tenant 的注册文件、当前签名连接配置及验证公钥、HTTPS 服务器 CA 公共证书和设备 purpose trust。Agent 依据已发布连接配置使用首选和候选入口，地址变化不改变服务身份，也不扩展已授权 CA。控制台与 Agent 入口分别核对对应服务器证书；同 CA 签发时可交付同一公共证书。HTTPS 信任与设备 purpose trust 分别校验，不能相互替代，也不跳过证书链或主机名校验。Agent 的配置生成、安装、升级与恢复由 [rss-mdm-agent 服务部署指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop) 唯一维护。
+服务端通过受保护安装渠道向 Agent 部署方交付绑定 `instance_id` 与 tenant 的注册文件、当前签名连接配置及验证公钥、HTTPS 服务器 CA 公共证书和设备 purpose trust。Agent 使用已签发配置中的首选和候选入口，地址变化不改变服务身份，也不扩展已授权 CA。控制台与 Agent 入口分别核对对应服务器证书；同 CA 签发时可交付同一公共证书。HTTPS 信任与设备 purpose trust 分别校验，不能相互替代，也不跳过证书链或主机名校验。Agent 的配置生成、安装、升级与恢复由 [rss-mdm-agent 服务部署指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop) 唯一维护。
 
 服务端网关配置服务器证书链和私钥；向客户端交付的信任材料只含公共证书。
 
