@@ -544,7 +544,10 @@ async fn download_connections(
     >,
     HttpFailure,
 > {
-    let configuration = service(&app)?.download_connections(&auth.proof).await?;
+    let state = service(&app)?.connection_state(&auth.proof).await?;
+    let configuration = state
+        .published
+        .ok_or(rss_mdm_registration_service::Error::Conflict)?;
     Ok(rss_mdm_http_contract::download::Attachment {
         body: Json(configuration),
         disposition: axum::http::HeaderValue::from_static(

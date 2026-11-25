@@ -396,6 +396,23 @@ pub async fn record_deployment_on(
     Ok(())
 }
 
+async fn next_revision(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+) -> Result<u64, Error> {
+    let latest: i64 =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).agent_connections_latest_revision)
+            .bind(tenant)
+            .fetch_one(c)
+            .await
+            .map_err(db)?;
+    latest
+        .checked_add(1)
+        .and_then(|rev| u64::try_from(rev).ok())
+        .ok_or(Error::Conflict)
+}
+
 async fn store_version(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
@@ -432,26 +449,13 @@ impl Service {
             wire_version: 1,
             service_id: self.service_id()?,
             tenant_id: Uuid::parse_str(tenant).map_err(|_| Error::Configuration)?,
-            revision: 1,
+            revision: next_revision(profile, c, tenant).await?,
             preferred_origin: origins.preferred.clone(),
             origins: origins.origins.clone(),
             key_id: signer.key_id.clone(),
         })?;
         store_version(profile, c, tenant, &signed).await?;
         Ok(signed)
-    }
-
-    async fn current_or_initial_on(
-        &self,
-        c: &mut PgConnection,
-        tenant: &str,
-    ) -> Result<w::SignedConfiguration, Error> {
-        let profile = self.profile();
-        if let Some(current) = published_on(profile, c, tenant, None).await? {
-            return Ok(current);
-        }
-        lock(profile, c, tenant).await?;
-        self.current_or_initial_locked(c, tenant).await
     }
 
     pub async fn require_connection_origin(
@@ -488,34 +492,16 @@ impl Service {
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
     ) -> Result<w::SignedConfiguration, Failure> {
-        let tenant = binding.tenant().to_string();
-        let mut tx = self.store.begin(&tenant).await?;
-        let out = self.current_or_initial_on(&mut tx, &tenant).await?;
+        let profile = self.profile();
+
+        let mut tx = self.store.begin(&binding.tenant().to_string()).await?;
+        let out = current_on(profile, &mut tx, &binding.tenant().to_string()).await?;
         if out.configuration.service_id != self.service_id()? {
             return Err(Error::Configuration.into());
         }
-        tx.commit().await.map_err(db)?;
+        tx.rollback().await.map_err(db)?;
         Ok(out)
     }
-    pub async fn download_connections(
-        &self,
-        p: &AuthorizedPrincipal,
-    ) -> Result<w::SignedConfiguration, Failure> {
-        p.manage(Permission::RegistrationConfigurationRead)?;
-        let mut tx = self.store.begin(p.tenant_id()).await?;
-        super::authorize_on(
-            self.profile(),
-            &mut tx,
-            p,
-            Permission::RegistrationConfigurationRead,
-        )
-        .await?;
-        let out = self.current_or_initial_on(&mut tx, p.tenant_id()).await?;
-        p.check_live()?;
-        tx.commit().await.map_err(db)?;
-        Ok(out)
-    }
-
     pub async fn connection_state(&self, p: &AuthorizedPrincipal) -> Result<State, Failure> {
         let profile = self.profile();
 
@@ -574,7 +560,9 @@ impl Service {
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
-        let draft = draft_on(profile, &mut tx, p.tenant_id(), None).await?;
+        let draft = draft_on(profile, &mut tx, p.tenant_id(), None)
+            .await?
+            .filter(|draft| revision.is_none_or(|active| draft.configuration.revision >= active));
         let retirement_blockers = if let Some(ref d) = draft {
             retirement_blockers_on(profile, &mut tx, p.tenant_id(), &d.configuration.origins)
                 .await?
@@ -640,18 +628,15 @@ impl Service {
                         replay: true,
                     });
                 }
-                let old = draft_on(profile, c, p.tenant_id(), None).await?;
-                let current = match old {
-                    Some(draft) => draft.configuration.revision,
-                    None => published_on(profile, c, p.tenant_id(), None)
-                        .await?
-                        .map_or(0, |v| v.configuration.revision),
-                };
-                if current != input.expected_revision || current >= i64::MAX as u64 {
+                let revision = next_revision(profile, c, p.tenant_id()).await?;
+                if input.expected_revision != revision - 1 {
                     return Err(Error::Conflict);
                 }
-                let active = service.current_or_initial_locked(c, p.tenant_id()).await?;
-                let revision = current.max(active.configuration.revision) + 1;
+                if service.service_id()? != service_id_on(profile, c).await? {
+                    return Err(Error::Configuration);
+                }
+                let signer =
+                    ensure_signer_on(profile, c, p.tenant_id(), &service.protection).await?;
                 let out = Draft {
                     configuration: w::Configuration {
                         wire_version: 1,
@@ -661,7 +646,7 @@ impl Service {
                         revision,
                         preferred_origin: input.preferred_origin.clone(),
                         origins: input.origins.clone(),
-                        key_id: active.configuration.key_id,
+                        key_id: signer.key_id.clone(),
                     },
                 };
                 out.configuration.validate().map_err(|_| Error::Malformed)?;
@@ -742,7 +727,8 @@ impl Service {
                 if draft.configuration.revision != input.expected_revision {
                     return Err(Error::Conflict);
                 }
-                if let Some(previous) = published_on(profile, c, p.tenant_id(), None).await? {
+                let previous = published_on(profile, c, p.tenant_id(), None).await?;
+                let previous_origins = if let Some(previous) = &previous {
                     if draft.configuration.revision <= previous.configuration.revision {
                         return Err(Error::Conflict);
                     }
@@ -750,24 +736,25 @@ impl Service {
                         .configuration
                         .validate_successor(&previous.configuration)
                         .map_err(|_| Error::Conflict)?;
-                    if previous
-                        .configuration
+                    &previous.configuration.origins
+                } else {
+                    &service
                         .origins
-                        .iter()
-                        .any(|o| !draft.configuration.origins.contains(o))
-                    {
-                        let blocked = retirement_blockers_on(
-                            profile,
-                            c,
-                            p.tenant_id(),
-                            &draft.configuration.origins,
-                        )
-                        .await?;
-                        if blocked.configurations > 0 || blocked.installations > 0 {
-                            return Err(Error::Agent(wire::ErrorCode::ConnectionRetirementBlocked));
-                        }
-                    }
-                    // A device that has only removed locations cannot discover this update.
+                        .as_ref()
+                        .ok_or(Error::Configuration)?
+                        .origins
+                };
+                if previous_origins
+                    .iter()
+                    .any(|o| !draft.configuration.origins.contains(o))
+                {
+                    let blocked = retirement_blockers_on(
+                        profile,
+                        c,
+                        p.tenant_id(),
+                        &draft.configuration.origins,
+                    )
+                    .await?;
                     let stranded: bool = sqlx::query_scalar(
                         crate::storage_profile::sql(profile)
                             .agent_connections_publish_connections_1,
@@ -777,22 +764,7 @@ impl Service {
                     .fetch_one(&mut *c)
                     .await
                     .map_err(db)?;
-                    if stranded
-                        && !previous
-                            .configuration
-                            .origins
-                            .iter()
-                            .any(|o| draft.configuration.origins.contains(o))
-                    {
-                        return Err(Error::Agent(wire::ErrorCode::ConnectionRetirementBlocked));
-                    }
-                    if stranded
-                        && previous
-                            .configuration
-                            .origins
-                            .iter()
-                            .any(|o| !draft.configuration.origins.contains(o))
-                    {
+                    if blocked.configurations > 0 || blocked.installations > 0 || stranded {
                         return Err(Error::Agent(wire::ErrorCode::ConnectionRetirementBlocked));
                     }
                 }

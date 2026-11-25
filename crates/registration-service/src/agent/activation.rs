@@ -140,6 +140,8 @@ impl Service {
                             crate::quotas::Channel::Agent,
                         )
                         .await?;
+                        super::connections::lock(profile, c, &tenant).await?;
+                        service.current_or_initial_locked(c, &tenant).await?;
                     }
                     let runtime_profile: Option<wire::RuntimeProfile> =
                         serde_json::from_value(row.try_get("profile").map_err(db)?)

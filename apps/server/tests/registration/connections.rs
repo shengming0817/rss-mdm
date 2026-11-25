@@ -38,12 +38,32 @@ pub(super) async fn first_install_and_rotation(
         ])
         .await?;
     let proof = Arc::new(c.authenticate(&account).await?);
+    use rss_mdm_management_http::agent_enrollment::{App, routes};
+    use tower::ServiceExt;
+    let read = c
+        .account(&[Permission::RegistrationConfigurationRead])
+        .await?;
+    let reader = Arc::new(c.authenticate(&read).await?);
+    let recovery = axum::Router::new()
+        .nest(
+            "/{tenant}",
+            routes(App {
+                registration: Some(service.clone()),
+                endpoint_configured: true,
+            })
+            .into_axum(),
+        )
+        .layer(axum::Extension(c.read_auth(reader.clone())));
+    let request =
+        axum::http::Request::get(format!("/{}/agent-connections/configuration", c.tenant))
+            .body(axum::body::Body::empty())?;
+    assert_eq!(recovery.oneshot(request).await?.status(), 409);
+    let untouched = service.connection_state(&reader).await?;
+    assert!(untouched.published.is_none() && untouched.verification_keys.is_empty());
     let input = json!({
         "operationId": Uuid::new_v4(), "secret": URL_SAFE_NO_PAD.encode([13;32]),
         "quantity": {"kind": "unlimited"}, "targets": [{"platform":"windows","architecture":"x86_64"}]
     });
-    use rss_mdm_management_http::agent_enrollment::{App, routes};
-    use tower::ServiceExt;
     let post = |app: App| -> Result<_> {
         let router = axum::Router::new()
             .nest("/{tenant}", routes(app).into_axum())
@@ -138,5 +158,62 @@ pub(super) async fn first_install_and_rotation(
         .create_configuration(&proof, &create, &c.request(&proof)?)
         .await?;
     assert!(serde_json::to_vec(&file)? == serde_json::to_vec(&replay)?);
+    draft_before_issuance(&service).await?;
+    Ok(())
+}
+
+async fn draft_before_issuance(service: &agent::Service) -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[
+            Permission::RegistrationConfigurationWrite,
+            Permission::RegistrationConfigurationRead,
+            Permission::AgentEnrollmentWrite,
+        ])
+        .await?;
+    let proof = c.authenticate(&account).await?;
+    let save = connections::Save {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        preferred_origin: REMAINING.into(),
+        origins: vec![REMAINING.into()],
+    };
+    let draft = service
+        .save_connections(&proof, &save, &c.request(&proof)?)
+        .await?;
+    assert_eq!(draft.configuration.revision, 1);
+    assert!(service.connection_state(&proof).await?.published.is_none());
+    let input = || {
+        serde_json::from_value::<agent::configurations::Create>(json!({
+            "operationId": Uuid::new_v4(), "secret": URL_SAFE_NO_PAD.encode([11;32]),
+            "quantity":{"kind":"unlimited"}, "targets":[{"platform":"windows","architecture":"x86_64"}]
+        }))
+    };
+    let (first, other) = (input()?, input()?);
+    let first_audit = c.request(&proof)?;
+    let other_audit = c.request(&proof)?;
+    let (first, other) = tokio::try_join!(
+        service.create_configuration(&proof, &first, &first_audit),
+        service.create_configuration(&proof, &other, &other_audit)
+    )?;
+    let active = first.configuration.connections;
+    assert_eq!(active, other.configuration.connections);
+    assert_eq!(active.configuration.revision, 2);
+    assert_eq!(active.configuration.preferred_origin, PRIMARY);
+    assert!(service.connection_state(&proof).await?.draft.is_none());
+    let next = connections::Save {
+        operation_id: Uuid::new_v4(),
+        expected_revision: active.configuration.revision,
+        ..save
+    };
+    assert_eq!(
+        service
+            .save_connections(&proof, &next, &c.request(&proof)?)
+            .await?
+            .configuration
+            .revision,
+        3
+    );
+    c.close().await;
     Ok(())
 }
