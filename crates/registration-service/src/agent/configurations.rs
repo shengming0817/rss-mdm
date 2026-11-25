@@ -346,10 +346,10 @@ impl Service {
                         return Err(Error::Malformed);
                     }
                     super::connections::lock(profile, c, &tenant).await?;
+                    let connections = service.current_or_initial_locked(c, &tenant).await?;
                     let signer =
                         super::connections::signer_on(profile, c, &tenant, &service.protection)
                             .await?;
-                    let connections = super::connections::current_on(profile, c, &tenant).await?;
                     let id = Uuid::new_v4();
                     let expires_at = now(c).await? + i64::from(seconds);
                     let config = wire_config::Configuration {

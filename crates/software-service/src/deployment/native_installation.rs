@@ -492,10 +492,29 @@ impl crate::deployment::transactions::Transactions {
             return Ok(None);
         };
         let tenant = tx.tenant_id();
-        let download_origin = tx.with_connection(move |c| Box::pin(async move {
-            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant.to_string()).await
-                .map(|v| v.configuration.preferred_origin).map_err(Error::from))
-        })).await??;
+        let installed_origin = self
+            .inputs
+            .materials
+            .agent_installation
+            .installed_origin()
+            .ok_or(Error::Unsupported)?
+            .to_owned();
+        let download_origin = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(
+                        rss_mdm_registration_service::agent::connections::installation_origin_on(
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                            c,
+                            &tenant.to_string(),
+                            &installed_origin,
+                        )
+                        .await
+                        .map_err(Error::from),
+                    )
+                })
+            })
+            .await??;
         let operation_id = Uuid::new_v4();
         let input = Create {
             operation_id,

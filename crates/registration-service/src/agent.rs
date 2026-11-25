@@ -100,6 +100,7 @@ pub struct Service {
 
     pub(crate) store: Arc<Store>,
     audit: Arc<AuditStore>,
+    origins: Option<connections::InstalledOrigins>,
     issuer: Arc<DeviceIssuer>,
     clock: Arc<dyn Clock>,
     binding: Option<Arc<dyn RuntimeBinding>>,
@@ -113,6 +114,7 @@ pub struct Assembly {
     pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub store: Arc<Store>,
     pub audit: Arc<AuditStore>,
+    pub origins: connections::InstalledOrigins,
     pub issuer: Arc<DeviceIssuer>,
     pub clock: Arc<dyn Clock>,
     pub binding: Arc<dyn RuntimeBinding>,
@@ -142,6 +144,7 @@ impl Service {
             cursor: a.cursor,
             store: a.store,
             audit: a.audit,
+            origins: Some(a.origins),
             issuer: a.issuer,
             clock: a.clock,
             binding: Some(a.binding),

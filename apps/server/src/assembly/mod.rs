@@ -347,6 +347,7 @@ pub(crate) async fn from_compiled(
                         .execution(identity.management_binding.tenant())?,
                     store: access.registration(),
                     audit: audit_store.clone(),
+                    origins: pki.origins.clone(),
                     issuer: pki.issuer.clone(),
                     clock: pki.pki_clock.clone(),
                     binding: Arc::new(rss_mdm_agent_channel::Bindings::new(

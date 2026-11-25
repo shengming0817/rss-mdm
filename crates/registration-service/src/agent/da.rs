@@ -40,6 +40,7 @@ impl RegistrationService {
                 expected_epoch: a.probe.epoch(),
                 store: a.store,
                 audit: a.audit,
+                origins: None,
                 issuer: a.issuer,
                 clock: a.clock,
                 protection: a.protection,

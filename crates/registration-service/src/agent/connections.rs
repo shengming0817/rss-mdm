@@ -8,6 +8,36 @@ use rss_mdm_authorization_service::Permission;
 use rss_mdm_native_protection::{DerivedAad, ProtectionContext, Protector};
 use std::collections::BTreeMap;
 
+/// HTTPS origins installed on the Agent gateway, preserving its preferred entry.
+#[derive(Clone)]
+pub struct InstalledOrigins {
+    preferred: String,
+    origins: Vec<String>,
+}
+
+impl InstalledOrigins {
+    pub fn new(preferred: String, additional: &[String]) -> Result<Self, Error> {
+        let mut origins = additional.to_vec();
+        origins.push(preferred.clone());
+        origins.sort();
+        if origins.len() > w::MAX_ORIGINS || origins.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(Error::Configuration);
+        }
+        for origin in &origins {
+            w::validate_origin(origin).map_err(|_| Error::Configuration)?;
+        }
+        Ok(Self { preferred, origins })
+    }
+
+    pub fn preferred(&self) -> &str {
+        &self.preferred
+    }
+
+    pub fn origins(&self) -> &[String] {
+        &self.origins
+    }
+}
+
 /// Public draft; saving does not deploy a gateway or publish a trusted destination.
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -313,17 +343,21 @@ pub(super) async fn current_on(
 
 /// Freeze a new native installation locator while fencing publication/retirement.
 /// The command runtime can read the public configuration and never its private key.
-pub async fn installation_configuration_on(
+pub async fn installation_origin_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-) -> Result<w::SignedConfiguration, Error> {
+    installed_origin: &str,
+) -> Result<String, Error> {
     sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2894))")
         .bind(tenant)
         .execute(&mut *c)
         .await
         .map_err(db)?;
-    current_on(profile, c, tenant).await
+    Ok(published_on(profile, c, tenant, None).await?.map_or_else(
+        || installed_origin.to_owned(),
+        |value| value.configuration.preferred_origin,
+    ))
 }
 
 /// Installation owner records a successful real HTTPS host observation in its own transaction.
@@ -362,7 +396,64 @@ pub async fn record_deployment_on(
     Ok(())
 }
 
+async fn store_version(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    signed: &w::SignedConfiguration,
+) -> Result<(), Error> {
+    sqlx::query(crate::storage_profile::sql(profile).agent_connections_insert_version)
+        .bind(tenant)
+        .bind(i64::try_from(signed.configuration.revision).map_err(|_| Error::Malformed)?)
+        .bind(serde_json::to_value(signed).map_err(|_| Error::Malformed)?)
+        .execute(c)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
+
 impl Service {
+    /// Called under the tenant connection lock. The initial version has no draft.
+    pub(super) async fn current_or_initial_locked(
+        &self,
+        c: &mut PgConnection,
+        tenant: &str,
+    ) -> Result<w::SignedConfiguration, Error> {
+        let profile = self.profile();
+        if let Some(current) = published_on(profile, c, tenant, None).await? {
+            return Ok(current);
+        }
+        let origins = self.origins.as_ref().ok_or(Error::Configuration)?;
+        if self.service_id()? != service_id_on(profile, c).await? {
+            return Err(Error::Configuration);
+        }
+        let signer = ensure_signer_on(profile, c, tenant, &self.protection).await?;
+        let signed = signer.sign_connections(w::Configuration {
+            wire_version: 1,
+            service_id: self.service_id()?,
+            tenant_id: Uuid::parse_str(tenant).map_err(|_| Error::Configuration)?,
+            revision: 1,
+            preferred_origin: origins.preferred.clone(),
+            origins: origins.origins.clone(),
+            key_id: signer.key_id.clone(),
+        })?;
+        store_version(profile, c, tenant, &signed).await?;
+        Ok(signed)
+    }
+
+    async fn current_or_initial_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: &str,
+    ) -> Result<w::SignedConfiguration, Error> {
+        let profile = self.profile();
+        if let Some(current) = published_on(profile, c, tenant, None).await? {
+            return Ok(current);
+        }
+        lock(profile, c, tenant).await?;
+        self.current_or_initial_locked(c, tenant).await
+    }
+
     pub async fn require_connection_origin(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
@@ -397,16 +488,34 @@ impl Service {
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
     ) -> Result<w::SignedConfiguration, Failure> {
-        let profile = self.profile();
-
-        let mut tx = self.store.begin(&binding.tenant().to_string()).await?;
-        let out = current_on(profile, &mut tx, &binding.tenant().to_string()).await?;
+        let tenant = binding.tenant().to_string();
+        let mut tx = self.store.begin(&tenant).await?;
+        let out = self.current_or_initial_on(&mut tx, &tenant).await?;
         if out.configuration.service_id != self.service_id()? {
             return Err(Error::Configuration.into());
         }
-        tx.rollback().await.map_err(db)?;
+        tx.commit().await.map_err(db)?;
         Ok(out)
     }
+    pub async fn download_connections(
+        &self,
+        p: &AuthorizedPrincipal,
+    ) -> Result<w::SignedConfiguration, Failure> {
+        p.manage(Permission::RegistrationConfigurationRead)?;
+        let mut tx = self.store.begin(p.tenant_id()).await?;
+        super::authorize_on(
+            self.profile(),
+            &mut tx,
+            p,
+            Permission::RegistrationConfigurationRead,
+        )
+        .await?;
+        let out = self.current_or_initial_on(&mut tx, p.tenant_id()).await?;
+        p.check_live()?;
+        tx.commit().await.map_err(db)?;
+        Ok(out)
+    }
+
     pub async fn connection_state(&self, p: &AuthorizedPrincipal) -> Result<State, Failure> {
         let profile = self.profile();
 
@@ -532,25 +641,27 @@ impl Service {
                     });
                 }
                 let old = draft_on(profile, c, p.tenant_id(), None).await?;
-                let current = old.map_or(0, |v| v.configuration.revision);
+                let current = match old {
+                    Some(draft) => draft.configuration.revision,
+                    None => published_on(profile, c, p.tenant_id(), None)
+                        .await?
+                        .map_or(0, |v| v.configuration.revision),
+                };
                 if current != input.expected_revision || current >= i64::MAX as u64 {
                     return Err(Error::Conflict);
                 }
-                if service.service_id()? != service_id_on(profile, c).await? {
-                    return Err(Error::Configuration);
-                }
-                let signer =
-                    ensure_signer_on(profile, c, p.tenant_id(), &service.protection).await?;
+                let active = service.current_or_initial_locked(c, p.tenant_id()).await?;
+                let revision = current.max(active.configuration.revision) + 1;
                 let out = Draft {
                     configuration: w::Configuration {
                         wire_version: 1,
                         service_id: service.service_id()?,
                         tenant_id: Uuid::parse_str(p.tenant_id())
                             .map_err(|_| Error::Configuration)?,
-                        revision: current + 1,
+                        revision,
                         preferred_origin: input.preferred_origin.clone(),
                         origins: input.origins.clone(),
-                        key_id: signer.key_id.clone(),
+                        key_id: active.configuration.key_id,
                     },
                 };
                 out.configuration.validate().map_err(|_| Error::Malformed)?;
@@ -558,7 +669,7 @@ impl Service {
                     crate::storage_profile::sql(profile).agent_connections_save_connections_1,
                 )
                 .bind(p.tenant_id())
-                .bind((current + 1) as i64)
+                .bind(revision as i64)
                 .bind(serde_json::to_value(&out).map_err(|_| Error::Malformed)?)
                 .execute(&mut *c)
                 .await
@@ -567,10 +678,8 @@ impl Service {
                     profile,
                     c,
                     &op,
-                    &serde_json::to_string(&StoredReceipt::Save {
-                        revision: current + 1,
-                    })
-                    .map_err(|_| Error::Corrupt)?,
+                    &serde_json::to_string(&StoredReceipt::Save { revision })
+                        .map_err(|_| Error::Corrupt)?,
                     audit,
                     false,
                 )
@@ -707,15 +816,7 @@ impl Service {
                 }
                 let signer = signer_on(profile, c, p.tenant_id(), &service.protection).await?;
                 let out = signer.sign_connections(draft.configuration)?;
-                sqlx::query(
-                    crate::storage_profile::sql(profile).agent_connections_publish_connections_3,
-                )
-                .bind(p.tenant_id())
-                .bind(input.expected_revision as i64)
-                .bind(serde_json::to_value(&out).map_err(|_| Error::Malformed)?)
-                .execute(&mut *c)
-                .await
-                .map_err(db)?;
+                store_version(profile, c, p.tenant_id(), &out).await?;
                 crate::operations::save(
                     profile,
                     c,

@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 mod activation;
+mod connections;
 pub(super) mod support;
 
 #[tokio::test]
@@ -50,14 +51,17 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
         &materials,
     )
     .await?;
-    let service = support::service(
-        &c,
-        &n,
-        authority.clone(),
-        resources.protection.clone(),
-        &materials,
-    )
-    .await?;
+    let service = Arc::new(
+        support::service(
+            &c,
+            &n,
+            authority.clone(),
+            resources.protection.clone(),
+            &materials,
+        )
+        .await?,
+    );
+    connections::first_install_and_rotation(&c, service.clone()).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let _client = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
     let (server, _) = listener.accept().await?;
@@ -177,50 +181,15 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     pool.close().await;
     activation::prove(&c, &n, &service, &input).await?;
     // A published tenant policy retires the old origin even while the gateway still hosts it.
-    use ring::signature::{Ed25519KeyPair, KeyPair};
-    let private = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
-        .map_err(|_| anyhow::anyhow!("connection signing key"))?;
-    let key = Ed25519KeyPair::from_pkcs8(private.as_ref())
-        .map_err(|_| anyhow::anyhow!("connection signing key"))?;
-    let key_id = Uuid::new_v4().to_string();
-    let connection = rss_mdm_agent_wire::connections::Configuration {
-        wire_version: 1,
-        service_id: Uuid::parse_str(&c.inputs.installation.instance_id)?,
-        tenant_id: Uuid::parse_str(&c.tenant.to_string())?,
-        revision: 1,
-        preferred_origin: "https://next.example.test".into(),
-        origins: vec!["https://next.example.test".into()],
-        key_id: key_id.clone(),
-    };
-    let signed = rss_mdm_agent_wire::connections::SignedConfiguration {
-        signature: URL_SAFE_NO_PAD.encode(key.sign(&connection.signing_bytes()?).as_ref()),
-        configuration: connection,
-    };
-    let aad = rss_mdm_native_protection::ProtectionContext::new(
-        c.tenant,
-        &key_id,
-        "agent-configuration.private-key",
-        1,
-    )?
-    .derive();
-    let sealed = resources.protection.seal_bytes(private.as_ref(), &aad)?;
-    let mut tx = command::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_access.agent_configuration_keys(tenant_id,key_id,public_key,private_key) VALUES($1::uuid,$2,$3,$4)")
-        .bind(c.tenant.to_string()).bind(key_id).bind(URL_SAFE_NO_PAD.encode(key.public_key().as_ref())).bind(sealed).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.agent_connection_drafts(tenant_id,revision,document) VALUES($1::uuid,1,$2)")
-        .bind(c.tenant.to_string()).bind(serde_json::to_value(&signed)?).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.agent_connection_versions(tenant_id,revision,document) VALUES($1::uuid,1,$2)")
-        .bind(c.tenant.to_string()).bind(serde_json::to_value(&signed)?).execute(&mut *tx).await?;
-    tx.commit().await?;
+    let retired = gateway.request_origin(connections::PRIMARY.into());
     let before = support::counts(&c).await?;
     let denied = service
-        .native_grant(&peer, &input, &audit(&c), &origin)
+        .native_grant(&peer, &input, &audit(&c), &retired)
         .await
         .unwrap_err();
     assert!(matches!(denied.code, wire::ErrorCode::InvalidIdentity));
-    let next_origin = gateway.request_origin("https://next.example.test".into());
     service
-        .require_connection_origin(c.execution(), &next_origin)
+        .require_connection_origin(c.execution(), &origin)
         .await?;
     assert_eq!(support::counts(&c).await?, before);
 

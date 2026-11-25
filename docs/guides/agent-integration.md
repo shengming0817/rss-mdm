@@ -13,7 +13,7 @@
 三种来源统一进入独立 Agent 证书链路：
 
 1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交安装材料指定的 tenantId、稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/tenants/{tenant}/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
-2. 管理员调用 `POST /api/v1/tenants/{tenant}/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/tenants/{tenant}/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/tenants/{tenant}/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
+2. 管理员调用 `POST /api/v1/tenants/{tenant}/agent-configurations` 创建一个完整签名 JSON 文件。首次签发直接使用已启用的 `agent_pki.endpoint.origin` 和附加入口，服务器自动准备租户签名密钥与初始连接版本。未配置 Agent 对外地址时，接口返回 `409 agent_endpoint_not_configured`。创建时必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/tenants/{tenant}/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/tenants/{tenant}/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
 3. 原生 MDM 安装使用专用短期引导证书，经 Nginx Agent 公开入口调用 `POST /api/v1/agent/enroll/native-grants`。提交 installationOperation、operationId、secret、独立日常密钥的 CSR 和 runtime；服务端从引导证书记录恢复来源注册、安装和 release，复查当前授权后返回 grant。Windows / Apple 原生协议路由不挂载此入口，MDM 日常证书不能交换授权。
 
 管理员配置使用配置自身的租户额度，默认责任人为 null；创建者仅作为审计身份，不占用其普通用户 20 台额度，也不构成终端 ownership。每台设备独立生成私钥、CSR、operation 和 grant secret，调用 `POST /api/v1/agent/enroll/configurations/exchange`，提交完整 file、runtime 和 installation（releaseId）。同一 operation 的精确重试只返回原授权；同一配置下换 operation 重用 CSR 公钥被拒绝。`POST .../configurations/status` 使用原 configurationId、operationId 和独立设备 secret 查回授权，不重新分配。
@@ -74,7 +74,7 @@ Agent 注册在已有 `channel.mdm.enrollment` 定义中同时下发 `channel.cl
 
 新 V1 继续拒绝软件 ownership 和 AppCopy 的 materialSha256，旧字段即使为 null 也拒绝；AppCopy 仍绑定完整 DMG 摘要、明确的包路径和目标名、bundle ID、版本、执行身份与独立前后检测。独立 Agent #2663 须更新到本项交付的完整 Git rev 和两个 V1 指纹，当前服务端测试不代表 Agent 或真机已完成。
 
-原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，origin 在接受新任务时从当前已发布签名连接配置的 `preferredOrigin` 冻结；已有任务保留原地址，其未完成期间阻止该地址退役。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。
+原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，origin 在接受新任务时从租户当前连接版本的 `preferredOrigin` 冻结；尚无版本时使用已启用的 Agent 主入口；已有任务保留原地址，其未完成期间阻止该地址退役。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。
 
 原生 MDM 的 Agent 安装按尝试保留幂等历史，不再按注册代际永久锁死。原尝试仍在有效期内、引导身份尚未清理，或最新原生探测是在原尝试截止后 60 秒之前开始时，不产生新的安装操作。新的完整探测确认包缺失后，策略可在同一 MDM 注册下创建独立恢复尝试；原 Unknown 和旧回执保留，不改写为成功。原生 MDM 仍可能晚执行已收到的命令，这不是跨 OS 的 exactly-once 承诺。
 

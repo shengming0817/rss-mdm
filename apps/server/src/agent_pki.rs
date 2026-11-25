@@ -46,7 +46,7 @@ pub struct BootstrapConfig {
 pub(crate) struct AgentPki {
     pub issuer: Arc<DeviceIssuer>,
     pub bootstrap: Option<Arc<rss_mdm_pki_service::scep::Verifier>>,
-    pub origins: Vec<String>,
+    pub origins: rss_mdm_registration_service::agent::connections::InstalledOrigins,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::certificate_issuance::Clock>,
 
     required_seconds: i64,
@@ -71,25 +71,11 @@ impl Config {
             return Ok(None);
         };
         let invalid = || Error::Configuration(ConfigIssue::AgentPki);
-        let origin = url::Url::parse(&endpoint.origin).map_err(|_| invalid())?;
-        if origin.scheme() != "https"
-            || origin.origin().ascii_serialization() != endpoint.origin
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-        {
-            return Err(invalid());
-        }
-        let mut origins = vec![endpoint.origin.clone()];
-        origins.extend(additional_origins.iter().cloned());
-        origins.sort();
-        if origins.len() > rss_mdm_agent_wire::connections::MAX_ORIGINS
-            || origins.windows(2).any(|p| p[0] == p[1])
-        {
-            return Err(invalid());
-        }
-        for value in &origins {
-            rss_mdm_agent_wire::connections::validate_origin(value).map_err(|_| invalid())?;
-        }
+        let origins = rss_mdm_registration_service::agent::connections::InstalledOrigins::new(
+            endpoint.origin.clone(),
+            additional_origins,
+        )
+        .map_err(|_| invalid())?;
         let days = lifetime.days()?;
         let issuer = DeviceIssuer::new(
             rss_mdm_install_support::StorageProfile::Mdm,

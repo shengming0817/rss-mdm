@@ -378,7 +378,10 @@ pub(crate) fn from_state(
                     ),
                 )
             }),
-            agent_enrollment: state.agent_enrollment.clone(),
+            agent_enrollment: rss_mdm_management_http::agent_enrollment::App {
+                registration: state.agent_enrollment.clone(),
+                endpoint_configured: state.channels.agent_endpoint_configured(),
+            },
             pki: state.pki.clone(),
             pki_clock: Arc::new(crate::agent_pki::PkiClock(state.clock.clone())),
             filevault: state
@@ -542,7 +545,7 @@ pub(crate) fn from_state(
         listeners.push((
             crate::native::ChannelKind::Agent,
             crate::native::ChannelRouter {
-                origins: pki.origins.clone(),
+                origins: pki.origins.origins().to_vec(),
                 router: router.into_checked_axum(rss_mdm_http_contract::module::Listener::Agent),
                 admission: crate::native::admission::Admission::new(monotonic.clone(), "agent-tls"),
             },

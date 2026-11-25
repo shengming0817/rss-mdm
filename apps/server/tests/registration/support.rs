@@ -136,6 +136,10 @@ pub async fn service(
             ring::hmac::HMAC_SHA256,
             &[9; 32],
         )),
+        origins: agent::connections::InstalledOrigins::new(
+            super::connections::PRIMARY.into(),
+            &["https://localhost".into()],
+        )?,
         probe: c.execution(),
         store: c.database.registration(),
         audit: c.audit.clone(),
