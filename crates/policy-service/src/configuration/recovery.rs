@@ -154,14 +154,14 @@ impl Transactions {
             .collect::<std::result::Result<Vec<_>, _>>();
         let ids = stored(ids)?;
         let page = stored(dc::ExactCommandIds::new(&ids))?;
-        let commands = self
+        let mut commands = self
             .store
             .recover_exact(tx, scope, page)
             .await?
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-        for command in &commands {
+        for command in &mut commands {
             let id = stored(Uuid::parse_str(command.spec().id().as_str()))?;
             let operation = storage::load(tx, &self.protection, id).await?;
             if !command.status().is_terminal() {
@@ -169,7 +169,8 @@ impl Transactions {
                 if !storage::authority_decision(&self.source, &self.protection, tx, &operation, now)
                     .await?
                     .is_authorized()
-                    && self
+                {
+                    let transition = self
                         .store
                         .cancel(
                             tx,
@@ -177,17 +178,21 @@ impl Transactions {
                             &operation.command_id()?,
                             operation.coordinate,
                         )
-                        .await?
-                        .outcome
-                        == dc::Outcome::OutOfOrder
-                {
-                    return Err(Error::Conflict.into());
+                        .await?;
+                    if transition.outcome == dc::Outcome::OutOfOrder {
+                        return Err(Error::Conflict.into());
+                    }
+                    *command = transition.command;
                 }
             }
         }
-        for (id, previous_version) in candidates.operations {
+        for ((id, previous_version), command) in candidates.operations.into_iter().zip(commands) {
             let operation = storage::load(tx, &self.protection, id).await?;
-            let command = self.required_command(tx, &operation).await?;
+            if operation.scope != command.spec().scope()
+                || operation.command_id()? != *command.spec().id()
+            {
+                return Err(Error::Unavailable(Failure::CommandInvariant).into());
+            }
             if command.version() == previous_version {
                 continue;
             }

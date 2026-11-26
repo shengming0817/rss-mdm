@@ -15,6 +15,8 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 #[path = "query.rs"]
 mod query;
+#[path = "recovery_generation.rs"]
+mod recovery_generation;
 pub(crate) async fn seed(
     c: &Context,
     scope: Uuid,
@@ -104,13 +106,13 @@ pub(crate) async fn step(
             let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
                 anyhow::bail!("configuration observation deferred")
             };
-            assert!(matches!(
-                worker.apply(&claim, diff, &control).await?,
-                ReconcileStep::Ready(())
-            ));
+            let result = worker.apply(&claim, diff, &control).await;
+            worker.release(&claim, &control).await?;
+            anyhow::ensure!(matches!(result?, ReconcileStep::Ready(())));
             applied = true;
+        } else {
+            worker.release(&claim, &control).await?;
         }
-        worker.release(&claim, &control).await?;
     }
     anyhow::ensure!(applied, "configuration target was not claimed");
     Ok(())
@@ -299,14 +301,6 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     assert_eq!(foreign, 0);
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm.policy.configuration.v1'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(outbox, 1);
-    query::prove_batch(
-        &c,
-        &app,
-        &command.resources.storage.read_pool,
-        &key,
-        identity.0,
-    )
-    .await?;
     // The fifth real owner shares the RSS command scope, but never repairs a foreign orphan.
     let original:serde_json::Value=sqlx::query_scalar("SELECT to_jsonb(c) FROM rss_device_command.commands c WHERE tenant_id=$1::uuid AND command_id=$2")
         .bind(c.tenant.to_string()).bind(identity.0.to_string()).fetch_one(&c.operator).await?;
@@ -347,6 +341,30 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO rss_device_command.commands SELECT * FROM jsonb_populate_record(NULL::rss_device_command.commands,$1)").bind(&original).execute(&mut *tx).await?;
     tx.commit().await?;
+    query::prove_batch(
+        &c,
+        &app,
+        &command.resources.storage.read_pool,
+        &key,
+        identity.0,
+    )
+    .await?;
+    // One historical operation refers to a withdrawn configuration unit; the other grants remain current.
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    let historical: Uuid = sqlx::query_scalar("UPDATE mdm_planning.configuration_operations SET authority=jsonb_set(authority,'{unit}',to_jsonb('withdrawn-unit'::text)) WHERE tenant_id=$1::uuid AND id=(SELECT o.id FROM mdm_planning.configuration_operations o JOIN rss_device_command.commands c ON (c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND o.id<>$3 AND c.status='published' AND c.version=2 ORDER BY o.id LIMIT 1) RETURNING id")
+        .bind(c.tenant.to_string()).bind(device.into_uuid()).bind(identity.0).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    wake(c.execution(), &app, device).await?;
+    step(&worker, c.tenant, device).await?;
+    let cancelled:(String,i64,i64) = sqlx::query_as("SELECT c.status,c.version,o.observed_command_version FROM mdm_planning.configuration_operations o JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.id=$2")
+        .bind(c.tenant.to_string()).bind(historical).fetch_one(&c.operator).await?;
+    assert_eq!(cancelled, ("cancelled".into(), 3, 3));
+    let audit = crate::command_runtime_t2_support::recovery_fact(&c, historical, 3)
+        .await?
+        .expect("policy cancellation audit");
+    assert_eq!(audit["details"]["version"], 3);
+    assert_eq!(audit["details"]["activity"]["execution"], "cancelled");
+    recovery_generation::verify(&c, app.runtime.clone(), *device).await?;
     drop(worker);
     drop(app);
     drop(owner);

@@ -386,7 +386,7 @@ pub(crate) async fn apply_prepared(
                 .collect::<std::result::Result<Vec<_>, _>>();
             let ids = stored(ids)?;
             let page = stored(dc::ExactCommandIds::new(&ids))?;
-            let commands = service
+            let mut commands = service
                 .transactions
                 .store
                 .recover_exact(tx, scope, page)
@@ -394,56 +394,57 @@ pub(crate) async fn apply_prepared(
                 .into_iter()
                 .collect::<Option<Vec<_>>>()
                 .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
+            // Registration can cancel the page before its originally live operations are reauthorized.
+            let mut active: Vec<_> = commands
+                .iter_mut()
+                .filter(|c| !c.status().is_terminal())
+                .collect();
             if matches!(registration, Err(Fault::Request(Error::Conflict))) {
-                for command in &commands {
-                    if !command.status().is_terminal() {
-                        let transition = service
-                            .transactions
-                            .store
-                            .cancel(tx, scope, command.spec().id(), command.spec().coordinate())
-                            .await?;
-                        if transition.outcome == dc::Outcome::OutOfOrder {
-                            return Err(Error::Conflict.into());
-                        }
+                for command in &mut active {
+                    let transition = service
+                        .transactions
+                        .store
+                        .cancel(tx, scope, command.spec().id(), command.spec().coordinate())
+                        .await?;
+                    if transition.outcome == dc::Outcome::OutOfOrder {
+                        return Err(Error::Conflict.into());
                     }
+                    **command = transition.command;
                 }
             } else {
                 registration?;
             }
-            for command in &commands {
-                if !command.status().is_terminal() {
-                    let operation = storage::load(
-                        tx,
-                        &service.transactions.protection,
-                        stored(Uuid::parse_str(command.spec().id().as_str()))?,
-                    )
-                    .await?;
-                    let _now = storage::now(tx).await?;
-                    if !storage::authority_valid(
-                        service.transactions.materials.clone(),
-                        tx,
-                        &operation,
-                    )
+            for command in active {
+                let operation = storage::load(
+                    tx,
+                    &service.transactions.protection,
+                    stored(Uuid::parse_str(command.spec().id().as_str()))?,
+                )
+                .await?;
+                let _now = storage::now(tx).await?;
+                if !storage::authority_valid(service.transactions.materials.clone(), tx, &operation)
                     .await?
-                        && service
-                            .transactions
-                            .store
-                            .cancel(tx, scope, command.spec().id(), command.spec().coordinate())
-                            .await?
-                            .outcome
-                            == dc::Outcome::OutOfOrder
-                    {
+                    && !command.status().is_terminal()
+                {
+                    let transition = service
+                        .transactions
+                        .store
+                        .cancel(tx, scope, command.spec().id(), command.spec().coordinate())
+                        .await?;
+                    if transition.outcome == dc::Outcome::OutOfOrder {
                         return Err(Error::Conflict.into());
                     }
+                    *command = transition.command;
                 }
             }
-            // Observe every selected owner's version, including terminal transitions and unchanged live work.
-            for (id, previous_version) in candidates.operations {
+            for ((id, previous_version), command) in candidates.operations.into_iter().zip(commands)
+            {
                 let operation = storage::load(tx, &service.transactions.protection, id).await?;
-                let command = service
-                    .transactions
-                    .required_command(tx, &operation)
-                    .await?;
+                if operation.scope != command.spec().scope()
+                    || operation.command_id()? != *command.spec().id()
+                {
+                    return Err(Error::Unavailable(Failure::CommandInvariant).into());
+                }
                 if command.version() == previous_version {
                     continue;
                 }

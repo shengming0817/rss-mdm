@@ -393,7 +393,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         anyhow::ensure!(held.iter().all(|(_,release)| !release.is_closed()), "the other seven software reads must still be in flight");
         // The management withdrawal races the in-flight worker at the same publication slot.
         let held_record=slow_op.record(&records[0].0,cutoff()).await?.unwrap();
-        let proof = c.authenticate(&account).await?;
+        let proof=c.authenticate(&account).await?;
         let cancel=p::ServiceRequest{actor:rel::ActorId::new(c.tenant,proof.principal_id())?,id:rel::RequestId::new(c.tenant,Uuid::new_v4().to_string())?,expected_revision:held_record.snapshot().revision,as_of:rss_contract::Timepoint::try_from(now())?};
         let withdraw=p::ManagementAccess{proof:&proof,permission:Permission::ReleaseWithdraw};
         Box::pin(slow_op.withdraw(&records[0].0,&cancel,&withdraw,cutoff())).await?;
