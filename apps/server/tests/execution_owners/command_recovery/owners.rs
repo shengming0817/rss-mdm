@@ -91,7 +91,7 @@ async fn seed(h: &Harness, owner: Owner, policy: Uuid, version: Uuid) -> Result<
         .bind(&tenant).bind(device.into_uuid()).bind(h.c.execution().epoch().get()).bind(Uuid::nil().to_string()).execute(&mut *tx).await?;
     for (index, id) in page.ids.into_iter().enumerate() {
         let sealed = page.sealed(h, id, &metadata)?;
-        let authority = page.authority(&proof, id, policy, version)?;
+        let authority = page.authority(&proof, id, policy, version, metadata.deadline)?;
         sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,terminal_at,version) VALUES($1::uuid,$2,$3,1,1,$4,2000000,1000000,$5,$2,$4,$6,1000000,$7, $8)")
             .bind(&tenant).bind(id.to_string()).bind(page.command_device).bind([1u8;32].as_slice()).bind(owner.domain().as_str())
             .bind(if index==0 {"published"} else {"cancelled"}).bind((index==1).then_some(1000001_i64)).bind(if index==0 {2_i64} else {3}).execute(&mut *tx).await?;
@@ -129,6 +129,7 @@ impl Page {
         id: Uuid,
         policy: Uuid,
         version: Uuid,
+        deadline: i64,
     ) -> Result<Value> {
         Ok(match self.owner {
             Owner::Software => serde_json::to_value(deployment::authority::Authority::Software {
@@ -151,7 +152,7 @@ impl Page {
                         platform: rss_mdm_policy::Platform::Windows,
                         source: rss_mdm_inventory::ReportSource::MdmWindows,
                         release: Uuid::new_v4(),
-                        deadline: metadata.deadline,
+                        deadline,
                         input_version: "1".into(),
                         download_origin: "https://localhost".into(),
                         origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
