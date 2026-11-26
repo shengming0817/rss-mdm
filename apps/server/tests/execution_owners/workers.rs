@@ -1,3 +1,5 @@
+#[path = "scheduler_permits.rs"]
+mod scheduler_permits;
 use super::*;
 use rss_mdm_inventory_service::collection::execution as collection;
 use rss_reconcile::DurableStore;
