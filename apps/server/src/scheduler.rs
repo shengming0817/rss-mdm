@@ -1,35 +1,47 @@
 //! One host-owned scheduling pool shared by independently registered business workers.
 use rss_mdm_work_page::scheduler::Scheduler;
-use std::time::Duration;
-#[derive(Clone)]
+use rss_reconcile_postgres::CloseOutcome;
+use rss_runtime::ShutdownError;
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 pub(crate) struct SchedulerStorage {
-    pub(crate) store: Scheduler,
+    name: &'static str,
+    pool: sqlx::PgPool,
+    admitted: Arc<OnceLock<Scheduler>>,
 }
 impl SchedulerStorage {
     pub(crate) async fn open(
+        name: &'static str,
         options: sqlx::postgres::PgConnectOptions,
-    ) -> Result<Self, crate::Error> {
+        register: impl FnOnce(Self),
+    ) -> Result<Scheduler, crate::Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(crate::background::SCHEDULER_CONNECTIONS)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await
             .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
+        // Startup can be cancelled while the provider probes this pool.
+        let admitted = Arc::new(OnceLock::new());
+        register(Self {
+            name,
+            pool: pool.clone(),
+            admitted: admitted.clone(),
+        });
         let timer = rss_mdm_policy_service::clock::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        match Scheduler::new(pool.clone(), &control).await {
-            Ok(store) => Ok(Self { store }),
-            Err(_) => {
-                pool.close().await;
-                Err(crate::Error::Unavailable(crate::Failure::Database))
-            }
-        }
+        let scheduler = Scheduler::new(pool, &control)
+            .await
+            .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
+        Ok(admitted.get_or_init(|| scheduler).clone())
     }
 }
 impl rss_runtime::ManagedResource for SchedulerStorage {
     fn name(&self) -> &str {
-        "mdm-scheduler-postgres"
+        self.name
     }
     fn shutdown_timeout(&self) -> Duration {
         Duration::from_secs(8)
@@ -38,10 +50,17 @@ impl rss_runtime::ManagedResource for SchedulerStorage {
         let timer = rss_mdm_policy_service::clock::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        match self.store.close(&control).await {
-            rss_reconcile_postgres::CloseOutcome::Drained => Ok(()),
-            _ => Err(rss_runtime::ShutdownError::new(std::io::Error::other(
-                "scheduler did not drain",
+        let Some(store) = self.admitted.get() else {
+            self.pool.close().await;
+            return Ok(());
+        };
+        match store.close(&control).await {
+            CloseOutcome::Drained => Ok(()),
+            CloseOutcome::Deadline => Err(ShutdownError::deadline_exceeded(std::io::Error::other(
+                "scheduler drain deadline",
+            ))),
+            CloseOutcome::Cancelled => Err(ShutdownError::new(std::io::Error::other(
+                "scheduler drain cancelled",
             ))),
         }
     }

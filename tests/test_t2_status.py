@@ -265,7 +265,7 @@ class T2Status(unittest.TestCase):
         for path, expected in (
             ('apps/server/src/owner_storage.rs', ['foundation.lifecycle', 'policy.configuration']),
             ('apps/server/src/worker_wake.rs', ['foundation.lifecycle', 'planning.owners']),
-            ('apps/server/src/scheduler.rs', ['foundation.lifecycle']),
+            ('apps/server/src/scheduler.rs', ['foundation.lifecycle', 'task.recovery']),
             ('apps/server/src/local_delivery.rs', ['foundation.lifecycle', 'planning.owners']),
             ('apps/server/src/asset_inputs.rs', ['foundation.lifecycle', 'planning.owners']),
             ('apps/server/src/clock.rs', []),

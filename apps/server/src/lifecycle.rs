@@ -493,20 +493,21 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 Some(service)
                             } else { None };
                         let scheduler = crate::scheduler::SchedulerStorage::open(
+                            "mdm-scheduler-postgres",
                             compiled.config.business_databases.scheduler
                                 .options()
                                 .map_err(|e| ProcessError::at("startup.scheduler", e))?,
+                            |resource| startup.stage_resource(DynManagedResource::new_box(resource)),
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.scheduler", e))?;
-                        startup.stage_resource(DynManagedResource::new_box(scheduler.clone()));
                         let automation =
                             crate::automation::Automation::new(crate::automation::PolicyWork::new(
                                 access.archive_pool(),
                                 probe.storage(),
                                 policy_application.clone(),
                                 events.clone(),
-                                scheduler.store.clone(),
+                                scheduler.clone(),
                             ));
                         let scopes = crate::scopes::open(
                             scope_owner.runtime.clone(),
@@ -520,7 +521,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                         .map_err(|e| ProcessError::at("startup.scope", e))?;
                         let scope_work = Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
                             scopes.clone(),
-                            scheduler.store.clone(),
+                            scheduler.clone(),
                         ));
                         let device_fields=crate::administration::user_profiles::device_fields::Refresh {
                             runtime:inventory_owner.runtime.clone(), identity:identity.authority.clone(), federation:identity.federation.clone(),
@@ -530,17 +531,17 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                         let group_work =
                             Arc::new(rss_mdm_group_service::runtime::GroupWork::new(
                                 inventory_services.groups.clone(),
-                                scheduler.store.clone(),
+                                scheduler.clone(),
                             ).with_device_fields(Arc::new(device_fields)));
                         let query_work =
                             Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
                                 inventory_services.assets.clone(),
-                                scheduler.store.clone(),
+                                scheduler.clone(),
                             ));
                         let compliance_work = Arc::new(
                             rss_mdm_compliance_service::runtime::ComplianceWork::new(
                                 inventory_services.compliance.clone(),
-                                scheduler.store.clone(),
+                                scheduler.clone(),
                             ),
                         );
                         let scope_delivery = crate::local_delivery::Delivery::open(
@@ -577,7 +578,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             })?,
                         );
                         let device_work=Arc::new(rss_mdm_device_service::worker::DeviceWork::new(
-                            commands.discovery_pool.clone(),probe,associations.clone(),source_runtime.clone(),scheduler.store.clone(),
+                            commands.discovery_pool.clone(),probe,associations.clone(),source_runtime.clone(),scheduler.clone(),
                             rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(8)),
                         ).await.map_err(|_|ProcessError::at("startup.device_worker",Error::Unavailable(Failure::Database)))?);
                         let timeline = access

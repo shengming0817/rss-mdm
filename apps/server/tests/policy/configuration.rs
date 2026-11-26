@@ -193,10 +193,13 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     assert_eq!(counts(&c, device).await?, before);
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm.policy.configuration.v1'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(outbox, 0);
+    let mut scheduler_resource = None;
     let scheduler = crate::scheduler::SchedulerStorage::open(
+        "mdm-scheduler-postgres",
         c.inputs
             .database("shared", "mdm_scheduler_runtime")
             .options()?,
+        |resource| scheduler_resource = Some(resource),
     )
     .await?;
     let events = crate::assembly::policy::events(
@@ -213,7 +216,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         c.execution().storage(),
         app.clone(),
         events,
-        scheduler.store.clone(),
+        scheduler.clone(),
     );
     wake(c.execution(), &app, device).await?;
     step(&worker, c.tenant, device).await?;
@@ -286,7 +289,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         c.execution().storage(),
         app.clone(),
         events,
-        scheduler.store.clone(),
+        scheduler.clone(),
     );
     wake(c.execution(), &app, device).await?;
     step(&worker, c.tenant, device).await?;
@@ -366,7 +369,10 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     drop(app);
     drop(owner);
     use rss_runtime::ManagedResource;
-    scheduler.shutdown().await?;
+    scheduler_resource
+        .expect("registered scheduler")
+        .shutdown()
+        .await?;
     Fixture::close(command).await?;
     c.close().await;
     Ok(())
