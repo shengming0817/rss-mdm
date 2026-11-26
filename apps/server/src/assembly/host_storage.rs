@@ -193,14 +193,13 @@ impl Storage {
             )?;
 
         let read_pool = ReadPool::open(config, &mut acquire).await?;
-        let scheduler = crate::scheduler::SchedulerStorage::open(
+        let reconcile = crate::scheduler::SchedulerStorage::open(
             "command-scheduler-postgres",
             config.command_database.options()?,
+            |resource| acquire(rss_runtime::DynManagedResource::new_box(resource)),
         )
         .await
         .map_err(|_| bad())?;
-        let reconcile = scheduler.store.clone();
-        acquire(rss_runtime::DynManagedResource::new_box(scheduler));
         Ok(Self {
             command_recovery_batch: background.command_recovery_batch,
             command_supersede_batch: background.command_supersede_batch,
