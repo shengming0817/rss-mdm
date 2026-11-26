@@ -65,10 +65,15 @@ pub enum Storage {
         ca_file: PathBuf,
         writer: Credential,
         maintenance: Credential,
+        #[serde(default = "default_max_fences")]
+        max_fences: NonZeroU32,
         max_scan_rows: NonZeroU64,
         max_scan_bytes: NonZeroU64,
         max_memory_bytes: NonZeroU64,
     },
+}
+fn default_max_fences() -> NonZeroU32 {
+    NonZeroU32::new(100).expect("positive default namespace fence budget")
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -326,6 +331,7 @@ impl Config {
                 ca_file,
                 writer,
                 maintenance,
+                max_fences,
                 max_scan_rows,
                 max_scan_bytes,
                 max_memory_bytes,
@@ -352,7 +358,7 @@ impl Config {
                     cursor_micros: limits.cursor_micros,
                     max_in_flight: self.connections,
                     max_waiters: self.connections.get(),
-                    max_fences: NonZeroU32::new(100).expect("positive installation fence budget"),
+                    max_fences: *max_fences,
                     operation_permits: self.connections,
                     query_threads: std::num::NonZeroU32::MIN,
                     max_scan_rows: *max_scan_rows,

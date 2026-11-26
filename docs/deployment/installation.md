@@ -553,7 +553,7 @@ ClickHouse 使用固定 HTTPS origin 和显式 CA，运行读、写、维护及�
 
 分区准备及 dedicated 原生列存转换使用 `maintain-telemetry-storage`，传入原安装请求和固定维护操作 UUID。操作要求停写，并核对原安装身份；返回 `more` 时沿用原请求继续，`unknown` 时不得生成新操作身份。该入口不提供在线后端迁移。
 
-用 `prepare-telemetry` 安装物理资源。向 `configure-host` 提交 `change.kind=telemetry` 时省略顶层 `tenant` 或传 `null`，部署新宿主配置，并让原配置操作观察到 `applied`。ClickHouse 的 `backend` 指定 control、endpoint、CA、writer、maintenance 和扫描预算。每个物理资源使用 `connections` 个执行许可、等量在途请求和等量等待位置，查询使用一个线程，每个 namespace 的 fence 上限为 100。队列已满返回 503。游标密钥随租户 reader 提交。PostgreSQL 系列的物理配置提供 `cursor_key_file`。
+用 `prepare-telemetry` 安装物理资源。向 `configure-host` 提交 `change.kind=telemetry` 时省略顶层 `tenant` 或传 `null`，部署新宿主配置，并让原配置操作观察到 `applied`。ClickHouse 的 `backend` 指定 control、endpoint、CA、writer、maintenance 和扫描预算。每个物理资源使用 `connections` 个执行许可、等量在途请求和等量等待位置，查询使用一个线程，每个租户 namespace 的 fence 上限由 `backend.max_fences` 设置，为正整数，省略时取 100。自动保留为每个独立 stream/series 维护 cutoff 和 prune 两个边界，显式删除也会占用额度。部署可用 `configure-host` 调整该资源的预算并应用新配置，例如设置 1000；该预算独立于 reader 身份。预算耗尽时自动保留报告 `blocked/budget_exceeded`，查询队列已满返回 503。游标密钥随租户 reader 提交。PostgreSQL 系列的物理配置提供 `cursor_key_file`。
 
 新增业务租户完成开通后，部署管理员运行 `prepare-telemetry-tenant`。输入含原产品安装输入 `product`、原物理安装请求 `installation`、租户 UUID `tenant`、本次 `operationId`、`expectedRevision` 和 `action`。首次使用修订号 0。
 原产品库保存供应方变更、运行期资格检查、撤销及发布状态。每个已接入 ClickHouse 的租户另有一个由安装方提供独立密码、受原生保护的后台 reader，专供原 relay、定义同步和保留维护使用，与对外 reader 共享同一物理 owner。`telemetry-tenant-operation-status` 使用产品安装输入、租户和操作 ID 查询，支持遗失原 reader 输入后的回执核对。对长期无法准入的候选执行 `cancel-telemetry-tenant-operation`，提供同一产品、租户、操作 ID 和原物理安装输入，恢复旧版本后可用新操作修正。轮换时提交不同密码和相同游标密钥，保留先前签发的游标。

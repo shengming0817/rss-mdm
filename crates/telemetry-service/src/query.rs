@@ -798,7 +798,31 @@ pub struct Retention {
     pub due_at: i64,
     #[schemars(extend("enum"=[0,1,2]))]
     pub phase: i16,
-    pub progress: Option<crate::maintenance::Progress>,
+    pub progress: Option<RetentionProgress>,
+}
+/// Progress retained by the automatic retention worker for this target.
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RetentionProgress {
+    Unknown,
+    Blocked { reason: RetentionBlock },
+    More { processed: u32 },
+    Complete { processed: u32 },
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum RetentionBlock {
+    Provider(
+        #[schemars(schema_with = "crate::contract_schema::maintenance_block")]
+        rss_timeseries::MaintenanceBlock,
+    ),
+    Product(RetentionLimit),
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionLimit {
+    AcceptedBatchesPending,
+    BudgetExceeded,
 }
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

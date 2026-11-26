@@ -1,8 +1,10 @@
 //! Bounded policy scheduling. RSS owns cutoffs, dependency barriers and pruning progress.
-use crate::{Error, Service};
+use crate::{
+    Error, Service,
+    query::{RetentionBlock, RetentionLimit, RetentionProgress},
+};
 use rss_request_context::{Deadline, TenantId};
 use rss_timeseries::*;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use std::{num::NonZeroU32, sync::Arc};
@@ -108,7 +110,9 @@ async fn step(
     let mut next_phase = phase;
     let mut next_check = now.saturating_add(30_000_000);
     let result = if pending {
-        json!({"state":"blocked","reason":"accepted_batches_pending"})
+        RetentionProgress::Blocked {
+            reason: RetentionBlock::Product(RetentionLimit::AcceptedBatchesPending),
+        }
     } else {
         let version =
             u64::try_from(row.try_get::<i64, _>("version")?).map_err(|_| Error::Storage)?;
@@ -188,13 +192,16 @@ async fn step(
         )
         .map_err(|_| Error::Storage)?;
         match backend.maintain(&authorized, None, cutoff).await {
-            Err(_) | Ok(Outcome::Unknown) => json!({"state":"unknown"}),
+            Err(rss_timeseries::Error::BudgetExceeded) => RetentionProgress::Blocked {
+                reason: RetentionBlock::Product(RetentionLimit::BudgetExceeded),
+            },
+            Err(_) | Ok(Outcome::Unknown) => RetentionProgress::Unknown,
             Ok(Outcome::Accepted(progress) | Outcome::Replay(progress)) => match progress {
-                MaintenanceProgress::Blocked { reason } => {
-                    json!({"state":"blocked","reason":reason})
-                }
+                MaintenanceProgress::Blocked { reason } => RetentionProgress::Blocked {
+                    reason: RetentionBlock::Provider(reason),
+                },
                 MaintenanceProgress::More { processed, .. } => {
-                    json!({"state":"more","processed":processed})
+                    RetentionProgress::More { processed }
                 }
                 MaintenanceProgress::Complete { processed, .. } => {
                     if phase == 0 {
@@ -204,12 +211,12 @@ async fn step(
                         next_due = now.saturating_add(3_600_000_000);
                         next_check = next_due;
                     }
-                    json!({"state":"complete","processed":processed})
+                    RetentionProgress::Complete { processed }
                 }
             },
         }
     };
     sqlx::query("UPDATE mdm_telemetry.retention_targets SET due_at=$3,next_check=$4,phase=$5,result=$6 WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(tenant.to_string()).bind(id).bind(next_due).bind(next_check).bind(next_phase).bind(result).execute(c).await?;
+        .bind(tenant.to_string()).bind(id).bind(next_due).bind(next_check).bind(next_phase).bind(sqlx::types::Json(result)).execute(c).await?;
     Ok(())
 }

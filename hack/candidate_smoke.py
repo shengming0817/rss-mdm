@@ -214,12 +214,19 @@ def report_history(deployed, browser, binding, call):
     require(run()['delivery']['receipt']['status'] == 'found', 'management receipt')
     # Seed released content and an unacknowledged product delivery in this disposable database.
     # The immutable RSS identity and independent projection receipt stay intact.
-    deployed.sql(f"""BEGIN;
-        UPDATE rss_observation.batches SET raw=NULL,policy=NULL,decision=NULL
-        WHERE tenant_id='{deployed.tenant}' AND batch_id='{report_id}';
-        UPDATE mdm_access.collection_runs SET delivery_pending=true
-        WHERE tenant_id='{deployed.tenant}' AND id='{report_id}';
+    result = deployed.sql(f"""BEGIN;
+        SELECT set_config('rss.tenant_id','{deployed.tenant}',true),
+               set_config('rss.execution_epoch',expected_epoch::text,true)
+        FROM mdm_access.collection_runs WHERE tenant_id='{deployed.tenant}' AND id='{report_id}';
+        WITH released AS (
+            UPDATE rss_observation.batches SET raw=NULL,policy=NULL,decision=NULL
+            WHERE tenant_id='{deployed.tenant}' AND batch_id='{report_id}' AND raw IS NOT NULL RETURNING 1
+        ), pending AS (
+            UPDATE mdm_access.collection_runs SET delivery_pending=true
+            WHERE tenant_id='{deployed.tenant}' AND id='{report_id}' AND NOT delivery_pending RETURNING 1
+        ) SELECT (SELECT count(*) FROM released),(SELECT count(*) FROM pending);
         COMMIT;""")
+    require('1|1' in result.splitlines(), 'seeded exactly one released report and one pending acknowledgement')
     expected['observation'] = 'expired'
     require(call('GET', item) == (200, expected), 'expired receipt preserves intake and projection')
     def expired():

@@ -305,6 +305,9 @@ pub(super) async fn exercise(
     .context("B product intake")?;
     recovery::reader_isolation(root, &resources[0], a, b).await?;
     a_data
+        .verify_queue(&first_browser, &b_data, &peer, &observer)
+        .await?;
+    a_data
         .reject_foreign_cursor(&mut first_browser, &b_data)
         .await?;
     let (_, after) = platform.call(Method::GET, "/readyz", None, None).await?;
@@ -502,6 +505,8 @@ pub(super) async fn exercise(
     );
     sqlx::raw_sql("DROP TRIGGER pause_cold_receipt ON mdm_telemetry.batches; DROP FUNCTION public.pause_cold_receipt()").execute(&admin).await?;
     admin.close().await;
+    // An external reader keeps its own credential. The restore uses only its archive.
+    let client_password = crate::config::secret(&root.join("a-password"))?;
     Box::pin(recovery::cold(
         root,
         source,
@@ -552,7 +557,7 @@ pub(super) async fn exercise(
         .await?;
     shared_data.aggregate_pages(&mut shared).await?;
     a_data
-        .verify_snapshot(&mut first_browser, root, &resources[0])
+        .verify_snapshot(&mut first_browser, client_password.as_str(), &resources[0])
         .await?;
     recovery::interrupt_retirement(&resources[0], b).await?;
     attach(source, &resources[0], b, 2, json!({"kind":"retire"})).await?;
