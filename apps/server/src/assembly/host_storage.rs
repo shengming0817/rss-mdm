@@ -192,26 +192,15 @@ impl Storage {
                 },
             )?;
 
-        let read_pool = ReadPool::open(
-            config,
-            "command-reads-postgres",
-            crate::background::COMMAND_READ_CONNECTIONS,
-            &mut acquire,
-        )
-        .await?;
-        let scheduler_pool = ReadPool::open(
-            config,
+        let read_pool = ReadPool::open(config, &mut acquire).await?;
+        let scheduler = crate::scheduler::SchedulerStorage::open(
             "command-scheduler-postgres",
-            crate::background::SCHEDULER_CONNECTIONS,
-            &mut acquire,
+            config.command_database.options()?,
         )
-        .await?;
-        let timer = Timer::new();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        let reconcile = rss_mdm_work_page::scheduler::Scheduler::new(scheduler_pool, &control)
-            .await
-            .map_err(|_| bad())?;
+        .await
+        .map_err(|_| bad())?;
+        let reconcile = scheduler.store.clone();
+        acquire(rss_runtime::DynManagedResource::new_box(scheduler));
         Ok(Self {
             command_recovery_batch: background.command_recovery_batch,
             command_supersede_batch: background.command_supersede_batch,
@@ -228,36 +217,31 @@ impl Storage {
         })
     }
 }
-struct ReadPool(&'static str, sqlx::PgPool);
+struct ReadPool(sqlx::PgPool);
 impl ReadPool {
     async fn open(
         config: &crate::config::Config,
-        name: &'static str,
-        limit: u32,
         acquire: &mut impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
     ) -> Result<sqlx::PgPool, Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(limit)
+            .max_connections(crate::background::COMMAND_READ_CONNECTIONS)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(config.command_database.options()?)
             .await
             .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?;
-        acquire(rss_runtime::DynManagedResource::new_box(Self(
-            name,
-            pool.clone(),
-        )));
+        acquire(rss_runtime::DynManagedResource::new_box(Self(pool.clone())));
         Ok(pool)
     }
 }
 impl rss_runtime::ManagedResource for ReadPool {
     fn name(&self) -> &str {
-        self.0
+        "command-reads-postgres"
     }
     fn shutdown_timeout(&self) -> Duration {
         Duration::from_secs(8)
     }
     async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
-        self.1.close().await;
+        self.0.close().await;
         Ok(())
     }
 }
@@ -329,23 +313,4 @@ pub async fn bind_native_key(
 
 fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
-}
-struct Timer(tokio::time::Instant);
-impl Timer {
-    #[allow(clippy::disallowed_methods, reason = "host monotonic clock boundary")]
-    fn new() -> Self {
-        Self(tokio::time::Instant::now())
-    }
-}
-impl rss_reconcile::Timer for Timer {
-    #[allow(clippy::disallowed_methods, reason = "host monotonic clock boundary")]
-    fn now(&self) -> Duration {
-        self.0.elapsed()
-    }
-    async fn sleep_until(&self, at: Duration) {
-        match self.0.checked_add(at) {
-            Some(deadline) => tokio::time::sleep_until(deadline).await,
-            None => std::future::pending::<()>().await,
-        }
-    }
 }

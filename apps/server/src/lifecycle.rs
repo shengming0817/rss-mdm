@@ -493,6 +493,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 Some(service)
                             } else { None };
                         let scheduler = crate::scheduler::SchedulerStorage::open(
+                            "mdm-scheduler-postgres",
                             compiled.config.business_databases.scheduler
                                 .options()
                                 .map_err(|e| ProcessError::at("startup.scheduler", e))?,

@@ -192,6 +192,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm.policy.configuration.v1'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(outbox, 0);
     let scheduler = crate::scheduler::SchedulerStorage::open(
+        "mdm-scheduler-postgres",
         c.inputs
             .database("shared", "mdm_scheduler_runtime")
             .options()?,

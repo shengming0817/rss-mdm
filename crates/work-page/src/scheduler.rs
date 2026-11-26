@@ -4,7 +4,9 @@ use rss_reconcile::{
     ClaimBatch, Completion, Control, DurableStore, Error, ErrorKind, ResourceSet, Scope, Target,
     Timer,
 };
-use rss_reconcile_postgres::{CloseOutcome, PgClaim, PgOperationError, PgStore, PgTransaction};
+use rss_reconcile_postgres::{
+    CloseOutcome, PgClaim, PgOperation, PgOperationError, PgStore, PgTransaction,
+};
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
@@ -92,14 +94,14 @@ impl Scheduler {
         self.connections.limit()
     }
 
-    async fn connection<T: Timer>(
+    async fn operation<T: Timer>(
         &self,
         scope: &Scope,
         control: &Control<'_, T>,
-    ) -> Result<Slot, Error> {
+    ) -> Result<PgOperation<'_, Slot>, Error> {
         let tenant = uuid::Uuid::from_bytes(scope.tenant().octets());
         // The RSS control bounds the wait. Dropping admission removes its FIFO ticket.
-        control
+        let slot = control
             .run(async {
                 self.connections
                     .acquire(tenant, 1, &CancellationToken::new())
@@ -107,7 +109,8 @@ impl Scheduler {
                     .pop()
                     .ok_or_else(|| Error::new(ErrorKind::Invariant))
             })
-            .await
+            .await?;
+        self.store.with_permit(slot)
     }
 
     pub async fn local_tx<T: Timer, R: Send, F>(
@@ -123,8 +126,10 @@ impl Scheduler {
                 -> futures::future::BoxFuture<'c, Result<R, PgOperationError>>
             + Send,
     {
-        let _slot = self.connection(scope, control).await?;
-        self.store.local_tx(scope, control, operation).await
+        self.operation(scope, control)
+            .await?
+            .local_tx(scope, control, operation)
+            .await
     }
 
     pub async fn close<T: Timer>(&self, control: &Control<'_, T>) -> CloseOutcome {
@@ -140,8 +145,10 @@ impl DurableStore for Scheduler {
         resources: &ResourceSet,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let _slot = self.connection(target.scope(), control).await?;
-        self.store.wake(target, resources, control).await
+        self.operation(target.scope(), control)
+            .await?
+            .wake(target, resources, control)
+            .await
     }
     async fn bind_resources<T: Timer>(
         &self,
@@ -149,8 +156,10 @@ impl DurableStore for Scheduler {
         resources: &ResourceSet,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let _slot = self.connection(target.scope(), control).await?;
-        self.store.bind_resources(target, resources, control).await
+        self.operation(target.scope(), control)
+            .await?
+            .bind_resources(target, resources, control)
+            .await
     }
     async fn claim_due<T: Timer>(
         &self,
@@ -160,7 +169,7 @@ impl DurableStore for Scheduler {
         lease: Duration,
         control: &Control<'_, T>,
     ) -> Result<ClaimBatch<PgClaim>, Error> {
-        let (_slot, limit) = if let Ok(reservation) = CLAIM.try_with(Arc::clone) {
+        let (operation, limit) = if let Ok(reservation) = CLAIM.try_with(Arc::clone) {
             let grant = control
                 .run(reservation.claim_connection(
                     &self.connections,
@@ -173,17 +182,16 @@ impl DurableStore for Scheduler {
                     more: false,
                 });
             };
-            (slot, limit.min(granted))
+            (self.store.with_permit(slot)?, limit.min(granted))
         } else {
-            (self.connection(scope, control).await?, limit)
+            (self.operation(scope, control).await?, limit)
         };
         #[allow(
             clippy::disallowed_methods,
             reason = "physical claim start after connection admission"
         )]
         let started = tokio::time::Instant::now();
-        let batch = self
-            .store
+        let batch = operation
             .claim_due(scope, limit, scan_budget, lease, control)
             .await?;
         crate::reconcile::scanned(
@@ -200,8 +208,10 @@ impl DurableStore for Scheduler {
         lease: Duration,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let _slot = self.connection(claim.target().scope(), control).await?;
-        self.store.renew(claim, lease, control).await
+        self.operation(claim.target().scope(), control)
+            .await?
+            .renew(claim, lease, control)
+            .await
     }
     async fn finish<T: Timer>(
         &self,
@@ -209,8 +219,10 @@ impl DurableStore for Scheduler {
         completion: Completion,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let _slot = self.connection(claim.target().scope(), control).await?;
-        self.store.finish(claim, completion, control).await?;
+        self.operation(claim.target().scope(), control)
+            .await?
+            .finish(claim, completion, control)
+            .await?;
         crate::reconcile::settled(claim.target(), Some(completion));
         Ok(())
     }
@@ -219,8 +231,10 @@ impl DurableStore for Scheduler {
         claim: &PgClaim,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let _slot = self.connection(claim.target().scope(), control).await?;
-        self.store.release(claim, control).await?;
+        self.operation(claim.target().scope(), control)
+            .await?
+            .release(claim, control)
+            .await?;
         crate::reconcile::settled(claim.target(), None);
         Ok(())
     }

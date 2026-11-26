@@ -3,10 +3,12 @@ use rss_mdm_work_page::scheduler::Scheduler;
 use std::time::Duration;
 #[derive(Clone)]
 pub(crate) struct SchedulerStorage {
+    name: &'static str,
     pub(crate) store: Scheduler,
 }
 impl SchedulerStorage {
     pub(crate) async fn open(
+        name: &'static str,
         options: sqlx::postgres::PgConnectOptions,
     ) -> Result<Self, crate::Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -19,7 +21,7 @@ impl SchedulerStorage {
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
         match Scheduler::new(pool.clone(), &control).await {
-            Ok(store) => Ok(Self { store }),
+            Ok(store) => Ok(Self { name, store }),
             Err(_) => {
                 pool.close().await;
                 Err(crate::Error::Unavailable(crate::Failure::Database))
@@ -29,7 +31,7 @@ impl SchedulerStorage {
 }
 impl rss_runtime::ManagedResource for SchedulerStorage {
     fn name(&self) -> &str {
-        "mdm-scheduler-postgres"
+        self.name
     }
     fn shutdown_timeout(&self) -> Duration {
         Duration::from_secs(8)
