@@ -1,3 +1,4 @@
+mod projection;
 use super::*;
 use rss_mdm_inventory::*;
 use rss_mdm_inventory_service::collection::enterprise;
@@ -338,6 +339,18 @@ async fn agent_claim_persists_collection_with_execution_epoch_atomically() -> an
 }
 
 async fn tenant_report(h: &Harness, initial: bool) -> anyhow::Result<(Uuid, String, String)> {
+    report_value(
+        h,
+        initial,
+        NativeValue::Value(CollectedValue::Value(Scalar::Boolean(initial))),
+    )
+    .await
+}
+async fn report_value(
+    h: &Harness,
+    initial: bool,
+    value: NativeValue,
+) -> anyhow::Result<(Uuid, String, String)> {
     use rss_mdm_inventory_service::collection::store;
     let tenant = h.c.tenant;
     let device = *h.p.device();
@@ -384,15 +397,7 @@ async fn tenant_report(h: &Harness, initial: bool) -> anyhow::Result<(Uuid, Stri
         at,
     )
     .await?;
-    let progress = CollectionProgress::native(
-        definition,
-        [(
-            key,
-            NativeValue::Value(CollectedValue::Value(Scalar::Boolean(initial))),
-        )]
-        .into(),
-        at,
-    )?;
+    let progress = CollectionProgress::native(definition, [(key, value)].into(), at)?;
     enterprise::accept_in(
         &mut tx,
         tenant,

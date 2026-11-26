@@ -1022,6 +1022,7 @@ fn projection(
         _ => None,
     };
     let (state, position, applied) = match value.projection {
+        None if value.baseline_required => (ProgressState::HistoryExpired, None, None),
         None => (ProgressState::Unobserved, None, None),
         Some(ObservationStatus::Pending) => (ProgressState::Pending, None, None),
         Some(ObservationStatus::Running(p)) => (

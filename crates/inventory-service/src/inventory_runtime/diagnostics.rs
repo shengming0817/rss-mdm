@@ -15,7 +15,8 @@ impl Health {
 }
 #[derive(Clone)]
 pub(super) struct ProjectionObservation {
-    pub run: RunObservation,
+    // None records a refused empty start below the retained journal floor.
+    pub run: Option<RunObservation>,
     pub started_at: Instant,
     pub last_completed_at: Option<Instant>,
 }
@@ -29,6 +30,7 @@ pub struct Diagnostics {
     pub delivery: Result<u64, ProbeFailure>,
     pub journal: Result<rss_observation_postgres::JournalBounds, ProbeFailure>,
     pub projection: Option<ObservationStatus>,
+    pub baseline_required: bool,
     pub invocation_age_ms: Option<u64>,
     pub completed_age_ms: Option<u64>,
     pub head_age_ms: Option<u64>,
@@ -58,7 +60,11 @@ impl InventoryRuntime {
                 .and_then(|value| value.map_err(|_| ProbeFailure::Storage)),
             journal: head.map(|(bounds, _)| bounds),
             head_age_ms: head.ok().map(|(_, at)| age_ms(now, at)),
-            projection: local.as_ref().map(|p| p.run.read()),
+            projection: local
+                .as_ref()
+                .and_then(|p| p.run.as_ref())
+                .map(RunObservation::read),
+            baseline_required: local.as_ref().is_some_and(|p| p.run.is_none()),
             invocation_age_ms: local.as_ref().map(|p| age_ms(now, p.started_at)),
             completed_age_ms: local
                 .and_then(|p| p.last_completed_at)

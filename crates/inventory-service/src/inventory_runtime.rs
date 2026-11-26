@@ -399,6 +399,7 @@ pub enum WorkerFailure {
     DeliveryProgress,
     PendingReports,
     ProjectionInitialize,
+    HistoryExpired,
     ProjectionTakeover,
     ProjectionCompose,
     ProjectionRun,
@@ -689,7 +690,23 @@ impl InventoryRuntime {
         let handles = match cached {
             Some(handles) => handles,
             None => {
-                let handles = Arc::new(self.projection_handles(current, token).await?);
+                let handles = Arc::new(self.projection_handles(current, token).await.inspect_err(
+                    |failure| {
+                        if matches!(failure, WorkerFailure::HistoryExpired) {
+                            self.latest_projection
+                                .lock()
+                                .expect("projection observation")
+                                .insert(
+                                    tenant_id,
+                                    diagnostics::ProjectionObservation {
+                                        run: None,
+                                        started_at: self.clock.now.now(),
+                                        last_completed_at: None,
+                                    },
+                                );
+                        }
+                    },
+                )?);
                 self.projections
                     .lock()
                     .expect("projection handles")
@@ -724,7 +741,7 @@ impl InventoryRuntime {
             latest.insert(
                 tenant_id,
                 diagnostics::ProjectionObservation {
-                    run: run.observation(),
+                    run: Some(run.observation()),
                     started_at: self.clock.now.now(),
                     last_completed_at,
                 },
@@ -790,16 +807,45 @@ impl InventoryRuntime {
         );
         let control = Control::new(&self.clock, self.clock.startup_cutoff(), token);
         let definition = rss_mdm_inventory_postgres::definition();
-        self.projection
-            .initialize(
-                &scope,
-                &definition,
-                GenerationStart::beginning(),
-                ReplayBound::Live,
-                &control,
-            )
+        // Revision 4 exposes the durable generation through receipt_status. Both pending
+        // and settled carry the same checkpoint, independent of the queried event ID.
+        let probe =
+            rss_projection::ReceiptQuery::new(scope.clone(), definition, scope.generation())
+                .map_err(|_| WorkerFailure::ProjectionInitialize)?;
+        match self
+            .projection
+            .receipt_status(&probe, &control)
             .await
-            .map_err(|_| WorkerFailure::ProjectionInitialize)?;
+            .map_err(|_| WorkerFailure::ProjectionInitialize)?
+        {
+            rss_projection::ReceiptStatus::Uninitialized => {
+                if source
+                    .bounds(&control)
+                    .await
+                    .map_err(|_| WorkerFailure::ProjectionInitialize)?
+                    .expired_through
+                    .is_some()
+                {
+                    return Err(WorkerFailure::HistoryExpired);
+                }
+                self.projection
+                    .initialize(
+                        &scope,
+                        &definition,
+                        GenerationStart::beginning(),
+                        ReplayBound::Live,
+                        &control,
+                    )
+                    .await
+                    .map_err(|_| WorkerFailure::ProjectionInitialize)?;
+            }
+            rss_projection::ReceiptStatus::Pending(checkpoint)
+            | rss_projection::ReceiptStatus::Settled(checkpoint) => {
+                if checkpoint.bound != ReplayBound::Live {
+                    return Err(WorkerFailure::ProjectionInitialize);
+                }
+            }
+        }
         let claim = self
             .projection
             .takeover(&scope, &definition, &control)
