@@ -231,8 +231,9 @@ def report_history(deployed, browser, binding, call):
     require(call('GET', item) == (200, expected), 'expired receipt preserves intake and projection')
     def expired():
         value = run()
+        pending = deployed.sql(f"SELECT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id='{deployed.tenant}' AND id='{report_id}'")
         return (value['delivery'] == dict(receipt={'status':'expired'}, projection='projected')
-                and value['deliveryPending'] is False)
+                and pending.strip() == 'f')
     wait(expired, 'same fingerprint settles expired pending delivery')
     return ['report_not_found', 'report_projection_confirmed', 'expired_report_preserves_ack',
             'expired_report_pending_delivery_settled']

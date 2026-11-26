@@ -99,6 +99,27 @@ pub enum ReceiptStatus {
     NotFound,
     NoBatch,
 }
+impl ReceiptStatus {
+    pub(crate) fn status(&self) -> &'static str {
+        match self {
+            Self::Found { .. } => "found",
+            Self::Expired => "expired",
+            Self::NotFound => "not_found",
+            Self::NoBatch => "no_batch",
+        }
+    }
+}
+impl ProjectionStatus {
+    pub(crate) fn status(self) -> &'static str {
+        match self {
+            Self::Projected => "projected",
+            Self::Pending => "pending",
+            Self::PendingReceipt => "pending_receipt",
+            Self::Unconfirmed => "unconfirmed",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+}
 #[derive(Clone, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct DeliveryStatus {
     pub receipt: ReceiptStatus,
@@ -688,7 +709,12 @@ impl InventoryRuntime {
                 .saturating_duration_since(self.clock.origin),
             &drain,
         );
-        let run = rss_projection::run_batched(source.as_ref(), execution, &control, self.clock.policy.run);
+        let run = rss_projection::run_batched(
+            source.as_ref(),
+            execution,
+            &control,
+            self.clock.policy.run,
+        );
         {
             let mut latest = self
                 .latest_projection

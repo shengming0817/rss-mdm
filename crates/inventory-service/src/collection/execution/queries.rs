@@ -40,7 +40,6 @@ pub struct Report {
     pub result: String,
     pub reason: Option<String>,
     pub sealed_at: Option<i64>,
-    pub projection_pending: bool,
 }
 #[derive(Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -68,7 +67,7 @@ impl<R> Record<R> {
     }
 }
 const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline";
-const REPORT: &str = "CASE WHEN report.id IS NULL THEN NULL ELSE jsonb_build_object('id',report.id,'result',report.result,'reason',report.reason,'sealedAt',report.sealed_at,'projectionPending',report.delivery_pending) END";
+const REPORT: &str = "CASE WHEN report.id IS NULL THEN NULL ELSE jsonb_build_object('id',report.id,'result',report.result,'reason',report.reason,'sealedAt',report.sealed_at) END";
 fn select(summary: bool) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut query = sqlx::QueryBuilder::new("SELECT jsonb_build_object(");
     query.push(METADATA).push(",'channel',r.channel,'report',").push(REPORT).push(") || CASE WHEN r.channel='agent' THEN jsonb_build_object('state',r.agent_state,'attemptId',r.agent_state->'delivery'->>'attempt','result',").push(if summary {"r.agent_result-'native'"}else{"r.agent_result"}).push(") ELSE jsonb_build_object('delivery',r.native_delivery) END AS document FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_access.collection_runs report ON report.tenant_id=r.tenant_id AND report.device=r.device AND report.id=CASE WHEN r.channel='agent' THEN (r.agent_state->'delivery'->>'attempt')::uuid ELSE r.collection_run END WHERE r.tenant_id=$1::uuid");

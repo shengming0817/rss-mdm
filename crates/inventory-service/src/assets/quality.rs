@@ -8,7 +8,6 @@ pub(super) struct Record {
     id: String,
     sequence: i64,
     result: String,
-    delivery_pending: bool,
 }
 pub(super) fn decode_record(row: &Record) -> Result<QualityRun> {
     let coordinate: rss_observation::Scope = stored(serde_json::from_str(&row.scope))?;
@@ -52,7 +51,6 @@ pub(super) fn decode_record(row: &Record) -> Result<QualityRun> {
         run_id: stored(Uuid::parse_str(&row.id))?,
         sequence: row.sequence,
         result: crate::collection::RunResult::parse(&row.result)?,
-        delivery_pending: row.delivery_pending,
         fields,
     })
 }

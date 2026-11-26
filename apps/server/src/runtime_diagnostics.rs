@@ -541,7 +541,7 @@ impl RuntimeDiagnostics {
         inventory.dependencies.push(dependency(
             DependencyName::ObservationJournal,
             observations
-                .source_head
+                .journal
                 .as_ref()
                 .err()
                 .map(|e| probe_failure(*e)),
@@ -560,6 +560,10 @@ impl RuntimeDiagnostics {
         inventory.progress = Some(projection(observations));
         if let Some(progress) = &inventory.progress {
             match progress.state {
+                ProgressState::HistoryExpired => {
+                    inventory.health = Health::Degraded;
+                    inventory.reasons.push(Reason::HistoryExpired);
+                }
                 ProgressState::Failed => {
                     inventory.health = Health::Degraded;
                     inventory.reasons.push(Reason::ProjectionFailed);
@@ -1010,6 +1014,13 @@ fn projection(
     value: rss_mdm_inventory_service::inventory_runtime::diagnostics::Diagnostics,
 ) -> Progress {
     use rss_projection::{ObservationStatus, Stop};
+    let failure_position = match &value.projection {
+        Some(ObservationStatus::Stopped(p)) => match &p.stop {
+            Stop::Failed(e) => e.diagnostic().and_then(|d| d.position()).map(|p| p.get()),
+            _ => None,
+        },
+        _ => None,
+    };
     let (state, position, applied) = match value.projection {
         None => (ProgressState::Unobserved, None, None),
         Some(ObservationStatus::Pending) => (ProgressState::Pending, None, None),
@@ -1022,6 +1033,9 @@ fn projection(
             match p.stop {
                 Stop::CaughtUp => ProgressState::CaughtUp,
                 Stop::EventLimit => ProgressState::Limited,
+                Stop::Failed(e) if e.kind() == rss_projection::ErrorKind::HistoryExpired => {
+                    ProgressState::HistoryExpired
+                }
                 Stop::Failed(_) => ProgressState::Failed,
             },
             p.position.map(|v| v.get()),
@@ -1033,7 +1047,10 @@ fn projection(
             last_confirmed.map(|p| p.applied),
         ),
     };
-    let head = value.source_head.ok();
+    let head = value
+        .journal
+        .ok()
+        .map(|bounds| bounds.high_water.map(|p| p.get()));
     let lagging = if matches!(state, ProgressState::Unobserved | ProgressState::Pending) {
         None
     } else {
@@ -1043,6 +1060,12 @@ fn projection(
         state,
         confirmed_position: position,
         source_head: head.flatten(),
+        expired_through: value
+            .journal
+            .ok()
+            .and_then(|bounds| bounds.expired_through)
+            .map(|p| p.get()),
+        failure_position,
         lagging,
         invocation_age_ms: value.invocation_age_ms,
         completed_pass_age_ms: value.completed_age_ms,

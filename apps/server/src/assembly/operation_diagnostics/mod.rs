@@ -464,7 +464,7 @@ impl Diagnostics {
                 .map_err(Into::into),
             O::Collection => s
                 .assets
-                .collection_receipt(p, q.device.as_ref().ok_or(Error::Malformed)?, id)
+                .collection_receipt(request, q.device.as_ref().ok_or(Error::Malformed)?, id)
                 .await
                 .map_err(Into::into),
             O::Policy => {
