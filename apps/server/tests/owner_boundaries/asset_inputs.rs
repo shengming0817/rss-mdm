@@ -35,7 +35,7 @@ async fn consumer(c: &Context) -> Result<Arc<PgRuntime>> {
     ))
 }
 async fn message(c: &Context) -> Result<(MessageEnvelope<Vec<u8>>, Vec<u8>)> {
-    let (wire, fingerprint): (serde_json::Value,Vec<u8>) = sqlx::query_as("SELECT envelope,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-assets' AND envelope->>'route'='asset.changed' ORDER BY seq LIMIT 1")
+    let (wire, payload, fingerprint): (serde_json::Value,Vec<u8>,Vec<u8>) = sqlx::query_as("SELECT envelope,payload,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-assets' AND envelope->>'route'='asset.changed' ORDER BY seq LIMIT 1")
         .bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     let envelope = MessageEnvelope::new(
         MessageId::parse(wire["id"].as_str().context("message ID")?)?,
@@ -55,7 +55,7 @@ async fn message(c: &Context) -> Result<(MessageEnvelope<Vec<u8>>, Vec<u8>)> {
             ),
             MessageMetadataExtensions::new(None, None, None, BTreeMap::new()),
         ),
-        serde_json::from_value(wire["payload"].clone())?,
+        payload,
     );
     Ok((envelope, fingerprint))
 }
@@ -1770,7 +1770,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert!(published);
-    let (wire,fingerprint):(serde_json::Value,Vec<u8>)=sqlx::query_as("SELECT envelope,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-assets' AND envelope->>'route'='object.published' ORDER BY seq LIMIT 1").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    let (wire,payload,fingerprint):(serde_json::Value,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT envelope,payload,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-assets' AND envelope->>'route'='object.published' ORDER BY seq LIMIT 1").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     let event = MessageEnvelope::new(
         MessageId::parse(wire["id"].as_str().unwrap())?,
         MessageMetadata::new(
@@ -1787,7 +1787,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
             ),
             MessageMetadataExtensions::new(None, None, None, BTreeMap::new()),
         ),
-        serde_json::from_value::<Vec<u8>>(wire["payload"].clone())?,
+        payload,
     );
     assert_eq!(
         Sha256::digest(event.canonical_bytes()).as_slice(),
