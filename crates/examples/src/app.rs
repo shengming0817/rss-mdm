@@ -244,7 +244,7 @@ impl App {
     pub async fn inspect(&self, id: &Id) -> Result<serde_json::Value> {
         let scope = self.authority.scope();
         self.authority.authorize(Access::Read { scope })?;
-        let receipt = self
+        let lookup = self
             .observation
             .lookup(
                 &ReadGrant::verify(&self.authority, scope.clone())?,
@@ -253,8 +253,7 @@ impl App {
             )
             .await?;
         // RSS PgSource v1 event identity is the exact record fingerprint in lowercase hex.
-        let expired = matches!(receipt, rss_observation::LookupOutcome::Expired);
-        let (receipt, event_id) = match receipt {
+        let (receipt, event_id) = match &lookup {
             rss_observation::LookupOutcome::Found(record) => {
                 let fingerprint = record.batch().fingerprint(record.scope())?;
                 let id = fingerprint
@@ -297,11 +296,8 @@ impl App {
             .and_then(|status| status.checkpoint())
             .and_then(|checkpoint| checkpoint.position)
             .map(|p| p.get());
-        let projection = match status {
-            Some(status) if status.is_settled() => BatchProjection::Projected,
-            None if expired => BatchProjection::Unconfirmed,
-            _ => BatchProjection::NotProjected,
-        };
+        let projection =
+            BatchProjection::from_evidence(&lookup, status.is_some_and(|s| s.is_settled()));
         let selected = scope.clone();
         let assets = self
             .projection
@@ -367,4 +363,32 @@ enum BatchProjection {
     Projected,
     Unconfirmed,
     NotProjected,
+}
+
+impl BatchProjection {
+    fn from_evidence(receipt: &rss_observation::LookupOutcome, settled: bool) -> Self {
+        match (receipt, settled) {
+            (_, true) => Self::Projected,
+            (rss_observation::LookupOutcome::Expired, false) => Self::Unconfirmed,
+            _ => Self::NotProjected,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BatchProjection;
+    use rss_observation::LookupOutcome::{Expired, NotFound};
+
+    #[test]
+    fn inspect_distinguishes_missing_evidence_from_a_negative_result() {
+        for (lookup, settled, expected) in [
+            (Expired, false, "unconfirmed"),
+            (Expired, true, "projected"),
+            (NotFound, false, "not_projected"),
+        ] {
+            let result = BatchProjection::from_evidence(&lookup, settled);
+            assert_eq!(serde_json::to_value(result).unwrap(), expected);
+        }
+    }
 }
