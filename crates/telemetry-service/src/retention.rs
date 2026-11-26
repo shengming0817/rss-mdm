@@ -180,8 +180,8 @@ async fn step(
             Id::new(identity)?,
             action,
             MaintenanceBudget {
-                rows: NonZeroU32::new(4096).unwrap(),
-                buckets: NonZeroU32::new(64).unwrap(),
+                rows: backend.budget.points,
+                buckets: backend.budget.points.min(NonZeroU32::new(64).unwrap()),
             },
         )?;
         let authorized =

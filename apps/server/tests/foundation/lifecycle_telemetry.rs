@@ -39,6 +39,7 @@ async fn resources(
         db.password_file = password.clone();
         let mut config = base.clone();
         config["connections"] = json!(1);
+        config["limits"]["max_points"] = json!(32);
         config["resource_id"] = json!(Uuid::new_v4());
         let mut ch = Value::Null;
         if kind == "click_house" {
@@ -342,6 +343,13 @@ pub(super) async fn exercise(
         .connect_with(primary.options()?)
         .await?;
     let service = running.telemetry.get().context("installed ingress")?;
+    let reader_password = crate::config::secret(&root.join("b-password"))?;
+    b_data
+        .exhaust_retention_fences(&resources[0], reader_password.as_str())
+        .await?;
+    b_data
+        .retention_health(&mut peer, &admin, "blocked", Some("budget_exceeded"))
+        .await?;
     let query = json!({"product":source,"tenant":b,"operationId":request["operationId"]});
     let mut unchanged = request.clone();
     unchanged["action"] = b_reader.clone();
@@ -564,6 +572,14 @@ pub(super) async fn exercise(
         .replay(restarted.telemetry.get().unwrap(), &mut peer)
         .await?;
     shared_data.aggregate_pages(&mut shared).await?;
+    let retention_admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(primary.options()?)
+        .await?;
+    shared_data
+        .retention_health(&mut shared, &retention_admin, "complete", None)
+        .await?;
+    retention_admin.close().await;
     // The backend client has its own task, as it would outside the running host.
     let clickhouse = resources[0].clone();
     let mut first_browser = tokio::spawn(async move {

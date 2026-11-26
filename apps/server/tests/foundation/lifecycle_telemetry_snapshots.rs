@@ -173,10 +173,8 @@ async fn publish_unrelated(
 
 async fn fence_budget(
     store: &ChStore<SystemClock>,
-    tenant: TenantId,
+    budget_scope: rss_timeseries::Scope,
 ) -> Result<Authorized<MaintenanceRequest>> {
-    // A fresh isolated namespace exercises the product default without consuming other readers' fences.
-    let budget_scope = rss_timeseries::Scope::new(tenant, Id::new("fence-budget-proof")?);
     let budget_authority = ScopeAuthority(budget_scope.clone());
     let request = |n: u32| -> Result<_> {
         let selection = Selection::Resource {
@@ -236,6 +234,60 @@ async fn expand_fence_budget(
 }
 
 impl Upload {
+    pub(in super::super) async fn exhaust_retention_fences(
+        &self,
+        ch: &Value,
+        password: &str,
+    ) -> Result<()> {
+        let tenant = self.principal.tenant();
+        let config = serde_json::from_value(ch["configuration"].clone())?;
+        let (owner, store) = open(&config, ch, tenant, password).await?;
+        fence_budget(
+            &store,
+            rss_timeseries::Scope::new(tenant, Id::new("mdm.telemetry")?),
+        )
+        .await?;
+        owner.close(cutoff()?).await?;
+        Ok(())
+    }
+
+    pub(in super::super) async fn retention_health(
+        &self,
+        browser: &mut Browser,
+        primary: &sqlx::PgPool,
+        state: &str,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let tenant = self.principal.tenant();
+        let device = self.principal.device();
+        let field = self.history["field"].as_str().context("telemetry field")?;
+        let updated = sqlx::query("UPDATE mdm_telemetry.retention_targets SET result=NULL,phase=0,next_check=0,due_at=(extract(epoch FROM clock_timestamp())*1000000)::bigint WHERE tenant_id=$1::uuid AND device=$2 AND field=$3")
+            .bind(tenant.to_string()).bind(device.into_uuid()).bind(field).execute(primary).await?;
+        ensure!(updated.rows_affected() > 0);
+        let path = format!("/api/v1/tenants/{tenant}/telemetry/health");
+        let query = json!({"device":device,"field":field,"receivedFrom":0,"receivedUntil":i64::MAX,"maxBatches":16});
+        tokio::time::timeout(Duration::from_secs(45), async {
+            loop {
+                let (status, body) = browser
+                    .call(Method::POST, &path, Some(query.clone()), None)
+                    .await?;
+                ensure!(status == 200, "retention health {status}: {body}");
+                let targets = body["retention"]
+                    .as_array()
+                    .context("health retention targets")?;
+                if targets.iter().any(|row| {
+                    let progress = &row["progress"];
+                    progress["state"] == state && progress["reason"].as_str() == reason
+                }) {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .with_context(|| format!("worker health {state} {reason:?}"))?
+    }
+
     async fn aggregate(&self, browser: &mut Browser, after: Option<&str>) -> Result<(u16, Value)> {
         let mut query = self.history.clone();
         let start = self.input.observations[0].observed_at;
@@ -327,7 +379,8 @@ impl Upload {
 
         self.check_invalidation(browser, &store, &original, &cursor)
             .await?;
-        let blocked = fence_budget(&store, tenant).await?;
+        let scope = rss_timeseries::Scope::new(tenant, Id::new("fence-budget-proof")?);
+        let blocked = fence_budget(&store, scope).await?;
         owner.close(cutoff()?).await?;
         expand_fence_budget(&config, ch, tenant, client_password, &blocked).await
     }

@@ -253,6 +253,7 @@ impl App {
             )
             .await?;
         // RSS PgSource v1 event identity is the exact record fingerprint in lowercase hex.
+        let expired = matches!(receipt, rss_observation::LookupOutcome::Expired);
         let (receipt, event_id) = match receipt {
             rss_observation::LookupOutcome::Found(record) => {
                 let fingerprint = record.batch().fingerprint(record.scope())?;
@@ -296,7 +297,11 @@ impl App {
             .and_then(|status| status.checkpoint())
             .and_then(|checkpoint| checkpoint.position)
             .map(|p| p.get());
-        let projected = status.is_some_and(|status| status.is_settled());
+        let projection = match status {
+            Some(status) if status.is_settled() => BatchProjection::Projected,
+            None if expired => BatchProjection::Unconfirmed,
+            _ => BatchProjection::NotProjected,
+        };
         let selected = scope.clone();
         let assets = self
             .projection
@@ -324,7 +329,7 @@ impl App {
             })
             .await?;
         Ok(
-            serde_json::json!({"receipt":receipt,"projection":if projected { BatchProjection::Projected } else { BatchProjection::NotProjected },"checkpoint":position,"assets":assets}),
+            serde_json::json!({"receipt":receipt,"projection":projection,"checkpoint":position,"assets":assets}),
         )
     }
     /// Call only after every operation/worker has been joined or dropped.
@@ -360,5 +365,6 @@ impl App {
 #[serde(rename_all = "snake_case")]
 enum BatchProjection {
     Projected,
+    Unconfirmed,
     NotProjected,
 }
