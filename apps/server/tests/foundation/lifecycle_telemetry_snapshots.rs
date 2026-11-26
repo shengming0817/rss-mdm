@@ -116,6 +116,26 @@ fn unrelated_batch(
     ))
 }
 
+async fn interrupt_projection(
+    store: &ChStore<SystemClock>,
+    ch: &Value,
+    first: &Authorized<Batch>,
+    first_id: &Authorized<ReceiptQuery>,
+) -> Result<()> {
+    recovery::admin_sql(ch, "REVOKE INSERT ON rss_ts_ch.raw FROM metric_writer").await?;
+    let interrupted = store.write(first, cutoff()?).await;
+    recovery::admin_sql(ch, "GRANT INSERT ON rss_ts_ch.raw TO metric_writer").await?;
+    ensure!(!matches!(
+        interrupted,
+        Ok(Outcome::Accepted(_) | Outcome::Replay(_))
+    ));
+    assert_eq!(
+        store.progress(first_id, cutoff()?).await?,
+        ProjectionProgress::Prepared
+    );
+    Ok(())
+}
+
 async fn publish_unrelated(
     store: &ChStore<SystemClock>,
     original: &Sample,
@@ -127,17 +147,7 @@ async fn publish_unrelated(
     let (first, first_id) = unrelated_batch(original, &authority, "pending-other-stream")?;
     let (second, second_id) = unrelated_batch(original, &authority, "following-other-stream")?;
     verify_queue(store, &first_id, admin).await?;
-    recovery::admin_sql(ch, "REVOKE INSERT ON rss_ts_ch.raw FROM metric_writer").await?;
-    let interrupted = store.write(&first, cutoff()?).await;
-    recovery::admin_sql(ch, "GRANT INSERT ON rss_ts_ch.raw TO metric_writer").await?;
-    ensure!(!matches!(
-        interrupted,
-        Ok(Outcome::Accepted(_) | Outcome::Replay(_))
-    ));
-    assert_eq!(
-        store.progress(&first_id, cutoff()?).await?,
-        ProjectionProgress::Prepared
-    );
+    interrupt_projection(store, ch, &first, &first_id).await?;
     ensure!(matches!(
         store.write(&second, cutoff()?).await,
         Err(rss_timeseries::Error::Unavailable)
