@@ -165,7 +165,7 @@ MODULES = {
                 'apps/server/tests/execution_owners/*', 'apps/server/tests/support/planning.rs',
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',
                 'hack/task_trust_materials.py')),
-    'inventory.collection': dict(prefix='assembly::execution_owners_t2::inventory::', profiles=('shared',),
+    'inventory.collection': dict(prefix='assembly::execution_owners_t2::inventory::', profiles=('shared','inventory_capacity'),
         inputs=('crates/work-page/*', 'crates/agent-wire/*', 'crates/inventory/*', 'crates/inventory-postgres/*', 'crates/inventory-service/src/inventory_runtime*', 'apps/server/src/config.rs', 'apps/server/src/background.rs', 'fixtures/mdm-config.example.json', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
                 'crates/inventory-service/schema/*', 'crates/agent-channel/*',
                 'crates/device-service/src/control/capacity.rs', 'crates/task-state/*', 'crates/recovery-observation/*',

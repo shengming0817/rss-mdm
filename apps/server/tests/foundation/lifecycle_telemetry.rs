@@ -83,6 +83,7 @@ async fn check_clickhouse_installation(
             .await?
             .admitted
     );
+    recovery::admin_sql(request, "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision").await?;
     recovery::admin_sql(
         request,
         "ALTER TABLE rss_ts_ch.raw ADD INDEX raw_revision revision TYPE minmax GRANULARITY 1",

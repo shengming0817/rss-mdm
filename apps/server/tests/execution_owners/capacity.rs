@@ -12,7 +12,8 @@ use tower::ServiceExt;
 )]
 async fn complete_large_report_survives_authenticated_intake_replay_and_projection()
 -> anyhow::Result<()> {
-    let h = Harness::open().await?;
+    // This proof starts the whole host and observes installation-wide readiness.
+    let h = Harness::open_in("inventory_capacity").await?;
     let vocabulary = (0..1024)
         .map(|i| format!("state{i:04}{}", "s".repeat(128)))
         .collect::<std::collections::BTreeSet<_>>();
@@ -144,11 +145,13 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let clock = rt::Clock::new(crate::clock::monotonic(), runtime_policy.compile()?);
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_projection::Control::new(&clock, clock.startup_cutoff(), &cancel);
-    let observation =
-        rt::ObservationResource::open(h.c.inputs.options("shared", "mdm_runtime")?, clock.clone())
-            .await?;
+    let observation = rt::ObservationResource::open(
+        h.c.inputs.options(&h.c.profile, "mdm_runtime")?,
+        clock.clone(),
+    )
+    .await?;
     let projection = rt::ProjectionResource::open(
-        h.c.inputs.options("shared", "mdm_runtime")?,
+        h.c.inputs.options(&h.c.profile, "mdm_runtime")?,
         clock.clone(),
         &control,
     )
@@ -394,7 +397,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert!(page.next.is_none());
     tx.rollback().await?;
     // This tenant's management catalog contains only the built-in fields used by the client.
-    let module_context = Context::open("shared", &[]).await?;
+    let module_context = Context::open(&h.c.profile, &[]).await?;
     crate::assembly::registration_installation_t2::support::publish_agent_trust(
         &module_context,
         n.trust.clone(),
