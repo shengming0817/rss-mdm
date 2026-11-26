@@ -64,3 +64,18 @@ fn startup_and_pass_budgets_have_independent_cutoffs() {
     assert_eq!(clock.startup_cutoff(), Duration::from_secs(30));
     assert_eq!(clock.deadline().instant(), origin + Duration::from_secs(1));
 }
+
+#[test]
+fn expiry_and_absence_never_manufacture_projection_evidence() {
+    use rss_observation::LookupOutcome;
+    let expired = DeliveryStatus::from_lookup(LookupOutcome::Expired, false, true);
+    assert!(matches!(expired.receipt, ReceiptStatus::Expired));
+    assert_eq!(expired.projection, ProjectionStatus::Unconfirmed);
+    let applied = DeliveryStatus::from_lookup(LookupOutcome::Expired, true, true);
+    assert!(matches!(applied.receipt, ReceiptStatus::Expired));
+    assert_eq!(applied.projection, ProjectionStatus::Projected);
+    let waiting = DeliveryStatus::from_lookup(LookupOutcome::NotFound, false, true);
+    assert!(matches!(waiting.receipt, ReceiptStatus::NotFound));
+    assert_eq!(waiting.projection, ProjectionStatus::PendingReceipt);
+    assert!(matches!(DeliveryStatus::NO_BATCH.receipt, ReceiptStatus::NoBatch));
+}

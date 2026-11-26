@@ -422,21 +422,22 @@ async fn status_inner(
 fn projection_status(
     delivery: rss_mdm_inventory_service::inventory_runtime::DeliveryStatus,
 ) -> Result<(wire::ObservationStatus, wire::ProjectionStatus), AgentError> {
-    let observation = match delivery.receipt.as_ref().map(|r| r.decision.outcome()) {
-        None => wire::ObservationStatus::Pending,
-        Some(rss_observation::SyncOutcome::Snapshot) => wire::ObservationStatus::Snapshot,
-        Some(rss_observation::SyncOutcome::Stale) => wire::ObservationStatus::Stale,
-        Some(rss_observation::SyncOutcome::NeedSnapshot(
-            rss_observation::NeedSnapshot::CollectionFailed,
-        )) => wire::ObservationStatus::NeedSnapshotCollectionFailed,
-        Some(rss_observation::SyncOutcome::NeedSnapshot(_)) => {
-            wire::ObservationStatus::NeedSnapshotPartial
-        }
-        Some(rss_observation::SyncOutcome::Delta) => {
-            return Err(Error::Unavailable(Failure::InventoryRuntime).into());
-        }
+    use rss_mdm_inventory_service::inventory_runtime::ReceiptStatus;
+    use rss_observation::{NeedSnapshot, SyncOutcome};
+    let observation = match delivery.receipt {
+        ReceiptStatus::NotFound => wire::ObservationStatus::Pending,
+        ReceiptStatus::Expired => wire::ObservationStatus::Expired,
+        ReceiptStatus::NoBatch => return Err(Error::Unavailable(Failure::InventoryRuntime).into()),
+        ReceiptStatus::Found { decision, .. } => match decision.outcome() {
+            SyncOutcome::Snapshot => wire::ObservationStatus::Snapshot,
+            SyncOutcome::Stale => wire::ObservationStatus::Stale,
+            SyncOutcome::NeedSnapshot(NeedSnapshot::CollectionFailed) => wire::ObservationStatus::NeedSnapshotCollectionFailed,
+            SyncOutcome::NeedSnapshot(_) => wire::ObservationStatus::NeedSnapshotPartial,
+            SyncOutcome::Delta => return Err(Error::Unavailable(Failure::InventoryRuntime).into()),
+        },
     };
     let projection = match delivery.projection {
+        rss_mdm_inventory_service::inventory_runtime::ProjectionStatus::Unconfirmed => wire::ProjectionStatus::Unconfirmed,
         rss_mdm_inventory_service::inventory_runtime::ProjectionStatus::Projected => {
             wire::ProjectionStatus::Applied
         }

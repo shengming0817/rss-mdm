@@ -192,6 +192,42 @@ def ingress_capacity(browser, principal, deployed):
     wait(published, 'complete field vocabulary readback')
     return memory
 
+def report_history(deployed, browser, binding, call):
+    report_id = str(uuid.uuid4())
+    path = '/api/v1/agent/runtime/reports'
+    item = path + '/' + report_id
+    require(call('GET', item) == (404, {'code': 'report_not_found'}), 'unknown report identity')
+    field = 'channel.mdm.enrollment'
+    collection = next(c for c in binding['collections'] if any(f['key'] == field for f in c['fields']))
+    request = dict(wireVersion=1, reportId=report_id, sequence=1, observedAt=int(time.time()),
+                   collection=collection, body=dict(kind='snapshot', values=[
+                       dict(field=field, value=dict(kind='value', value=dict(kind='string', value='unenrolled')))]))
+    status, ack = call('POST', path, request)
+    require(status == 202 and ack['reportId'] == report_id, 'durable report intake')
+    expected = dict(ack=ack, observation='snapshot', projection='applied')
+    wait(lambda: call('GET', item) == (200, expected), 'confirmed report and projection')
+    run_path = f"/api/v1/tenants/{deployed.tenant}/devices/{binding['deviceId']}/collections/{report_id}"
+    def run():
+        status, body = browser.call('GET', run_path)
+        require(status == 200, 'authorized collection run')
+        return body['asset']['run']
+    require(run()['delivery']['receipt']['status'] == 'found', 'management receipt')
+    # Seed released content and an unacknowledged product delivery in this disposable database.
+    # The immutable RSS identity and independent projection receipt stay intact.
+    deployed.sql(f"""BEGIN;
+        UPDATE rss_observation.batches SET raw=NULL,policy=NULL,decision=NULL
+        WHERE tenant_id='{deployed.tenant}' AND batch_id='{report_id}';
+        UPDATE mdm_access.collection_runs SET delivery_pending=true
+        WHERE tenant_id='{deployed.tenant}' AND id='{report_id}';
+        COMMIT;""")
+    expected['observation'] = 'expired'
+    require(call('GET', item) == (200, expected), 'expired receipt preserves intake and projection')
+    def expired():
+        value = run()
+        return (value['delivery'] == dict(receipt={'status':'expired'}, projection='projected')
+                and value['deliveryPending'] is False)
+    wait(expired, 'same fingerprint settles expired pending delivery')
+
 def native_pki_journey(deployed,browser):
     root=deployed.root;fixture=root/'pki/agent'
     csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
@@ -248,7 +284,7 @@ def native_pki_journey(deployed,browser):
         status,active=call(client,'POST','/api/v1/agent/enroll/activate',activation)
         require(status==200,'candidate actual mTLS activation failed')
         require(call(client,'POST','/api/v1/agent/enroll/activate',activation)==(status,active),'candidate activation replay changed registration')
-        require(call(client,'GET',path)[0]==404,'candidate active identity did not reach business lookup')
+        report_history(deployed, browser, active['runtime'], lambda *args: call(client, *args))
     finally:client.close()
     deployed.restore_pki_bundle()
     client=connection()

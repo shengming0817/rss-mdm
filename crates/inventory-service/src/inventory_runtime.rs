@@ -83,19 +83,55 @@ pub enum ProjectionStatus {
     Projected,
     Pending,
     PendingReceipt,
+    Unconfirmed,
     NotApplicable,
 }
 #[derive(Clone, Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct ReceiptStatus {
-    pub batch_id: String,
-    pub received_at: u64,
-    #[schemars(schema_with = "observation_decision_schema")]
-    pub decision: rss_observation::Decision,
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ReceiptStatus {
+    Found {
+        batch_id: String,
+        received_at: u64,
+        #[schemars(schema_with = "observation_decision_schema")]
+        decision: Box<rss_observation::Decision>,
+    },
+    Expired,
+    NotFound,
+    NoBatch,
 }
 #[derive(Clone, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct DeliveryStatus {
-    pub receipt: Option<ReceiptStatus>,
+    pub receipt: ReceiptStatus,
     pub projection: ProjectionStatus,
+}
+impl DeliveryStatus {
+    pub(crate) const NO_BATCH: Self = Self {
+        receipt: ReceiptStatus::NoBatch,
+        projection: ProjectionStatus::NotApplicable,
+    };
+
+    fn from_lookup(lookup: rss_observation::LookupOutcome, projected: bool, snapshot: bool) -> Self {
+        use rss_observation::LookupOutcome;
+        let (receipt, unresolved) = match lookup {
+            LookupOutcome::Found(record) => {
+                let decision = record.decision();
+                let projection = if decision.outcome().is_applicable() {
+                    ProjectionStatus::Pending
+                } else {
+                    ProjectionStatus::NotApplicable
+                };
+                (ReceiptStatus::Found {
+                    batch_id: record.batch().id().as_str().to_owned(),
+                    received_at: record.received_at(),
+                    decision: Box::new(decision.clone()),
+                }, projection)
+            }
+            LookupOutcome::Expired => (ReceiptStatus::Expired, ProjectionStatus::Unconfirmed),
+            LookupOutcome::NotFound if snapshot => (ReceiptStatus::NotFound, ProjectionStatus::PendingReceipt),
+            LookupOutcome::NotFound => (ReceiptStatus::NotFound, ProjectionStatus::NotApplicable),
+        };
+        Self { receipt, projection: if projected { ProjectionStatus::Projected } else { unresolved } }
+    }
 }
 
 #[derive(Clone)]
@@ -442,14 +478,16 @@ impl InventoryRuntime {
             }
             return Err(WorkerFailure::ObservationActivate);
         }
-        if let Err(error) = self.observation.receive(&verified, deadline).await {
+        // RSS confirms HistoryExpired only for an already accepted, fingerprint-identical batch.
+        if let Err(error) = self.observation.receive(&verified, deadline).await
+            && error.kind() != rss_observation::ErrorKind::HistoryExpired
+        {
             if observation_deferred(&error, "receive") {
                 return Ok(false);
             }
             return Err(WorkerFailure::ObservationReceive);
         }
-        // A lost acknowledgement leaves this true. Restart repeats the exact batch; lookup None
-        // is never interpreted as proof of rollback.
+        // A lost product acknowledgement is resolved by replaying the same verified batch.
         match self.delivery.delivered_on(&mut tx, report).await {
             Ok(()) => match tx.commit().await {
                 Ok(()) => Ok(true),
@@ -746,10 +784,7 @@ impl InventoryRuntime {
             return Err(Error::Forbidden);
         }
         let Some(batch) = run.batch() else {
-            return Ok(DeliveryStatus {
-                receipt: None,
-                projection: ProjectionStatus::NotApplicable,
-            });
+            return Ok(DeliveryStatus::NO_BATCH);
         };
         self.inspect_report(binding.tenant(), &run.scope, batch, deadline, cancellation)
             .await
@@ -800,26 +835,7 @@ impl InventoryRuntime {
                 .await
                 .map_err(|_| unavailable())?
                 .is_settled();
-            let applicable = receipt
-                .as_ref()
-                .is_some_and(|r| r.decision().outcome().is_applicable());
-            let received = receipt.is_some();
-            Ok(DeliveryStatus {
-                receipt: receipt.map(|r| ReceiptStatus {
-                    batch_id: r.batch().id().as_str().to_owned(),
-                    received_at: r.received_at(),
-                    decision: r.decision().clone(),
-                }),
-                projection: if projected {
-                    ProjectionStatus::Projected
-                } else if applicable {
-                    ProjectionStatus::Pending
-                } else if !received && matches!(batch.body(), rss_observation::Body::Snapshot(_)) {
-                    ProjectionStatus::PendingReceipt
-                } else {
-                    ProjectionStatus::NotApplicable
-                },
-            })
+            Ok(DeliveryStatus::from_lookup(receipt, projected, matches!(batch.body(), rss_observation::Body::Snapshot(_))))
         };
         tokio::select! { biased;
             () = cancellation.cancelled() => { token.cancel(); Err(unavailable()) },
