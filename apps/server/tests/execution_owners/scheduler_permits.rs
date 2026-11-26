@@ -331,3 +331,116 @@ async fn interrupted_startup_drains_the_probing_pool() -> Result<()> {
     .await??;
     Ok(())
 }
+
+#[derive(Default)]
+struct HeldObservation {
+    entered: CancellationToken,
+    resume: CancellationToken,
+}
+
+impl rss_reconcile::Reconciler<PgClaim> for HeldObservation {
+    type State = ();
+    async fn observe<T: rss_reconcile::Timer>(
+        &self,
+        _: &PgClaim,
+        _: &Control<'_, T>,
+    ) -> Result<rss_reconcile::ReconcileStep<rss_reconcile::ReconcileDiff<()>>, rss_reconcile::Error>
+    {
+        self.entered.cancel();
+        self.resume.cancelled().await;
+        Ok(rss_reconcile::ReconcileStep::Ready(
+            rss_reconcile::ReconcileDiff::between(
+                rss_reconcile::DesiredState::present(()),
+                rss_reconcile::ActualState::present(()),
+            ),
+        ))
+    }
+    async fn apply<T: rss_reconcile::Timer>(
+        &self,
+        _: &PgClaim,
+        _: rss_reconcile::ReconcileDiff<()>,
+        _: &Control<'_, T>,
+    ) -> Result<rss_reconcile::ReconcileStep<()>, rss_reconcile::Error> {
+        unreachable!("matching desired and actual state")
+    }
+}
+
+#[tokio::test]
+#[ignore = "T2: reserved claim hands off the DB slot independently of its running execution"]
+async fn reserved_claim_holds_admission_until_return() -> Result<()> {
+    use rss_mdm_work_page::{capacity::Capacity, reconcile};
+    let clock = Timer::new();
+    let stop = CancellationToken::new();
+    let control = Budget::new(&clock, Duration::from_secs(20), &stop);
+    let f = Fixture::open(&control).await?;
+    let (a, b) = (f.target().await?, f.target().await?);
+    let peer = f.claim(&b, &control).await?;
+    let scope = a.scope().clone();
+    let tenant = Uuid::from_bytes(scope.tenant().octets());
+    f.scheduler
+        .wake(&a, &ResourceSet::empty(scope.tenant()), &control)
+        .await?;
+    let (gate, blocker) = f.hold_next_return().await?;
+    let observer = Arc::new(HeldObservation::default());
+    let policy = super::policy()?;
+    let execution = Capacity::new(std::num::NonZeroUsize::MIN);
+    let notify = tokio::sync::Notify::new();
+    let worker_stop = CancellationToken::new();
+    let runner = reconcile::run(
+        &execution,
+        policy,
+        &worker_stop,
+        &notify,
+        |after| std::future::ready(Ok(after.is_none().then_some(tenant).into_iter().collect())),
+        {
+            let (store, observer, done) =
+                (f.scheduler.clone(), observer.clone(), worker_stop.clone());
+            move |_, grant, stop| {
+                let (store, observer, scope, done) =
+                    (store.clone(), observer.clone(), scope.clone(), done.clone());
+                async move {
+                    let result = reconcile::batch(
+                        (&store, &*observer),
+                        grant,
+                        &scope,
+                        policy,
+                        &stop,
+                        |_| {},
+                    )
+                    .await;
+                    done.cancel();
+                    result
+                }
+            }
+        },
+    );
+    let proof = async {
+        tokio::time::timeout(Duration::from_secs(4), observer.entered.cancelled()).await?;
+        let (returning, _) =
+            wait_for_blocked_attempt(&f.operator, blocker, "pg_advisory_xact_lock").await?;
+        ensure!(f.lease(&a).await?.1.is_some());
+        queued_admission(&f.scheduler, a.scope(), &control, &clock).await?;
+        f.scheduler
+            .finish(&peer, Completion::Converged, &control)
+            .await?;
+        ensure!(f.lease(&b).await? == (peer.epoch(), None));
+        ensure!(
+            crate::authority_t2_support::blocked_attempt(
+                &f.operator,
+                blocker,
+                "pg_advisory_xact_lock"
+            )
+            .await?
+            .is_some_and(|(pid, _)| pid == returning)
+        );
+        gate.rollback().await?;
+        // The handler still owns the only execution slot when A regains DB admission.
+        f.backend(&a, &control).await?;
+        observer.resume.cancel();
+        anyhow::Ok(())
+    };
+    tokio::try_join!(async { anyhow::Ok(runner.await?) }, proof)?;
+    ensure!(f.lease(&a).await?.1.is_none());
+    ensure!(f.scheduler.close(&control).await == CloseOutcome::Drained);
+    Ok(())
+}
