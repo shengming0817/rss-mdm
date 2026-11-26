@@ -89,40 +89,54 @@ async fn seed(h: &Harness, owner: Owner, policy: Uuid, version: Uuid) -> Result<
         .bind(&tenant).bind(page.command_device).execute(&mut *tx).await?;
     sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {}.device_recovery(tenant_id,device,authority_epoch,expected_epoch,recovery_after) VALUES($1::uuid,$2,1,$3,$4)",owner.schema())))
         .bind(&tenant).bind(device.into_uuid()).bind(h.c.execution().epoch().get()).bind(Uuid::nil().to_string()).execute(&mut *tx).await?;
-    for (index, id) in page.ids.into_iter().enumerate() {
-        let sealed = page.sealed(h, id, &metadata)?;
-        let authority = page.authority(&proof, id, policy, version, metadata.deadline)?;
-        sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,terminal_at,version) VALUES($1::uuid,$2,$3,1,1,$4,2000000,1000000,$5,$2,$4,$6,1000000,$7, $8)")
-            .bind(&tenant).bind(id.to_string()).bind(page.command_device).bind([1u8;32].as_slice()).bind(owner.domain().as_str())
-            .bind(if index==0 {"published"} else {"cancelled"}).bind((index==1).then_some(1000001_i64)).bind(if index==0 {2_i64} else {3}).execute(&mut *tx).await?;
-        let software = matches!(owner, Owner::Software);
-        let (column, param) = if software {
-            (",policy_version", ",$8")
-        } else {
-            ("", "")
-        };
-        let insert = format!(
-            "INSERT INTO {}.operations(expected_epoch,tenant_id,id,device,request,input_context,fingerprint,generation,epoch,authority,dispatch_fingerprint{column}) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,$4,$5,$6,1,1,$7,$6{param})",
-            owner.schema()
-        );
-        let mut insert = sqlx::query(sqlx::AssertSqlSafe(insert))
-            .bind(&tenant)
-            .bind(id)
-            .bind(device.into_uuid())
-            .bind(sealed)
-            .bind(serde_json::to_value(&metadata)?)
-            .bind([1u8; 32].as_slice())
-            .bind(authority);
-        if software {
-            insert = insert.bind(version);
-        }
-        insert.execute(&mut *tx).await?;
-    }
+    page.insert_operations(&mut tx, h, &proof, &metadata, policy, version)
+        .await?;
     tx.commit().await?;
     Ok(page)
 }
 
 impl Page {
+    async fn insert_operations(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        h: &Harness,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        metadata: &Metadata,
+        policy: Uuid,
+        version: Uuid,
+    ) -> Result<()> {
+        let tenant = h.c.tenant.to_string();
+        for (index, id) in self.ids.into_iter().enumerate() {
+            let sealed = self.sealed(h, id, metadata)?;
+            let authority = self.authority(proof, id, policy, version, metadata.deadline)?;
+            sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,terminal_at,version) VALUES($1::uuid,$2,$3,1,1,$4,2000000,1000000,$5,$2,$4,$6,1000000,$7, $8)")
+            .bind(&tenant).bind(id.to_string()).bind(self.command_device).bind([1u8;32].as_slice()).bind(self.owner.domain().as_str())
+            .bind(if index==0 {"published"} else {"cancelled"}).bind((index==1).then_some(1000001_i64)).bind(if index==0 {2_i64} else {3}).execute(&mut **tx).await?;
+            let software = matches!(self.owner, Owner::Software);
+            let (column, param) = if software {
+                (",policy_version", ",$8")
+            } else {
+                ("", "")
+            };
+            let insert = format!(
+                "INSERT INTO {}.operations(expected_epoch,tenant_id,id,device,request,input_context,fingerprint,generation,epoch,authority,dispatch_fingerprint{column}) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,$4,$5,$6,1,1,$7,$6{param})",
+                self.owner.schema()
+            );
+            let mut insert = sqlx::query(sqlx::AssertSqlSafe(insert))
+                .bind(&tenant)
+                .bind(id)
+                .bind(self.device.into_uuid())
+                .bind(sealed)
+                .bind(serde_json::to_value(metadata)?)
+                .bind([1u8; 32].as_slice())
+                .bind(authority);
+            if software {
+                insert = insert.bind(version);
+            }
+            insert.execute(&mut **tx).await?;
+        }
+        Ok(())
+    }
     fn authority(
         &self,
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
