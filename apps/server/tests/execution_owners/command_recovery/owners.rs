@@ -91,46 +91,7 @@ async fn seed(h: &Harness, owner: Owner, policy: Uuid, version: Uuid) -> Result<
         .bind(&tenant).bind(device.into_uuid()).bind(h.c.execution().epoch().get()).bind(Uuid::nil().to_string()).execute(&mut *tx).await?;
     for (index, id) in page.ids.into_iter().enumerate() {
         let sealed = page.sealed(h, id, &metadata)?;
-        let authority = match owner {
-            Owner::Software => serde_json::to_value(deployment::authority::Authority::Software {
-                origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-                retirement: None,
-                target: rss_mdm_policy::SoftwareTarget::WindowsX86_64,
-                tenant: tenant.clone(),
-                version,
-                device,
-                operation: id,
-                required: vec![],
-            })?,
-            Owner::Installation => {
-                serde_json::to_value(installation::authority::Authority::Bootstrap {
-                    installation: installation::Installation {
-                        id,
-                        policy,
-                        version,
-                        device,
-                        platform: rss_mdm_policy::Platform::Windows,
-                        source: rss_mdm_inventory::ReportSource::MdmWindows,
-                        release: Uuid::new_v4(),
-                        deadline: metadata.deadline,
-                        input_version: "1".into(),
-                        download_origin: "https://localhost".into(),
-                        origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-                    },
-                    bootstrap: Uuid::new_v4(),
-                    required: vec![],
-                })?
-            }
-            Owner::Credentials => {
-                serde_json::to_value(credentials::authority::Authority::admitted(
-                    proof.authorization()?,
-                    &proof,
-                    &device,
-                    id,
-                    vec![rss_mdm_authorization_service::Permission::SecurityOperate],
-                )?)?
-            }
-        };
+        let authority = page.authority(&proof, id, policy, version)?;
         sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,terminal_at,version) VALUES($1::uuid,$2,$3,1,1,$4,2000000,1000000,$5,$2,$4,$6,1000000,$7, $8)")
             .bind(&tenant).bind(id.to_string()).bind(page.command_device).bind([1u8;32].as_slice()).bind(owner.domain().as_str())
             .bind(if index==0 {"published"} else {"cancelled"}).bind((index==1).then_some(1000001_i64)).bind(if index==0 {2_i64} else {3}).execute(&mut *tx).await?;
@@ -162,6 +123,54 @@ async fn seed(h: &Harness, owner: Owner, policy: Uuid, version: Uuid) -> Result<
 }
 
 impl Page {
+    fn authority(
+        &self,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: Uuid,
+        policy: Uuid,
+        version: Uuid,
+    ) -> Result<Value> {
+        Ok(match self.owner {
+            Owner::Software => serde_json::to_value(deployment::authority::Authority::Software {
+                origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+                retirement: None,
+                target: rss_mdm_policy::SoftwareTarget::WindowsX86_64,
+                tenant: proof.tenant_id().to_string(),
+                version,
+                device: self.device,
+                operation: id,
+                required: vec![],
+            })?,
+            Owner::Installation => {
+                serde_json::to_value(installation::authority::Authority::Bootstrap {
+                    installation: installation::Installation {
+                        id,
+                        policy,
+                        version,
+                        device: self.device,
+                        platform: rss_mdm_policy::Platform::Windows,
+                        source: rss_mdm_inventory::ReportSource::MdmWindows,
+                        release: Uuid::new_v4(),
+                        deadline: metadata.deadline,
+                        input_version: "1".into(),
+                        download_origin: "https://localhost".into(),
+                        origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+                    },
+                    bootstrap: Uuid::new_v4(),
+                    required: vec![],
+                })?
+            }
+            Owner::Credentials => {
+                serde_json::to_value(credentials::authority::Authority::admitted(
+                    proof.authorization()?,
+                    proof,
+                    &self.device,
+                    id,
+                    vec![rss_mdm_authorization_service::Permission::SecurityOperate],
+                )?)?
+            }
+        })
+    }
     fn sealed(&self, h: &Harness, id: Uuid, metadata: &Metadata) -> Result<Vec<u8>> {
         let request = if matches!(self.owner, Owner::Credentials) {
             json!({"kind":"command","command":{"requestType":"SetRecoveryLock","fields":{"NewPassword":{"type":"string","value":"fixture-password"}}}})

@@ -18,6 +18,10 @@ struct Counter(Arc<std::sync::Mutex<Counts>>);
 
 impl tracing::field::Visit for Counts {
     fn record_str(&mut self, field: &tracing::field::Field, sql: &str) {
+        // SQLx puts short statements entirely in summary and leaves db.statement empty.
+        if field.name() == "summary" {
+            self.cancel_saved |= sql.contains("SELECT rss_device_command.save(");
+        }
         if field.name() == "db.statement" {
             self.cancel_saved |= sql.contains("SELECT rss_device_command.save(");
             if self.cancel_saved && sql.contains("w.execution = x.id") {
@@ -30,7 +34,7 @@ impl tracing::field::Visit for Counts {
         }
     }
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "db.statement" {
+        if matches!(field.name(), "db.statement" | "summary") {
             self.record_str(field, &format!("{value:?}"));
         }
     }
