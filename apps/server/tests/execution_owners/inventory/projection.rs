@@ -78,28 +78,32 @@ impl Page {
             tx.commit().await?;
             let authority = stream.get_or_insert_with(|| Stream(run.scope.clone()));
             assert_eq!(authority.0, run.scope);
-            let batch = run.batch().unwrap().clone();
-            observation
-                .activate(
-                    &LifecycleGrant::verify(authority, run.scope.clone())?,
-                    None,
-                    &rss_observation::Policy::new(86400, 3600, 3600)?,
-                    deadline,
-                )
-                .await?;
-            let verified = VerifiedBatch::verify(authority, run.scope, batch.clone())?;
+            reports.push(run.batch().unwrap().clone());
+        }
+        let stream = stream.unwrap();
+        observation
+            .activate(
+                &LifecycleGrant::verify(&stream, stream.0.clone())?,
+                None,
+                &rss_observation::Policy::new(86400, 3600, 3600)?,
+                deadline,
+            )
+            .await?;
+        // RSS sees a reference snapshot even for a failed collection. Deliver one
+        // older sealed snapshot late to obtain a real, non-applicable Stale receipt.
+        for index in [0, 2, 1, 3] {
+            let verified =
+                VerifiedBatch::verify(&stream, stream.0.clone(), reports[index].clone())?;
             let accepted = observation.receive(&verified, deadline).await?;
             assert_eq!(
                 accepted.record().decision().outcome().is_applicable(),
-                value.is_some()
+                index != 1
             );
             assert!(matches!(
                 observation.receive(&verified, deadline).await?,
                 rss_observation::ReceiveOutcome::Replay(_)
             ));
-            reports.push(batch);
         }
-        let stream = stream.unwrap();
         let scope = rss_mdm_inventory_postgres::projection_scope(h.c.tenant);
         let source = Arc::new(Source::new(
             observation.clone(),
