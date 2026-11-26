@@ -54,46 +54,55 @@ async fn resources(
         let request = json!({"operationId":Uuid::new_v4(),"directory":root.join(kind),"configuration":config,
             "administrator":administrator,"owner":format!("metrics_owner_{kind}"),"partitions":[],"clickhouse":ch});
         if kind == "click_house" {
-            // The installer reads the writer secret during provisioning, after raw DDL commits.
-            let input = serde_json::from_value(request.clone())?;
-            ensure!(matches!(
-                telemetry::prepare(input).await,
-                Err(crate::installation::Error::Input)
-            ));
-            ensure!(recovery::admin_sql(&request, "SELECT expr,type_full,granularity FROM system.data_skipping_indices WHERE database='rss_ts_ch' AND table='raw' AND name='raw_revision' FORMAT TabSeparated").await?.trim() == "revision\tbloom_filter(0.001)\t1");
-            private(&writer_password, std::fs::read(&password)?)?;
-        }
-        telemetry::prepare(serde_json::from_value(request.clone())?)
-            .await
-            .with_context(|| format!("install {kind}"))?;
-        if kind == "click_house" {
-            recovery::admin_sql(
-                &request,
-                "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision",
-            )
-            .await?;
-            recovery::admin_sql(&request, "ALTER TABLE rss_ts_ch.raw ADD INDEX raw_revision revision TYPE minmax GRANULARITY 1").await?;
-            ensure!(
-                matches!(
-                    telemetry::prepare(serde_json::from_value(request.clone())?).await,
-                    Err(crate::installation::Error::Storage)
-                ),
-                "same-name incorrect index passed admission"
-            );
-            recovery::admin_sql(
-                &request,
-                "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision",
-            )
-            .await?;
-            ensure!(
-                telemetry::prepare(serde_json::from_value(request.clone())?)
-                    .await?
-                    .admitted
-            );
+            check_clickhouse_installation(&request, &writer_password, &password).await?;
+        } else {
+            telemetry::prepare(serde_json::from_value(request.clone())?)
+                .await
+                .context("install shared Timescale")?;
         }
         requests.push(request);
     }
     Ok(requests)
+}
+async fn check_clickhouse_installation(
+    request: &Value,
+    writer_password: &Path,
+    password: &Path,
+) -> Result<()> {
+    // The installer reads the writer secret during provisioning, after raw DDL commits.
+    let input = serde_json::from_value(request.clone())?;
+    ensure!(matches!(
+        telemetry::prepare(input).await,
+        Err(crate::installation::Error::Input)
+    ));
+    ensure!(recovery::admin_sql(request, "SELECT expr,type_full,granularity FROM system.data_skipping_indices WHERE database='rss_ts_ch' AND table='raw' AND name='raw_revision' FORMAT TabSeparated").await?.trim() == "revision\tbloom_filter(0.001)\t1");
+    private(writer_password, std::fs::read(password)?)?;
+
+    ensure!(
+        telemetry::prepare(serde_json::from_value(request.clone())?)
+            .await?
+            .admitted
+    );
+    recovery::admin_sql(
+        request,
+        "ALTER TABLE rss_ts_ch.raw ADD INDEX raw_revision revision TYPE minmax GRANULARITY 1",
+    )
+    .await?;
+    ensure!(
+        matches!(
+            telemetry::prepare(serde_json::from_value(request.clone())?).await,
+            Err(crate::installation::Error::Storage)
+        ),
+        "same-name incorrect index passed admission"
+    );
+    recovery::admin_sql(request, "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision").await?;
+    ensure!(
+        telemetry::prepare(serde_json::from_value(request.clone())?)
+            .await?
+            .admitted
+    );
+
+    Ok(())
 }
 async fn attach(
     source: &Value,
@@ -304,9 +313,7 @@ pub(super) async fn exercise(
     .await
     .context("B product intake")?;
     recovery::reader_isolation(root, &resources[0], a, b).await?;
-    a_data
-        .verify_queue(&first_browser, &b_data, &peer, &observer)
-        .await?;
+
     a_data
         .reject_foreign_cursor(&mut first_browser, &b_data)
         .await?;

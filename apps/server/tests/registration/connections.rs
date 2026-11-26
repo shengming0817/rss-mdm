@@ -5,7 +5,7 @@ use rss_mdm_management_http::agent_enrollment::{App, routes};
 use rss_mdm_registration_service::agent::connections;
 use tower::ServiceExt;
 
-pub(super) const PRIMARY: &str = "https://localhost:9445";
+pub(crate) const PRIMARY: &str = "https://localhost:9445";
 pub(super) const REMAINING: &str = "https://localhost";
 
 pub(super) async fn issue_and_replay(

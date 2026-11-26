@@ -1,58 +1,231 @@
-//! Product HTTP paging and bounded admission against the installed ClickHouse owner.
+//! Product paging, physical publication recovery and queue capacity on the installed store.
 use super::*;
-impl Upload {
-    /// Hold the sole installed CH operation in provider IO; one waiter fits and the third read gets 503.
-    pub(in super::super) async fn verify_queue(
-        &self,
-        browser: &Browser,
-        other: &Self,
-        peer: &Browser,
-        admin: &sqlx::PgPool,
-    ) -> Result<()> {
-        use futures::{StreamExt, stream::FuturesUnordered};
-        let mut blocker = admin.begin().await?;
-        sqlx::query("LOCK TABLE rss_ts_ch.namespaces IN ACCESS EXCLUSIVE MODE")
-            .execute(&mut *blocker)
-            .await?;
-        let mut calls = FuturesUnordered::new();
-        for (data, mut client) in [
-            (self, browser.clone()),
-            (other, peer.clone()),
-            (self, browser.clone()),
-        ] {
-            calls.push(async move {
-                client
-                    .call(
-                        Method::POST,
-                        &format!(
-                            "/api/v1/tenants/{}/telemetry/history",
-                            data.principal.tenant()
-                        ),
-                        Some(data.history.clone()),
-                        None,
-                    )
-                    .await
-            });
+use rss_timeseries::{
+    Authorized, Batch, Id, Interval, Maintainer, MaintenanceAction, MaintenanceBudget,
+    MaintenanceRequest, Outcome, ReceiptQuery, Sample, SampleInput, Selection, Stream, Timestamp,
+    Writer,
+};
+use rss_timeseries_clickhouse::{Credentials, CursorKey, ProjectionProgress};
+
+use rss_mdm_telemetry_service::backend::{Backend, SystemClock};
+use rss_timeseries_clickhouse::{ChOwner, ChStore};
+
+fn cutoff() -> Result<rss_request_context::Deadline> {
+    Ok(rss_request_context::Deadline::from_timeout(
+        &SystemClock,
+        Duration::from_secs(10),
+    )?)
+}
+
+async fn open(
+    config: &crate::telemetry::Config,
+    ch: &Value,
+    tenant: TenantId,
+    client_password: &str,
+) -> Result<(ChOwner<SystemClock>, ChStore<SystemClock>)> {
+    let id = Uuid::parse_str(&tenant.to_string())?;
+    let Backend::ClickHouse(owner) = config.open_backend().await? else {
+        anyhow::bail!("expected ClickHouse")
+    };
+    let reader = Credentials::new(recovery::reader(ch, id)?, client_password.to_owned())?;
+    let store = owner
+        .bind_tenant(
+            tenant,
+            reader,
+            CursorKey::new([3; 32]),
+            std::num::NonZeroU64::MIN,
+            cutoff()?,
+        )
+        .await?;
+    Ok((owner, store))
+}
+
+async fn verify_queue(
+    store: &ChStore<SystemClock>,
+    identity: &Authorized<ReceiptQuery>,
+    admin: &sqlx::PgPool,
+) -> Result<()> {
+    // Use the physical owner directly so product authentication and audit locks cannot serialize the clients.
+    let mut blocker = admin.begin().await?;
+    sqlx::query("LOCK TABLE rss_ts_ch.batches IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await?;
+    let first = store.progress(identity, cutoff()?);
+    tokio::pin!(first);
+    let observed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let waiting: bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_stat_activity WHERE datname=current_database() AND usename='metrics_click_house' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))")
+                .fetch_one(&mut *blocker).await?;
+            if waiting {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let (status, body) = tokio::time::timeout(Duration::from_secs(4), calls.next())
-            .await?
-            .context("three concurrent reads")??;
-        ensure!(status == 503, "queue overflow {status}: {body}");
-        let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_stat_activity WHERE current_database()=datname AND usename='metrics_click_house' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))").fetch_one(&mut *blocker).await?;
-        ensure!(
-            blocked,
-            "overload observed before the held reader completed"
-        );
-        blocker.rollback().await?;
-        while let Some(reply) = calls.next().await {
-            let (status, body) = reply?;
-            ensure!(
-                status == 200 && body["rows"].as_array().is_some_and(|r| !r.is_empty()),
-                "queued read {status}: {body}"
-            );
-        }
-        Ok(())
+    });
+    tokio::select! {
+        early = &mut first => anyhow::bail!("head read escaped physical lock: {early:?}"),
+        result = observed => result.context("wait for slot holder")??,
     }
+    let waiter = store.progress(identity, cutoff()?);
+    tokio::pin!(waiter);
+    ensure!(futures::poll!(&mut waiter).is_pending());
+    let excess = tokio::time::timeout(Duration::from_secs(1), store.progress(identity, cutoff()?))
+        .await?
+        .expect_err("queue full");
+    ensure!(excess == rss_timeseries::Error::Unavailable);
+    ensure!(
+        rss_mdm_management_http::telemetry::error(excess.into())
+            .status()
+            .as_u16()
+            == 503
+    );
+    blocker.rollback().await?;
+    let (head, queued) = tokio::try_join!(first, waiter)?;
+    ensure!(matches!(
+        (head, queued),
+        (
+            ProjectionProgress::NotVisible,
+            ProjectionProgress::NotVisible
+        )
+    ));
+    Ok(())
+}
+
+fn unrelated_batch(
+    original: &Sample,
+    authority: &ScopeAuthority,
+    name: &str,
+) -> Result<(Authorized<Batch>, Authorized<ReceiptQuery>)> {
+    let scope = original.input().stream.scope();
+    let mut input: SampleInput = original.clone().into();
+    input.stream = Stream::new(scope.clone(), Id::new(name)?, Id::new("sample-generation")?);
+    input.id = Id::new(name)?;
+    let batch = Batch::new(
+        input.stream.clone(),
+        Id::new(name)?,
+        vec![Sample::new(input)?],
+    )?;
+    let identity = ReceiptQuery {
+        stream: batch.stream().clone(),
+        batch_id: batch.id().clone(),
+        digest: batch.digest()?,
+    };
+    Ok((
+        Authorized::<Batch>::verify(authority, batch)?,
+        Authorized::<ReceiptQuery>::verify(authority, identity)?,
+    ))
+}
+
+async fn publish_unrelated(
+    store: &ChStore<SystemClock>,
+    original: &Sample,
+    ch: &Value,
+    admin: &sqlx::PgPool,
+) -> Result<()> {
+    let scope = original.input().stream.scope().clone();
+    let authority = ScopeAuthority(scope.clone());
+    let (first, first_id) = unrelated_batch(original, &authority, "pending-other-stream")?;
+    let (second, second_id) = unrelated_batch(original, &authority, "following-other-stream")?;
+    verify_queue(store, &first_id, admin).await?;
+    recovery::admin_sql(ch, "REVOKE INSERT ON rss_ts_ch.raw FROM metric_writer").await?;
+    let interrupted = store.write(&first, cutoff()?).await;
+    recovery::admin_sql(ch, "GRANT INSERT ON rss_ts_ch.raw TO metric_writer").await?;
+    ensure!(!matches!(
+        interrupted,
+        Ok(Outcome::Accepted(_) | Outcome::Replay(_))
+    ));
+    assert_eq!(
+        store.progress(&first_id, cutoff()?).await?,
+        ProjectionProgress::Prepared
+    );
+    ensure!(matches!(
+        store.write(&second, cutoff()?).await,
+        Err(rss_timeseries::Error::Unavailable)
+    ));
+    assert_eq!(
+        store.progress(&second_id, cutoff()?).await?,
+        ProjectionProgress::NotVisible
+    );
+    let recovered = store.recover(&scope, &authority, cutoff()?).await?;
+    ensure!(
+        matches!(recovered, Outcome::Accepted(Some(ref r)) | Outcome::Replay(Some(ref r)) if r.identity().batch_id == first_id.request().batch_id)
+    );
+    ensure!(matches!(
+        store.write(&second, cutoff()?).await?,
+        Outcome::Accepted(_)
+    ));
+    assert_eq!(
+        store.progress(&second_id, cutoff()?).await?,
+        ProjectionProgress::Published
+    );
+    Ok(())
+}
+
+async fn fence_budget(
+    store: &ChStore<SystemClock>,
+    tenant: TenantId,
+) -> Result<Authorized<MaintenanceRequest>> {
+    // A fresh isolated namespace exercises the product default without consuming other readers' fences.
+    let budget_scope = rss_timeseries::Scope::new(tenant, Id::new("fence-budget-proof")?);
+    let budget_authority = ScopeAuthority(budget_scope.clone());
+    let request = |n: u32| -> Result<_> {
+        let selection = Selection::Resource {
+            scope: budget_scope.clone(),
+            subject: Id::new(format!("target-{n}"))?,
+            resource: Id::new("device")?,
+            keys: Default::default(),
+        };
+        let op = MaintenanceRequest::new(
+            Id::new(format!("cutoff-{n}"))?,
+            MaintenanceAction::AdvanceCutoff {
+                selection,
+                before: Timestamp::new(10)?,
+            },
+            MaintenanceBudget {
+                rows: std::num::NonZeroU32::MIN,
+                buckets: std::num::NonZeroU32::MIN,
+            },
+        )?;
+        Ok(Authorized::<MaintenanceRequest>::verify(
+            &budget_authority,
+            op,
+        )?)
+    };
+    for n in 1..=100 {
+        ensure!(matches!(
+            store.step(&request(n)?, None, cutoff()?).await?,
+            Outcome::Accepted(_)
+        ));
+    }
+    let blocked = request(101)?;
+    ensure!(matches!(
+        store.step(&blocked, None, cutoff()?).await,
+        Err(rss_timeseries::Error::BudgetExceeded)
+    ));
+    Ok(blocked)
+}
+
+async fn expand_fence_budget(
+    config: &crate::telemetry::Config,
+    ch: &Value,
+    tenant: TenantId,
+    client_password: &str,
+    blocked: &Authorized<MaintenanceRequest>,
+) -> Result<()> {
+    let mut expanded = ch["configuration"].clone();
+    expanded["backend"]["max_fences"] = json!(1000);
+    let expanded: crate::telemetry::Config = serde_json::from_value(expanded)?;
+    ensure!(expanded.configuration_binding()? == config.configuration_binding()?);
+    let (owner, enlarged) = open(&expanded, ch, tenant, client_password).await?;
+    ensure!(matches!(
+        enlarged.step(blocked, None, cutoff()?).await?,
+        Outcome::Accepted(_)
+    ));
+    owner.close(cutoff()?).await?;
+    Ok(())
+}
+
+impl Upload {
     async fn aggregate(&self, browser: &mut Browser, after: Option<&str>) -> Result<(u16, Value)> {
         let mut query = self.history.clone();
         let start = self.input.observations[0].observed_at;
@@ -117,12 +290,6 @@ impl Upload {
         client_password: &str,
         ch: &Value,
     ) -> Result<()> {
-        use rss_timeseries::{
-            Authorized, Batch, Id, Interval, Maintainer, MaintenanceAction, MaintenanceBudget,
-            MaintenanceRequest, Outcome, ReceiptQuery, Sample, SampleInput, Selection, Stream,
-            Timestamp, Writer,
-        };
-        use rss_timeseries_clickhouse::{Credentials, CursorKey, ProjectionProgress};
         let cursor = self.aggregate_pages(browser).await?;
         let (_, baseline) = self.aggregate(browser, Some(&cursor)).await?;
         let tenant = self.principal.tenant();
@@ -131,89 +298,41 @@ impl Upload {
             "SELECT payload FROM rss_ts_ch.raw WHERE tenant='{id}' AND generation='{}' AND observed_at={} LIMIT 1 FORMAT TabSeparatedRaw",
             self.input.configuration().source_epoch, self.input.observations[0].observed_at)).await?)?;
         let config: crate::telemetry::Config = serde_json::from_value(ch["configuration"].clone())?;
-        let rss_mdm_telemetry_service::backend::Backend::ClickHouse(owner) =
-            config.open_backend().await?
-        else {
-            anyhow::bail!("expected ClickHouse")
-        };
-        let cutoff = || {
-            rss_request_context::Deadline::from_timeout(
-                &rss_mdm_telemetry_service::backend::SystemClock,
-                Duration::from_secs(10),
-            )
-        };
-        let reader = Credentials::new(recovery::reader(ch, id)?, client_password.to_owned())?;
-        let store = owner
-            .bind_tenant(
-                tenant,
-                reader,
-                CursorKey::new([3; 32]),
-                std::num::NonZeroU64::MIN,
-                cutoff()?,
-            )
+
+        let (owner, store) = open(&config, ch, tenant, client_password).await?;
+        let admin: crate::config::Database = serde_json::from_value(ch["administrator"].clone())?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(admin.options()?)
             .await?;
-        let scope = original.input().stream.scope().clone();
-        let authority = ScopeAuthority(scope.clone());
-        let new_batch = |name: &str| -> Result<_> {
-            let mut input: SampleInput = original.clone().into();
-            input.stream =
-                Stream::new(scope.clone(), Id::new(name)?, Id::new("sample-generation")?);
-            input.id = Id::new(name)?;
-            let batch = Batch::new(
-                input.stream.clone(),
-                Id::new(name)?,
-                vec![Sample::new(input)?],
-            )?;
-            let identity = ReceiptQuery {
-                stream: batch.stream().clone(),
-                batch_id: batch.id().clone(),
-                digest: batch.digest()?,
-            };
-            Ok((
-                Authorized::<Batch>::verify(&authority, batch)?,
-                Authorized::<ReceiptQuery>::verify(&authority, identity)?,
-            ))
-        };
-        let (first, first_id) = new_batch("pending-other-stream")?;
-        let (second, second_id) = new_batch("following-other-stream")?;
-        recovery::admin_sql(ch, "REVOKE INSERT ON rss_ts_ch.raw FROM metric_writer").await?;
-        let interrupted = store.write(&first, cutoff()?).await;
-        recovery::admin_sql(ch, "GRANT INSERT ON rss_ts_ch.raw TO metric_writer").await?;
-        ensure!(!matches!(
-            interrupted,
-            Ok(Outcome::Accepted(_) | Outcome::Replay(_))
-        ));
-        ensure!(matches!(
-            store.progress(&first_id, cutoff()?).await?,
-            ProjectionProgress::Prepared
-        ));
-        ensure!(matches!(
-            store.write(&second, cutoff()?).await,
-            Err(rss_timeseries::Error::Unavailable)
-        ));
-        ensure!(matches!(
-            store.progress(&second_id, cutoff()?).await?,
-            ProjectionProgress::NotVisible
-        ));
-        let recovered = store.recover(&scope, &authority, cutoff()?).await?;
-        ensure!(
-            matches!(recovered, Outcome::Accepted(Some(ref r)) | Outcome::Replay(Some(ref r)) if r.identity().batch_id == first_id.request().batch_id)
-        );
-        ensure!(matches!(
-            store.write(&second, cutoff()?).await?,
-            Outcome::Accepted(_)
-        ));
-        ensure!(matches!(
-            store.progress(&second_id, cutoff()?).await?,
-            ProjectionProgress::Published
-        ));
+        publish_unrelated(&store, &original, ch, &pool)
+            .await
+            .context("unrelated published revisions and queue capacity")?;
+        pool.close().await;
         let (status, continued) = self.aggregate(browser, Some(&cursor)).await?;
         ensure!(
             status == 200 && continued["buckets"] == baseline["buckets"],
             "unrelated stream changed continuation"
         );
+
+        self.check_invalidation(browser, &store, &original, &cursor)
+            .await?;
+        let blocked = fence_budget(&store, tenant).await?;
+        owner.close(cutoff()?).await?;
+        expand_fence_budget(&config, ch, tenant, client_password, &blocked).await
+    }
+
+    async fn check_invalidation(
+        &self,
+        browser: &mut Browser,
+        store: &ChStore<SystemClock>,
+        original: &Sample,
+        cursor: &str,
+    ) -> Result<()> {
+        let tenant = self.principal.tenant();
+        let authority = ScopeAuthority(original.input().stream.scope().clone());
         let series = original.input().series.clone();
-        let start = self.input.observations[0].observed_at;
+        let start = original.input().observed_at.micros();
         let delete = MaintenanceRequest::new(
             Id::new("snapshot-test-delete")?,
             MaintenanceAction::Delete {
@@ -237,7 +356,7 @@ impl Upload {
             )
             .await?;
         ensure!(matches!(step, Outcome::Accepted(_) | Outcome::Replay(_)));
-        let (status, changed) = self.aggregate(browser, Some(&cursor)).await?;
+        let (status, changed) = self.aggregate(browser, Some(cursor)).await?;
         ensure!(
             status == 409 && changed["code"] == "query_cursor_invalidated",
             "changed aggregate {status}: {changed}"
@@ -256,68 +375,6 @@ impl Upload {
             status == 409 && lost["code"] == "query_result_unavailable",
             "expired history {status}: {lost}"
         );
-        // A fresh isolated namespace exercises the product default without consuming other readers' fences.
-        let budget_scope = rss_timeseries::Scope::new(tenant, Id::new("fence-budget-proof")?);
-        let budget_authority = ScopeAuthority(budget_scope.clone());
-        let request = |n: u32| -> Result<_> {
-            let selection = Selection::Resource {
-                scope: budget_scope.clone(),
-                subject: Id::new(format!("target-{n}"))?,
-                resource: Id::new("device")?,
-                keys: Default::default(),
-            };
-            let op = MaintenanceRequest::new(
-                Id::new(format!("cutoff-{n}"))?,
-                MaintenanceAction::AdvanceCutoff {
-                    selection,
-                    before: Timestamp::new(10)?,
-                },
-                MaintenanceBudget {
-                    rows: std::num::NonZeroU32::MIN,
-                    buckets: std::num::NonZeroU32::MIN,
-                },
-            )?;
-            Ok(Authorized::<MaintenanceRequest>::verify(
-                &budget_authority,
-                op,
-            )?)
-        };
-        for n in 1..=100 {
-            ensure!(matches!(
-                store.step(&request(n)?, None, cutoff()?).await?,
-                Outcome::Accepted(_)
-            ));
-        }
-        let blocked = request(101)?;
-        ensure!(matches!(
-            store.step(&blocked, None, cutoff()?).await,
-            Err(rss_timeseries::Error::BudgetExceeded)
-        ));
-        owner.close(cutoff()?).await?;
-        let mut expanded = ch["configuration"].clone();
-        expanded["backend"]["max_fences"] = json!(1000);
-        let expanded: crate::telemetry::Config = serde_json::from_value(expanded)?;
-        ensure!(expanded.configuration_binding()? == config.configuration_binding()?);
-        let rss_mdm_telemetry_service::backend::Backend::ClickHouse(owner) =
-            expanded.open_backend().await?
-        else {
-            anyhow::bail!("expected expanded ClickHouse owner")
-        };
-        let reader = Credentials::new(recovery::reader(ch, id)?, client_password.to_owned())?;
-        let enlarged = owner
-            .bind_tenant(
-                tenant,
-                reader,
-                CursorKey::new([3; 32]),
-                std::num::NonZeroU64::MIN,
-                cutoff()?,
-            )
-            .await?;
-        ensure!(matches!(
-            enlarged.step(&blocked, None, cutoff()?).await?,
-            Outcome::Accepted(_)
-        ));
-        owner.close(cutoff()?).await?;
         Ok(())
     }
 }

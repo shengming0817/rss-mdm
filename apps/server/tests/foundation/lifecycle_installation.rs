@@ -11,7 +11,6 @@ mod maintenance;
 #[path = "lifecycle_telemetry.rs"]
 mod telemetry;
 
-#[derive(Clone)]
 struct Browser {
     address: SocketAddr,
     client: reqwest::Client,

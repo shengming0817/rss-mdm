@@ -198,9 +198,9 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let (stream, _) = socket.accept().await?;
     let gateway =
         rss_mdm_certificate::GatewayConnection::from_stream(&stream, "127.0.0.1".parse()?)?;
-    let router = router.layer(axum::Extension(
-        gateway.request_origin("https://mdm.example.test".into()),
-    ));
+    let router = router.layer(axum::Extension(gateway.request_origin(
+        crate::assembly::registration_installation_t2::support::AGENT_ORIGIN.into(),
+    )));
     let evidence = report_certificate(&h.c, &h.p, &gateway).await?;
     let send_as =
         |bytes: Vec<u8>, evidence: Option<rss_mdm_certificate::ClientCertificateEvidence>| {
@@ -582,7 +582,9 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     module_context.close().await;
     // A still-valid certificate must not authenticate through either Agent entry after a tenant restore.
     assert!(enrollment.authenticate(&evidence).await.is_ok());
-    let origin = gateway.request_origin("https://mdm.example.test".into());
+    let origin = gateway.request_origin(
+        crate::assembly::registration_installation_t2::support::AGENT_ORIGIN.into(),
+    );
     let mut held = h.c.operator.begin().await?;
     let locker:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid FOR UPDATE")
         .bind(h.c.tenant.to_string()).fetch_one(&mut *held).await?;

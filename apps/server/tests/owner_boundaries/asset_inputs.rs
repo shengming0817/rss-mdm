@@ -2125,15 +2125,20 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     })
     .await
     .context("three real asset effects waiting on Scope targets")??;
-    // Same projection and pool used by RSS renewal. With three connections
-    // this read cannot complete until an effect releases its lock.
-    tokio::time::timeout(Duration::from_secs(1), assets.next_delay(c.execution()))
-        .await
-        .context("fourth physical connection available while all three effects are held")??;
+    // Three ordinary effects are pinned. The fourth connection is reserved for lease renewal.
+    let wakeup = assets.next_delay(c.execution());
+    tokio::pin!(wakeup);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut wakeup)
+            .await
+            .is_err()
+    );
     assert_eq!(blocked().await?, (3, 3));
-    drop(assets);
     inputs.rollback().await?;
     barrier.close().await;
+    tokio::time::timeout(Duration::from_secs(4), &mut wakeup)
+        .await
+        .context("ordinary wakeup resumes when an effect releases its connection")??;
     let status = |id: String| {
         sqlx::query_scalar::<_, String>("SELECT status FROM rss_transactional_messaging.outbox WHERE domain='mdm-group' AND message_id=$1")
             .bind(id).fetch_one(&c.operator)
