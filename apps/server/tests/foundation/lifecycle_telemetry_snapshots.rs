@@ -123,7 +123,7 @@ async fn interrupt_projection(
     first_id: &Authorized<ReceiptQuery>,
 ) -> Result<()> {
     recovery::admin_sql(ch, "REVOKE INSERT ON rss_ts_ch.raw FROM metric_writer").await?;
-    let interrupted = store.write(first, cutoff()?).await;
+    let interrupted = Box::pin(store.write(first, cutoff()?)).await;
     recovery::admin_sql(ch, "GRANT INSERT ON rss_ts_ch.raw TO metric_writer").await?;
     ensure!(!matches!(
         interrupted,
@@ -149,19 +149,19 @@ async fn publish_unrelated(
     verify_queue(store, &first_id, admin).await?;
     interrupt_projection(store, ch, &first, &first_id).await?;
     ensure!(matches!(
-        store.write(&second, cutoff()?).await,
+        Box::pin(store.write(&second, cutoff()?)).await,
         Err(rss_timeseries::Error::Unavailable)
     ));
     assert_eq!(
         store.progress(&second_id, cutoff()?).await?,
         ProjectionProgress::NotVisible
     );
-    let recovered = store.recover(&scope, &authority, cutoff()?).await?;
+    let recovered = Box::pin(store.recover(&scope, &authority, cutoff()?)).await?;
     ensure!(
         matches!(recovered, Outcome::Accepted(Some(ref r)) | Outcome::Replay(Some(ref r)) if r.identity().batch_id == first_id.request().batch_id)
     );
     ensure!(matches!(
-        store.write(&second, cutoff()?).await?,
+        Box::pin(store.write(&second, cutoff()?)).await?,
         Outcome::Accepted(_)
     ));
     assert_eq!(
@@ -315,7 +315,7 @@ impl Upload {
             .max_connections(1)
             .connect_with(admin.options()?)
             .await?;
-        publish_unrelated(&store, &original, ch, &pool)
+        Box::pin(publish_unrelated(&store, &original, ch, &pool))
             .await
             .context("unrelated published revisions and queue capacity")?;
         pool.close().await;

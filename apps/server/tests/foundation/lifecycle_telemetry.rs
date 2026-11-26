@@ -564,9 +564,15 @@ pub(super) async fn exercise(
         .replay(restarted.telemetry.get().unwrap(), &mut peer)
         .await?;
     shared_data.aggregate_pages(&mut shared).await?;
-    a_data
-        .verify_snapshot(&mut first_browser, client_password.as_str(), &resources[0])
-        .await?;
+    // The backend client has its own task, as it would outside the running host.
+    let clickhouse = resources[0].clone();
+    let mut first_browser = tokio::spawn(async move {
+        a_data
+            .verify_snapshot(&mut first_browser, client_password.as_str(), &clickhouse)
+            .await?;
+        Ok::<_, anyhow::Error>(first_browser)
+    })
+    .await??;
     recovery::interrupt_retirement(&resources[0], b).await?;
     attach(source, &resources[0], b, 2, json!({"kind":"retire"})).await?;
     available(&mut peer, b, false).await?;
