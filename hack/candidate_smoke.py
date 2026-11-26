@@ -192,6 +192,28 @@ def ingress_capacity(browser, principal, deployed):
     wait(published, 'complete field vocabulary readback')
     return memory
 
+def blocked_report_diagnostic(deployed, browser, path, recorded):
+    from concurrent.futures import ThreadPoolExecutor
+    spare = Browser(deployed.port, deployed.root / 'ca.crt')
+    identity = f'/api/v1/identity/tenants/{deployed.tenant}'
+    require(spare.call('POST', identity + '/login', dict(login='admin', password=PASSWORD))[0] == 200,
+            'second diagnostic session')
+    has_lock = "SELECT EXISTS(SELECT FROM pg_locks WHERE relation='rss_observation.batches'::regclass AND mode='AccessExclusiveLock' AND granted)"
+    waiting = "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE wait_event_type='Lock' AND usename='mdm_runtime' AND strpos(query,'AND scope=$2 AND batch_id=$3')>0)"
+    with ThreadPoolExecutor(max_workers=2) as tasks:
+        lock = tasks.submit(deployed.sql, "BEGIN; LOCK TABLE rss_observation.batches IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(6); ROLLBACK;")
+        wait(lambda: deployed.sql(has_lock) == 't', 'isolated journal lock')
+        status, degraded = browser.call('GET', path)
+        require(status == 200 and degraded['originalResult'] == recorded['originalResult']
+                and degraded['executionEvidence']['availability'] == 'unavailable'
+                and deployed.sql(has_lock) == 't', 'bounded probe preserves original receipt')
+        wait(lambda: deployed.sql(waiting) == 'f', 'first bounded probe released')
+        read = tasks.submit(spare.call, 'GET', path)
+        wait(lambda: deployed.sql(waiting) == 't', 'live diagnostic probe waiting')
+        require(spare.call('POST', identity + '/session/logout')[0] == 204, 'revoke diagnostic session')
+        require(read.result()[0] in (401,403), 'diagnostic return uses current authority')
+        lock.result()
+
 def report_history(deployed, browser, binding, call):
     report_id = str(uuid.uuid4())
     path = '/api/v1/agent/runtime/reports'
@@ -221,6 +243,7 @@ def report_history(deployed, browser, binding, call):
     recorded = diagnostic()
     require(recorded['executionEvidence'] == dict(availability='available', value=dict(
         owner='inventory_report', observation='found', projection='projected')), 'live collection evidence')
+    blocked_report_diagnostic(deployed, browser, diagnostic_path, recorded)
     # Simulate an unreadable Observation record in this disposable deployment.
     deployed.sql(f"UPDATE rss_observation.batches SET decision='invalid' WHERE tenant_id='{deployed.tenant}' AND batch_id='{report_id}'")
     unavailable = diagnostic()
@@ -251,7 +274,7 @@ def report_history(deployed, browser, binding, call):
     wait(expired, 'same fingerprint settles expired pending delivery')
     require(diagnostic()['executionEvidence'] == dict(availability='available', value=dict(
         owner='inventory_report', observation='expired', projection='projected')), 'expired collection evidence')
-    return ['report_not_found', 'report_projection_confirmed', 'expired_report_preserves_ack',
+    return ['report_not_found', 'report_projection_confirmed', 'report_probe_budget', 'report_authority_rechecked', 'original_receipt_independent', 'expired_report_preserves_ack',
             'expired_report_pending_delivery_settled']
 
 def native_pki_journey(deployed,browser):

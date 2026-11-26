@@ -152,6 +152,7 @@ impl rss_projection_postgres::PgEffect for FirstWrite {
     }
 }
 pub(super) struct Baseline {
+    last_report: String,
     snapshot: Value,
     receipts: Vec<BaselineReceipt>,
 }
@@ -199,7 +200,30 @@ async fn baseline(
             .fetch_one(&h.c.operator)
             .await?;
     assert_eq!(snapshot["batch_id"], page.reports[2].id().as_str());
-    Ok(Baseline { snapshot, receipts })
+    let (scope, last) = sealed(
+        h,
+        false,
+        NativeValue::Value(CollectedValue::Value(Scalar::Boolean(false))),
+    )
+    .await?;
+    let verified = VerifiedBatch::verify(&page.stream, scope, last.clone())?;
+    let deadline = rss_request_context::Deadline::at(
+        rss_observation::Clock::now(&page.clock) + Duration::from_secs(5),
+    );
+    assert!(
+        page.observation
+            .receive(&verified, deadline)
+            .await?
+            .record()
+            .decision()
+            .outcome()
+            .is_applicable()
+    );
+    Ok(Baseline {
+        snapshot,
+        receipts,
+        last_report: last.id().as_str().into(),
+    })
 }
 async fn released_page(h: &Harness, page: &Page) -> Result<()> {
     let token = CancellationToken::new();
@@ -306,7 +330,7 @@ pub(super) async fn restore(
     )))
     .execute(&admin)
     .await?;
-    let result = async {
+    let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
         for db in inputs.databases.get_mut(profile).unwrap().values_mut() {
             db.name = target.clone();
         }
@@ -322,14 +346,14 @@ pub(super) async fn restore(
         let result = resume(&c, page, baseline).await;
         c.close().await;
         result
-    }
+    }))
     .await;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "DROP DATABASE {target} WITH (FORCE)"
     )))
     .execute(&admin)
     .await?;
-    result?;
+    result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
     let source = PgPoolOptions::new()
         .max_connections(1)
         .connect_with(original.options()?)
@@ -353,6 +377,8 @@ async fn resume(c: &Context, page: &Page, baseline: Baseline) -> Result<()> {
     let control = page.control(&token);
     let options = c.inputs.options(&c.profile, "mdm_runtime")?;
     let observation = rt::ObservationResource::open(options.clone(), clock.clone()).await?;
+    let last_report = baseline.last_report.clone();
+    refuse_empty_start(c, page, &observation).await?;
     install_baseline(c, page, baseline, &control).await?;
     let restoration = sqlx::query_scalar::<_, i64>(
         "SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id=$1::uuid",
@@ -361,13 +387,32 @@ async fn resume(c: &Context, page: &Page, baseline: Baseline) -> Result<()> {
     .fetch_one(&c.operator)
     .await?;
     for _ in 0..2 {
-        resume_once(c, page, &observation).await?;
+        resume_once(c, clock, &observation.store, Some(4)).await?;
     }
     let (rows, xids) = business(c, restoration).await?;
-    assert_eq!((rows.len(), xids), (1, 1));
+    assert_eq!((rows.len(), xids), (2, 1));
     assert_eq!(rows[0]["batch_id"], page.reports[3].id().as_str());
-    assert_eq!(progress(c).await?, (Some(3), 3, 1));
+    assert_eq!(rows[1]["batch_id"], last_report);
+    assert_eq!(progress(c).await?, (Some(4), 4, 1));
     rss_runtime::ManagedResource::shutdown(&observation).await?;
+    Ok(())
+}
+
+async fn refuse_empty_start(
+    c: &Context,
+    page: &Page,
+    observation: &rt::ObservationResource,
+) -> Result<()> {
+    let clock = &page.clock;
+    let removed=sqlx::query("DELETE FROM rss_projection.checkpoints c WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id=$3 AND generation=$4 AND position IS NULL AND NOT EXISTS(SELECT FROM rss_projection.receipts r WHERE (r.tenant_id,r.source_id,r.projection_id,r.generation)=(c.tenant_id,c.source_id,c.projection_id,c.generation))")
+        .bind(c.tenant.to_string()).bind(page.scope.source().source()).bind(page.scope.projection()).bind(page.scope.generation()).execute(&c.operator).await?;
+    assert_eq!(removed.rows_affected(), 1);
+    resume_once(c, clock, &observation.store, None).await?;
+    let empty:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid) AND NOT EXISTS(SELECT FROM mdm.inventory WHERE tenant_id=$1::uuid)").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    anyhow::ensure!(
+        empty,
+        "worker must refuse a beginning below the retained floor"
+    );
     Ok(())
 }
 
@@ -379,10 +424,6 @@ async fn install_baseline(
 ) -> Result<()> {
     let options = c.inputs.options(&c.profile, "mdm_runtime")?;
     let mut restore = command::seed_transaction(c).await?;
-    // Discard only the restored target's verified empty checkpoint before opening traffic.
-    let removed=sqlx::query("DELETE FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id=$3 AND generation=$4 AND position IS NULL")
-        .bind(c.tenant.to_string()).bind(page.scope.source().source()).bind(page.scope.projection()).bind(page.scope.generation()).execute(&mut *restore).await?;
-    assert_eq!(removed.rows_affected(), 1);
     sqlx::query(
         "INSERT INTO mdm.inventory SELECT * FROM jsonb_populate_record(NULL::mdm.inventory,$1)",
     )
@@ -405,18 +446,50 @@ async fn install_baseline(
     Ok(())
 }
 
-async fn resume_once(
+pub(super) async fn resume_once(
     c: &Context,
-    page: &Page,
-    observation: &rt::ObservationResource,
+    clock: &rt::Clock,
+    observation: &Arc<Store>,
+    expected_head: Option<u64>,
 ) -> Result<()> {
-    let clock = &page.clock;
+    let (inventory, resource) = open_worker(c, clock, observation).await?;
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    launch.stage_resource(rss_runtime::DynManagedResource::new_box(resource));
+    let notify = Arc::new(tokio::sync::Notify::new());
+    launch.stage_task_with_token(inventory.clone().registration(notify.clone()));
+    launch.finish();
+    tokio::time::timeout(Duration::from_secs(40),async {
+        loop {
+            let d=inventory.diagnostics(c.execution(),rss_observation::Clock::now(clock)+Duration::from_secs(5)).await;
+            let reached=match expected_head {
+                None=>d.baseline_required,
+                Some(head)=>matches!(d.projection,Some(rss_projection::ObservationStatus::Stopped(ref run)) if run.stop==Stop::CaughtUp && run.position.map(|p|p.get())==Some(head)),
+            };
+            if reached && matches!(d.delivery,Ok(0)) {break}
+            notify.notify_one();
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        Ok::<_,anyhow::Error>(())
+    }).await??;
+    anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+    Ok(())
+}
+
+pub(super) async fn open_worker(
+    c: &Context,
+    clock: &rt::Clock,
+    observation: &Arc<Store>,
+) -> Result<(Arc<rt::InventoryRuntime>, rt::ProjectionResource)> {
     let token = CancellationToken::new();
-    let control = page.control(&token);
+    let control = Control::new(clock, clock.startup_cutoff(), &token);
     let options = c.inputs.options(&c.profile, "mdm_runtime")?;
     let resource = rt::ProjectionResource::open(options.clone(), clock.clone(), &control).await?;
     let inventory = Arc::new(rt::InventoryRuntime::new(
-        observation.store.clone(),
+        observation.clone(),
         resource.store.clone(),
         c.database.inventory(),
         c.database.long_operations.clone(),
@@ -426,27 +499,5 @@ async fn resume_once(
         clock.clone(),
         Arc::default(),
     ));
-    let mut stack = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    )?;
-    let mut launch = stack.startup()?.commit();
-    launch.stage_resource(rss_runtime::DynManagedResource::new_box(resource));
-    launch.stage_task_with_token(
-        inventory
-            .clone()
-            .registration(Arc::new(tokio::sync::Notify::new())),
-    );
-    launch.finish();
-    tokio::time::timeout(Duration::from_secs(30),async {
-            loop {
-                let d=inventory.diagnostics(c.execution(),rss_observation::Clock::now(clock)+Duration::from_secs(5)).await;
-                if matches!(d.projection,Some(rss_projection::ObservationStatus::Stopped(ref run)) if run.stop==Stop::CaughtUp && run.position==Some(Position::new(3)?)) &&
-                    matches!(d.delivery,Ok(0)) { break }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            Ok::<_,anyhow::Error>(())
-        }).await??;
-    anyhow::ensure!(stack.shutdown().join().await?.is_clean());
-    Ok(())
+    Ok((inventory, resource))
 }

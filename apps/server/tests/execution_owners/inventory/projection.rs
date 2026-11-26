@@ -43,6 +43,24 @@ struct Page {
     scope: rss_projection::ProjectionScope,
     reports: Vec<rss_observation::Batch>,
 }
+async fn sealed(
+    h: &Harness,
+    initial: bool,
+    value: NativeValue,
+) -> Result<(rss_observation::Scope, rss_observation::Batch)> {
+    let (id, _, _) = report_value(h, initial, value).await?;
+    let mut tx = command::seed_transaction(&h.c).await?;
+    let run = rss_mdm_inventory_service::collection::store::read_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        &h.c.tenant.to_string(),
+        id,
+    )
+    .await?;
+    tx.commit().await?;
+    let batch = run.batch().unwrap().clone();
+    Ok((run.scope, batch))
+}
 impl Page {
     async fn prepare(h: &Harness, pool: &PgPool) -> Result<Self> {
         let clock = rt::Clock::new(
@@ -59,26 +77,13 @@ impl Page {
             .into_iter()
             .enumerate()
         {
-            let (id, _, _) = report_value(
-                h,
-                i == 0,
-                value.map_or(NativeValue::Failed, |v| {
-                    NativeValue::Value(CollectedValue::Value(Scalar::Boolean(v)))
-                }),
-            )
-            .await?;
-            let mut tx = command::seed_transaction(&h.c).await?;
-            let run = rss_mdm_inventory_service::collection::store::read_on(
-                rss_mdm_install_support::StorageProfile::Mdm,
-                &mut tx,
-                &h.c.tenant.to_string(),
-                id,
-            )
-            .await?;
-            tx.commit().await?;
-            let authority = stream.get_or_insert_with(|| Stream(run.scope.clone()));
-            assert_eq!(authority.0, run.scope);
-            reports.push(run.batch().unwrap().clone());
+            let value = value.map_or(NativeValue::Failed, |v| {
+                NativeValue::Value(CollectedValue::Value(Scalar::Boolean(v)))
+            });
+            let (scope, batch) = sealed(h, i == 0, value).await?;
+            let authority = stream.get_or_insert_with(|| Stream(scope.clone()));
+            assert_eq!(authority.0, scope);
+            reports.push(batch);
         }
         let stream = stream.unwrap();
         observation
@@ -265,9 +270,82 @@ async fn report_page_settlement_and_cost() -> Result<()> {
         }
     }
     settlement::exercise(&h, &page, &store).await?;
+    inspect_report_identity(&h.c, &page).await?;
+    timeout_reduces_page(&h, &page).await?;
     let baseline = history::exercise(&h, &page, &store).await?;
     let tenant = h.c.tenant;
     pool.close().await;
     h.close().await?;
     history::restore(tenant, &page, baseline).await
+}
+
+async fn timeout_reduces_page(h: &Harness, page: &Page) -> Result<()> {
+    let after = reset(h).await?;
+    let mut policy = h.a.resources.config.inventory_runtime.clone();
+    policy.pass_seconds = 1;
+    policy.projection_batch = 2;
+    let clock = rt::Clock::new(crate::clock::monotonic(), policy.compile()?);
+    let name = format!("deadline_{}", Uuid::new_v4().simple());
+    let tenant = h.c.tenant;
+    // Each report fits. Only a second business write in the same transaction
+    // exceeds the pass budget; resetting the worker's page limit would stall forever.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION public.{name}() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN
+         IF current_setting('inventory_test.written',true)='yes' THEN PERFORM pg_sleep(4); END IF;
+         PERFORM set_config('inventory_test.written','yes',true); RETURN NEW; END$$;
+         CREATE TRIGGER {name} AFTER INSERT OR UPDATE ON mdm.inventory FOR EACH ROW
+         WHEN(NEW.tenant_id='{tenant}') EXECUTE FUNCTION public.{name}()"
+    )))
+    .execute(&h.c.operator)
+    .await?;
+    let result = history::resume_once(&h.c, &clock, &page.observation, Some(3)).await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER {name} ON mdm.inventory; DROP FUNCTION public.{name}()"
+    )))
+    .execute(&h.c.operator)
+    .await?;
+    result?;
+    assert_eq!(progress(&h.c).await?, (Some(3), 3, 1));
+    let (rows, xids) = business(&h.c, after).await?;
+    assert_eq!((rows.len(), xids), (3, 3));
+    Ok(())
+}
+
+async fn inspect_report_identity(c: &Context, page: &Page) -> Result<()> {
+    let (inventory, resource) = history::open_worker(c, &page.clock, &page.observation).await?;
+    let original = &page.reports[0];
+    let different = rss_observation::Batch::new(
+        original.id().clone(),
+        original.sequence(),
+        rss_contract::Timepoint::try_from(original.observed_at_seconds() + 1)?,
+        original.coverage().clone(),
+        original.body().clone(),
+    )?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
+    let cancel = rss_request_context::Cancellation::observe(&budget);
+    let live = inventory
+        .inspect_report(
+            c.tenant,
+            &page.stream.0,
+            original,
+            budget.deadline(),
+            cancel,
+        )
+        .await?;
+    assert!(matches!(live.receipt, rt::ReceiptStatus::Found { .. }));
+    let invalid = inventory
+        .inspect_report(
+            c.tenant,
+            &page.stream.0,
+            &different,
+            budget.deadline(),
+            cancel,
+        )
+        .await;
+    assert!(matches!(
+        invalid,
+        Err(rss_mdm_inventory_service::Error::Unavailable(_))
+    ));
+    rss_runtime::ManagedResource::shutdown(&resource).await?;
+    Ok(())
 }

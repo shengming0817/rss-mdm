@@ -119,7 +119,8 @@ impl AssetService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (principal, device) = *ctx;
-                    query_authority(tx, principal).await?.require(
+                    let access = query_authority(tx, principal).await?;
+                    access.require(
                         principal,
                         rss_mdm_authorization_service::Permission::InventoryRead,
                         Some(&device),
@@ -133,30 +134,59 @@ impl AssetService {
                     summary.completed_at = evidence.row.try_get("sealed_at")?;
                     summary.state = Some(evidence.row.try_get("result")?);
                     summary.executions.push(id);
-                    Ok(Some((summary, evidence)))
+                    Ok(Some((summary, evidence, access.query_binding(principal)?)))
                 })
             },
             crate::transaction::TransactionOwner::Assets,
         )
         .await?;
-        let Some((original, evidence)) = original else {
+        let Some((original, evidence, binding)) = original else {
             return Ok(None);
         };
-        let delivery = evidence
-            .delivery(
-                &self.inventory,
-                None,
-                (
-                    rss_request_context::Deadline::at(request.deadline),
-                    rss_request_context::Cancellation::observe(request.cancellation.as_ref()),
-                ),
-            )
+        let remaining = request.remaining()?.timeout();
+        let reserve = remaining - (remaining / 2).min(std::time::Duration::from_secs(1));
+        let probe_cutoff = request.deadline - reserve;
+        let probe = evidence.delivery(
+            &self.inventory,
+            None,
+            (
+                rss_request_context::Deadline::at(probe_cutoff),
+                rss_request_context::Cancellation::observe(request.cancellation.as_ref()),
+            ),
+        );
+        let delivery = tokio::time::timeout_at(probe_cutoff.into(), probe)
             .await
-            .map_err(|e| match e {
-                Fault::Request(error) => error,
-                _ => Error::Unavailable(Failure::CollectionQuery),
+            .map_err(|_| Error::Unavailable(Failure::RequestDeadline))
+            .and_then(|result| {
+                result.map_err(|e| match e {
+                    Fault::Request(error) => error,
+                    _ => Error::Unavailable(Failure::CollectionQuery),
+                })
             });
-        principal.check_live()?;
+        let fresh = request.revalidate().await?;
+        crate::transaction::inspect_budget(
+            &self.runtime,
+            principal.binding(),
+            request.remaining()?,
+            (request, *device, fresh, binding),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (request, device, fresh, binding) = ctx;
+                    let current = query_authority(tx, &request.proof).await?;
+                    current.require(
+                        &request.proof,
+                        rss_mdm_authorization_service::Permission::InventoryRead,
+                        Some(device),
+                    )?;
+                    if request.current_binding(&current, fresh.as_ref())? != *binding {
+                        return Err(Error::Forbidden.into());
+                    }
+                    Ok(())
+                })
+            },
+            crate::transaction::TransactionOwner::Assets,
+        )
+        .await?;
         Ok(Some(ReportDiagnostics { original, delivery }))
     }
     pub(super) async fn collection_run(
