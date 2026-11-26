@@ -119,8 +119,14 @@ async fn cancel_page(
     hold.rollback().await?;
     assert_eq!(
         report.into_result().unwrap_err().kind(),
-        rss_projection::ErrorKind::Cancelled
+        rss_projection::ErrorKind::CommitUnknown
     );
+    // Cancellation drops an active write in revision 4. Wait for its checkpoint
+    // lock to be released before treating the independent read as rollback evidence.
+    let position:Option<i64>=tokio::time::timeout(Duration::from_secs(10),
+        sqlx::query_scalar("SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid AND projection_id='inventory' FOR UPDATE")
+            .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator)).await??;
+    assert_eq!(position, None);
     assert_eq!(progress(&h.c).await?, (None, 0, 0));
     assert!(business(&h.c, after).await?.0.is_empty());
 
