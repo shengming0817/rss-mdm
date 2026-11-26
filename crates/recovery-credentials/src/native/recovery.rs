@@ -366,13 +366,20 @@ pub(crate) async fn apply_prepared(
             let candidates =
                 command_candidates_in(tx, scope, &name, after.as_ref(), service.recovery_batch)
                     .await?;
-            let ids = candidates.operations.iter()
+            let ids = candidates
+                .operations
+                .iter()
                 .map(|(id, _)| dc::CommandId::parse(&id.to_string()))
                 .collect::<std::result::Result<Vec<_>, _>>();
             let ids = stored(ids)?;
             let page = stored(dc::ExactCommandIds::new(&ids))?;
-            let commands = service.transactions.store.recover_exact(tx, scope, page).await?
-                .into_iter().collect::<Option<Vec<_>>>()
+            let commands = service
+                .transactions
+                .store
+                .recover_exact(tx, scope, page)
+                .await?
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
                 .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
             if matches!(registration, Err(Fault::Request(Error::Conflict))) {
                 for command in &commands {

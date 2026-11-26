@@ -376,13 +376,19 @@ async fn read_on(
     .await
     .map_err(|_| Error::Storage)?;
     let authorized = Authorized::<Query>::verify(&ReadAuthority(&query), query.clone())?;
-    let mut page = backend.query(&authorized, cursor.as_ref(), cutoff).await?;
+    let mut page = backend
+        .query(&authorized, cursor.as_ref(), cutoff)
+        .await
+        .map_err(Error::from_query)?;
     let mut candidates = std::mem::take(&mut page.rows);
     if input.mode == QueryMode::Latest {
         // Never resolve source priority from an incomplete page. A bounded exact resource read
         // either sees all candidates or fails explicitly; history retains provider pagination.
         while let Some(next) = page.next.take() {
-            let part = backend.query(&authorized, Some(&next), cutoff).await?;
+            let part = backend
+                .query(&authorized, Some(&next), cutoff)
+                .await
+                .map_err(Error::from_query)?;
             if candidates.len().saturating_add(part.rows.len())
                 > backend.budget.series.get() as usize
             {
@@ -568,7 +574,8 @@ async fn aggregate_on(
         Authorized::<AggregateQuery>::verify(&AggregateAuthority(&query), query.clone())?;
     let page = backend
         .aggregate(&authorized, cursor.as_ref(), cutoff)
-        .await?;
+        .await
+        .map_err(Error::from_query)?;
     let unavailable = page
         .availability
         .excluded

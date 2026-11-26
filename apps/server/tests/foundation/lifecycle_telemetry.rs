@@ -22,6 +22,7 @@ async fn resources(
     );
     let password = root.join("metric-password");
     private(&password, Uuid::new_v4().simple().to_string())?;
+    let writer_password = root.join("clickhouse-writer-password");
     let key = root.join("metric-cursor");
     private(&key, [5u8; 32])?;
     let mut requests = Vec::new();
@@ -43,7 +44,7 @@ async fn resources(
         if kind == "click_house" {
             config.as_object_mut().unwrap().remove("cursor_key_file");
             config["backend"] = json!({"kind":kind,"control":db,"endpoint":providers["endpoint"],"ca_file":providers["ca"],
-                "writer":{"user":"metric_writer","password_file":password},"maintenance":{"user":"metric_maint","password_file":password},
+                "writer":{"user":"metric_writer","password_file":writer_password},"maintenance":{"user":"metric_maint","password_file":password},
                 "max_scan_rows":100000,"max_scan_bytes":16777216,"max_memory_bytes":67108864});
             ch = json!({"installer":{"user":"installer","password_file":area.join("installer-password")},"guard":{"user":"ch_guard","password_file":area.join("guard-password")},"backup_directory":area.join("backup"),"server_configuration_files":[area.join("config.d/telemetry.xml"),area.join("users.xml")]});
         } else {
@@ -52,9 +53,44 @@ async fn resources(
         }
         let request = json!({"operationId":Uuid::new_v4(),"directory":root.join(kind),"configuration":config,
             "administrator":administrator,"owner":format!("metrics_owner_{kind}"),"partitions":[],"clickhouse":ch});
+        if kind == "click_house" {
+            // The installer reads the writer secret during provisioning, after raw DDL commits.
+            let input = serde_json::from_value(request.clone())?;
+            ensure!(matches!(
+                telemetry::prepare(input).await,
+                Err(crate::installation::Error::Input)
+            ));
+            ensure!(recovery::admin_sql(&request, "SELECT expr,type_full,granularity FROM system.data_skipping_indices WHERE database='rss_ts_ch' AND table='raw' AND name='raw_revision' FORMAT TabSeparated").await?.trim() == "revision\tbloom_filter(0.001)\t1");
+            private(&writer_password, std::fs::read(&password)?)?;
+        }
         telemetry::prepare(serde_json::from_value(request.clone())?)
             .await
             .with_context(|| format!("install {kind}"))?;
+        if kind == "click_house" {
+            recovery::admin_sql(
+                &request,
+                "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision",
+            )
+            .await?;
+            recovery::admin_sql(&request, "ALTER TABLE rss_ts_ch.raw ADD INDEX raw_revision revision TYPE minmax GRANULARITY 1").await?;
+            ensure!(
+                matches!(
+                    telemetry::prepare(serde_json::from_value(request.clone())?).await,
+                    Err(crate::installation::Error::Storage)
+                ),
+                "same-name incorrect index passed admission"
+            );
+            recovery::admin_sql(
+                &request,
+                "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision",
+            )
+            .await?;
+            ensure!(
+                telemetry::prepare(serde_json::from_value(request.clone())?)
+                    .await?
+                    .admitted
+            );
+        }
         requests.push(request);
     }
     Ok(requests)
@@ -513,6 +549,10 @@ pub(super) async fn exercise(
         .await?;
     b_data
         .replay(restarted.telemetry.get().unwrap(), &mut peer)
+        .await?;
+    shared_data.aggregate_pages(&mut shared).await?;
+    a_data
+        .verify_snapshot(&mut first_browser, root, &resources[0])
         .await?;
     recovery::interrupt_retirement(&resources[0], b).await?;
     attach(source, &resources[0], b, 2, json!({"kind":"retire"})).await?;

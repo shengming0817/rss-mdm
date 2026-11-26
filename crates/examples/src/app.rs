@@ -256,11 +256,21 @@ impl App {
         let (receipt, event_id) = match receipt {
             rss_observation::LookupOutcome::Found(record) => {
                 let fingerprint = record.batch().fingerprint(record.scope())?;
-                let id = fingerprint.iter().map(|b| format!("{b:02x}")).collect::<String>();
-                (serde_json::json!({"status":"found","batchId":record.batch().id().as_str(),"receivedAt":record.received_at(),"decision":record.decision()}), Some(id))
+                let id = fingerprint
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                (
+                    serde_json::json!({"status":"found","batchId":record.batch().id().as_str(),"receivedAt":record.received_at(),"decision":record.decision()}),
+                    Some(id),
+                )
             }
-            rss_observation::LookupOutcome::Expired => (serde_json::json!({"status":"expired"}), None),
-            rss_observation::LookupOutcome::NotFound => (serde_json::json!({"status":"not_found"}), None),
+            rss_observation::LookupOutcome::Expired => {
+                (serde_json::json!({"status":"expired"}), None)
+            }
+            rss_observation::LookupOutcome::NotFound => {
+                (serde_json::json!({"status":"not_found"}), None)
+            }
         };
         let projection = self.projection_scope();
         let source = projection.source().clone();

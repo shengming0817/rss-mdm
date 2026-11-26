@@ -77,5 +77,8 @@ fn expiry_and_absence_never_manufacture_projection_evidence() {
     let waiting = DeliveryStatus::from_lookup(LookupOutcome::NotFound, false, true);
     assert!(matches!(waiting.receipt, ReceiptStatus::NotFound));
     assert_eq!(waiting.projection, ProjectionStatus::PendingReceipt);
-    assert!(matches!(DeliveryStatus::NO_BATCH.receipt, ReceiptStatus::NoBatch));
+    assert!(matches!(
+        DeliveryStatus::NO_BATCH.receipt,
+        ReceiptStatus::NoBatch
+    ));
 }

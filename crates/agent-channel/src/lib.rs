@@ -431,13 +431,17 @@ fn projection_status(
         ReceiptStatus::Found { decision, .. } => match decision.outcome() {
             SyncOutcome::Snapshot => wire::ObservationStatus::Snapshot,
             SyncOutcome::Stale => wire::ObservationStatus::Stale,
-            SyncOutcome::NeedSnapshot(NeedSnapshot::CollectionFailed) => wire::ObservationStatus::NeedSnapshotCollectionFailed,
+            SyncOutcome::NeedSnapshot(NeedSnapshot::CollectionFailed) => {
+                wire::ObservationStatus::NeedSnapshotCollectionFailed
+            }
             SyncOutcome::NeedSnapshot(_) => wire::ObservationStatus::NeedSnapshotPartial,
             SyncOutcome::Delta => return Err(Error::Unavailable(Failure::InventoryRuntime).into()),
         },
     };
     let projection = match delivery.projection {
-        rss_mdm_inventory_service::inventory_runtime::ProjectionStatus::Unconfirmed => wire::ProjectionStatus::Unconfirmed,
+        rss_mdm_inventory_service::inventory_runtime::ProjectionStatus::Unconfirmed => {
+            wire::ProjectionStatus::Unconfirmed
+        }
         rss_mdm_inventory_service::inventory_runtime::ProjectionStatus::Projected => {
             wire::ProjectionStatus::Applied
         }

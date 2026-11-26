@@ -110,7 +110,11 @@ impl DeliveryStatus {
         projection: ProjectionStatus::NotApplicable,
     };
 
-    fn from_lookup(lookup: rss_observation::LookupOutcome, projected: bool, snapshot: bool) -> Self {
+    fn from_lookup(
+        lookup: rss_observation::LookupOutcome,
+        projected: bool,
+        snapshot: bool,
+    ) -> Self {
         use rss_observation::LookupOutcome;
         let (receipt, unresolved) = match lookup {
             LookupOutcome::Found(record) => {
@@ -120,17 +124,29 @@ impl DeliveryStatus {
                 } else {
                     ProjectionStatus::NotApplicable
                 };
-                (ReceiptStatus::Found {
-                    batch_id: record.batch().id().as_str().to_owned(),
-                    received_at: record.received_at(),
-                    decision: Box::new(decision.clone()),
-                }, projection)
+                (
+                    ReceiptStatus::Found {
+                        batch_id: record.batch().id().as_str().to_owned(),
+                        received_at: record.received_at(),
+                        decision: Box::new(decision.clone()),
+                    },
+                    projection,
+                )
             }
             LookupOutcome::Expired => (ReceiptStatus::Expired, ProjectionStatus::Unconfirmed),
-            LookupOutcome::NotFound if snapshot => (ReceiptStatus::NotFound, ProjectionStatus::PendingReceipt),
+            LookupOutcome::NotFound if snapshot => {
+                (ReceiptStatus::NotFound, ProjectionStatus::PendingReceipt)
+            }
             LookupOutcome::NotFound => (ReceiptStatus::NotFound, ProjectionStatus::NotApplicable),
         };
-        Self { receipt, projection: if projected { ProjectionStatus::Projected } else { unresolved } }
+        Self {
+            receipt,
+            projection: if projected {
+                ProjectionStatus::Projected
+            } else {
+                unresolved
+            },
+        }
     }
 }
 
@@ -835,7 +851,11 @@ impl InventoryRuntime {
                 .await
                 .map_err(|_| unavailable())?
                 .is_settled();
-            Ok(DeliveryStatus::from_lookup(receipt, projected, matches!(batch.body(), rss_observation::Body::Snapshot(_))))
+            Ok(DeliveryStatus::from_lookup(
+                receipt,
+                projected,
+                matches!(batch.body(), rss_observation::Body::Snapshot(_)),
+            ))
         };
         tokio::select! { biased;
             () = cancellation.cancelled() => { token.cancel(); Err(unavailable()) },

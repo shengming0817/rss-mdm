@@ -32,6 +32,12 @@ pub enum Error {
     /// Identity/content or version conflict.
     #[error("telemetry conflict")]
     Conflict,
+    /// Start the same query again from its first page.
+    #[error("telemetry snapshot invalidated")]
+    SnapshotInvalidated,
+    /// Historical data required for this read has been released.
+    #[error("telemetry history unavailable")]
+    HistoryUnavailable,
     /// Current authority does not permit the operation.
     #[error("telemetry denied")]
     Denied,
@@ -55,6 +61,7 @@ impl From<rss_timeseries::Error> for Error {
             | rss_timeseries::Error::IncompatibleDefinition
             | rss_timeseries::Error::Retired
             | rss_timeseries::Error::HistoryExpired => Self::Conflict,
+            rss_timeseries::Error::SnapshotInvalidated => Self::SnapshotInvalidated,
             rss_timeseries::Error::BudgetExceeded => Self::Capacity,
             rss_timeseries::Error::InvalidInput
             | rss_timeseries::Error::NumericRange
@@ -63,6 +70,14 @@ impl From<rss_timeseries::Error> for Error {
             rss_timeseries::Error::Unauthorized => Self::Denied,
             rss_timeseries::Error::Deadline => Self::Deadline,
             rss_timeseries::Error::Unavailable | rss_timeseries::Error::Invariant => Self::Storage,
+        }
+    }
+}
+impl Error {
+    fn from_query(error: rss_timeseries::Error) -> Self {
+        match error {
+            rss_timeseries::Error::HistoryExpired => Self::HistoryUnavailable,
+            other => other.into(),
         }
     }
 }

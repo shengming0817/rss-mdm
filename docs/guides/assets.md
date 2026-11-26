@@ -343,6 +343,8 @@ Agent 在现有 mTLS runtime 边界读取
 原批次 ID，不生成替代 ID。只有已声明 `telemetry.collect.v1` 且平台/架构匹配的主 Agent
 注册可调用。周期采样和离线缓存由 Agent 后续实现，本服务端契约不代表真机采样已验收。
 
+遥测查询遇到 `409 query_cursor_invalidated` 时保留查询条件并从首页重读。`409 query_result_unavailable` 表示所需历史已不可读。`400 malformed_request` 可表示游标无效、过期或与查询不匹配。
+
 批次的 `published` 表示所需后端或当前资产 inbox 已确认接收。当前资产是否完成投影，
 使用 `GET /telemetry/batches/{id}/observations/{observation}` 单独查询。历史数据是否仍
 可查询由查询结果的 unavailable 范围表达；指定汇总窗口的进度也独立于批次接收。

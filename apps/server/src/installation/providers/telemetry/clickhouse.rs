@@ -170,18 +170,23 @@ pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
     let statements =
         rss_timeseries_clickhouse::installation_sql(&instance).map_err(|_| Error::Input)?;
     for (index, statement) in statements.iter().enumerate() {
-        let step = if statement.starts_with("INSERT INTO rss_ts_ch.installation") {
+        let writes_identity = statement.starts_with("INSERT INTO rss_ts_ch.installation ");
+        let step = if writes_identity {
             format!(
                 "INSERT INTO rss_ts_ch.installation SELECT {} WHERE NOT EXISTS(SELECT 1 FROM rss_ts_ch.installation)",
                 literal(&instance)
             )
+        } else if let Some(definition) =
+            statement.strip_prefix("ALTER TABLE rss_ts_ch.raw ADD INDEX ")
+        {
+            format!("ALTER TABLE rss_ts_ch.raw ADD INDEX IF NOT EXISTS {definition}")
         } else {
             statement
                 .replacen("CREATE DATABASE ", "CREATE DATABASE IF NOT EXISTS ", 1)
                 .replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
         };
         execute(input, &format!("install-{index}"), &step).await?;
-        if index == 2
+        if writes_identity
             && execute(
                 input,
                 "installation-identity",

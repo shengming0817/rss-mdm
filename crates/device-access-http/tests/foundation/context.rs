@@ -121,15 +121,30 @@ impl Context {
         let host = installation::host(&inputs, tenant, management)?;
         let binding = host.binding()?;
         // Interrupt the real unit executor after Observation commits, before Projection can start.
-        sqlx::query("CREATE SCHEMA rss_projection").execute(&operator).await?;
+        sqlx::query("CREATE SCHEMA rss_projection")
+            .execute(&operator)
+            .await?;
         let interrupted = rss_mdm_install_support::install(
-            &inputs.database("da_owner").options()?, &binding, &installation::units(), &host,
-        ).await;
-        anyhow::ensure!(interrupted.is_err(), "conflicting schema must stop installation");
+            &inputs.database("da_owner").options()?,
+            &binding,
+            &installation::units(),
+            &host,
+        )
+        .await;
+        anyhow::ensure!(
+            interrupted.is_err(),
+            "conflicting schema must stop installation"
+        );
         let prefix_query = "SELECT name,digest,xmin::text FROM rss_da.installation_units WHERE complete ORDER BY name";
-        let prefix: Vec<(String, String, String)> = sqlx::query_as(prefix_query).fetch_all(&operator).await?;
-        anyhow::ensure!(prefix.iter().map(|r| r.0.as_str()).collect::<Vec<_>>() == ["audit-v1", "observation-v1"]);
-        sqlx::query("DROP SCHEMA rss_projection").execute(&operator).await?;
+        let prefix: Vec<(String, String, String)> =
+            sqlx::query_as(prefix_query).fetch_all(&operator).await?;
+        anyhow::ensure!(
+            prefix.iter().map(|r| r.0.as_str()).collect::<Vec<_>>()
+                == ["audit-v1", "observation-v1"]
+        );
+        sqlx::query("DROP SCHEMA rss_projection")
+            .execute(&operator)
+            .await?;
         rss_mdm_install_support::install(
             &inputs.database("da_owner").options()?,
             &binding,
@@ -137,12 +152,22 @@ impl Context {
             &host,
         )
         .await?;
-        let installed: Vec<(String, String, String)> = sqlx::query_as(prefix_query).fetch_all(&operator).await?;
-        anyhow::ensure!(prefix.iter().all(|r| installed.contains(r)), "replayed prefix was rewritten");
+        let installed: Vec<(String, String, String)> =
+            sqlx::query_as(prefix_query).fetch_all(&operator).await?;
+        anyhow::ensure!(
+            prefix.iter().all(|r| installed.contains(r)),
+            "replayed prefix was rewritten"
+        );
         let revisions: (String, String) = sqlx::query_as(
             "SELECT obj_description('rss_observation'::regnamespace,'pg_namespace'), obj_description('rss_projection'::regnamespace,'pg_namespace')"
         ).fetch_one(&operator).await?;
-        assert_eq!(revisions, ("rss-observation-postgres:4".into(), "rss-projection-postgres:4".into()));
+        assert_eq!(
+            revisions,
+            (
+                "rss-observation-postgres:4".into(),
+                "rss-projection-postgres:4".into()
+            )
+        );
         let mut check = operator.acquire().await?;
         let after = rss_mdm_install_support::read_receipts(&mut check, DA).await?;
         assert_eq!(after.len(), installation::units().len());

@@ -166,7 +166,8 @@ where
             authorizer,
             Timer(timer.clone()),
             wall,
-            transport::Limits::new(4, 64 * 1024, 16, 64, 32768, None).expect("bounded HTTP resources"),
+            transport::Limits::new(4, 64 * 1024, 16, 64, 32768, None)
+                .expect("bounded HTTP resources"),
         ),
         runtime,
         timer: timer.clone(),

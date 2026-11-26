@@ -147,13 +147,19 @@ impl Transactions {
             .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
         let candidates =
             command_candidates_in(tx, scope, device, after.as_ref(), self.recovery_batch).await?;
-        let ids = candidates.operations.iter()
+        let ids = candidates
+            .operations
+            .iter()
             .map(|(id, _)| dc::CommandId::parse(&id.to_string()))
             .collect::<std::result::Result<Vec<_>, _>>();
         let ids = stored(ids)?;
         let page = stored(dc::ExactCommandIds::new(&ids))?;
-        let commands = self.store.recover_exact(tx, scope, page).await?
-            .into_iter().collect::<Option<Vec<_>>>()
+        let commands = self
+            .store
+            .recover_exact(tx, scope, page)
+            .await?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
             .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
         for command in &commands {
             let id = stored(Uuid::parse_str(command.spec().id().as_str()))?;
