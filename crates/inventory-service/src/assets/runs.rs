@@ -119,7 +119,8 @@ impl AssetService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (principal, device) = *ctx;
-                    let access = query_authority(tx, principal).await?;
+                    let access =
+                        query_authority_with_lock(tx, principal, AuthorityLock::Shared).await?;
                     access.require(
                         principal,
                         rss_mdm_authorization_service::Permission::InventoryRead,
@@ -172,7 +173,9 @@ impl AssetService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (request, device, fresh, binding) = ctx;
-                    let current = query_authority(tx, &request.proof).await?;
+                    let current =
+                        query_authority_with_lock(tx, &request.proof, AuthorityLock::Shared)
+                            .await?;
                     current.require(
                         &request.proof,
                         rss_mdm_authorization_service::Permission::InventoryRead,

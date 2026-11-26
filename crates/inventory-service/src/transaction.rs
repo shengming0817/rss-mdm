@@ -304,6 +304,19 @@ pub async fn query_authority(
     tx: &mut PgTransaction<'_>,
     p: &crate::authorization::context::AuthorizedPrincipal,
 ) -> Result<crate::authorization::Snapshot> {
+    query_authority_with_lock(tx, p, AuthorityLock::Exclusive).await
+}
+
+pub(crate) enum AuthorityLock {
+    Shared,
+    Exclusive,
+}
+
+pub(crate) async fn query_authority_with_lock(
+    tx: &mut PgTransaction<'_>,
+    p: &crate::authorization::context::AuthorizedPrincipal,
+    lock: AuthorityLock,
+) -> Result<crate::authorization::Snapshot> {
     let binding = p.tenant_id().to_owned();
     let instance = p.instance_id().to_owned();
     if binding != tx.tenant_id().to_string() {
@@ -312,21 +325,17 @@ pub async fn query_authority(
     let snapshot = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                crate::authorization::lock_on(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    c,
-                    &binding,
-                    &instance,
-                )
-                .await
+                let profile = rss_mdm_install_support::StorageProfile::Mdm;
+                match lock {
+                    AuthorityLock::Shared => {
+                        crate::authorization::lock_shared_on(profile, c, &binding, &instance).await
+                    }
+                    AuthorityLock::Exclusive => {
+                        crate::authorization::lock_on(profile, c, &binding, &instance).await
+                    }
+                }
                 .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(crate::authorization::snapshot_on(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    c,
-                    &binding,
-                    &instance,
-                )
-                .await)
+                Ok(crate::authorization::snapshot_on(profile, c, &binding, &instance).await)
             })
         })
         .await??;
