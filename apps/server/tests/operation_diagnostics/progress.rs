@@ -131,12 +131,7 @@ pub(super) async fn seed(
             json!({"accepted":true,"recordedAt":1700000000}),
         ),
         ("asset", software_edit, "".into(), json!({"revision":23})),
-        (
-            "collection",
-            id,
-            q.clone(),
-            json!({"state":"pending","stages":[{"phase":"observation","revision":null,"state":"no_batch"},{"phase":"projection","revision":null,"state":"not_applicable"}]}),
-        ),
+        ("collection", id, q.clone(), json!({"state":"pending"})),
         (
             "enterprise_configuration",
             enterprise,

@@ -212,6 +212,20 @@ def report_history(deployed, browser, binding, call):
         require(status == 200, 'authorized collection run')
         return body['asset']['run']
     require(run()['delivery']['receipt']['status'] == 'found', 'management receipt')
+    diagnostic_path = f"/api/v1/tenants/{deployed.tenant}/operation-diagnostics/operations/collection/{report_id}?device={binding['deviceId']}"
+    def diagnostic():
+        status, evidence = browser.call('GET', diagnostic_path)
+        require(status == 200 and evidence['originalResult']['availability'] == 'available',
+                'original collection receipt available')
+        return evidence
+    recorded = diagnostic()
+    require(recorded['executionEvidence'] == dict(availability='available', value=dict(
+        owner='inventory_report', observation='found', projection='projected')), 'live collection evidence')
+    # Simulate an unreadable Observation record in this disposable deployment.
+    deployed.sql(f"UPDATE rss_observation.batches SET decision='invalid' WHERE tenant_id='{deployed.tenant}' AND batch_id='{report_id}'")
+    unavailable = diagnostic()
+    require(unavailable['originalResult'] == recorded['originalResult'] and
+            unavailable['executionEvidence']['availability'] == 'unavailable', 'independent original receipt')
     # Seed released content and an unacknowledged product delivery in this disposable database.
     # The immutable RSS identity and independent projection receipt stay intact.
     result = deployed.sql(f"""BEGIN;
@@ -235,6 +249,8 @@ def report_history(deployed, browser, binding, call):
         return (value['delivery'] == dict(receipt={'status':'expired'}, projection='projected')
                 and pending.strip() == 'f')
     wait(expired, 'same fingerprint settles expired pending delivery')
+    require(diagnostic()['executionEvidence'] == dict(availability='available', value=dict(
+        owner='inventory_report', observation='expired', projection='projected')), 'expired collection evidence')
     return ['report_not_found', 'report_projection_confirmed', 'expired_report_preserves_ack',
             'expired_report_pending_delivery_settled']
 

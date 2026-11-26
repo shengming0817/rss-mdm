@@ -143,13 +143,13 @@ fn limit() -> Result<RunLimit> {
     Ok(RunLimit::new(BatchLimit::new(8)?, 8)?)
 }
 
-async fn progress(h: &Harness) -> Result<(Option<i64>, i64, i64)> {
+async fn progress(c: &Context) -> Result<(Option<i64>, i64, i64)> {
     Ok(sqlx::query_as("SELECT position,(SELECT count(*) FROM rss_projection.receipts WHERE tenant_id=$1::uuid AND projection_id='inventory'),(SELECT count(*) FROM mdm.inventory WHERE tenant_id=$1::uuid) FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid AND projection_id='inventory'")
-        .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?)
+        .bind(c.tenant.to_string()).fetch_one(&c.operator).await?)
 }
-async fn business(h: &Harness, after: i64) -> Result<(Vec<Value>, i64)> {
+async fn business(c: &Context, after: i64) -> Result<(Vec<Value>, i64)> {
     let rows: (Value,i64) = sqlx::query_as("SELECT coalesce(jsonb_agg(h.document ORDER BY h.revision),'[]'::jsonb),count(DISTINCT c.writer_xid) FROM mdm.inventory_history h JOIN mdm.asset_changes c USING(tenant_id,revision) WHERE h.tenant_id=$1::uuid AND h.revision>$2 AND h.document IS NOT NULL")
-        .bind(h.c.tenant.to_string()).bind(after).fetch_one(&h.c.operator).await?;
+        .bind(c.tenant.to_string()).bind(after).fetch_one(&c.operator).await?;
     Ok((serde_json::from_value(rows.0)?, rows.1))
 }
 async fn reset(h: &Harness) -> Result<i64> {
@@ -243,13 +243,13 @@ async fn report_page_settlement_and_cost() -> Result<()> {
             assert!(counts[group] > 0);
         }
         assert_eq!(counts["resolver"], 3);
-        let (rows, xids) = business(&h, after).await?;
+        let (rows, xids) = business(&h.c, after).await?;
         let ids = rows
             .iter()
             .map(|v| v["batch_id"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(ids, [0, 2, 3].map(|i| page.reports[i].id().as_str()));
-        assert_eq!(progress(&h).await?, (Some(3), 3, 1));
+        assert_eq!(progress(&h.c).await?, (Some(3), 3, 1));
         assert_eq!(xids, if batched { 1 } else { 3 });
         eprintln!(
             "inventory_product_cost batched={batched} applicable=3 xids={xids} statements={counts:?}"
@@ -261,7 +261,9 @@ async fn report_page_settlement_and_cost() -> Result<()> {
         }
     }
     settlement::exercise(&h, &page, &store).await?;
-    history::exercise(&h, &page, &store).await?;
+    let baseline = history::exercise(&h, &page, &store).await?;
+    let tenant = h.c.tenant;
     pool.close().await;
-    h.close().await
+    h.close().await?;
+    history::restore(tenant, &page, baseline).await
 }

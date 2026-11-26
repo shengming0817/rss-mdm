@@ -33,8 +33,8 @@ pub(super) async fn exercise(
     sqlx::query("UPDATE mdm.collection_results SET document=decode('00','hex') WHERE tenant_id=$1::uuid AND run=$2").bind(&tenant).bind(id).execute(&h.c.operator).await?;
     let rejected = rss_projection::run_batched(&*page.source, &worker, &control, limit()?).await;
     assert!(rejected.into_result().is_err());
-    assert_eq!(progress(h).await?, (None, 0, 0));
-    assert!(business(h, after).await?.0.is_empty());
+    assert_eq!(progress(&h.c).await?, (None, 0, 0));
+    assert!(business(&h.c, after).await?.0.is_empty());
     sqlx::query(
         "UPDATE mdm.collection_results SET document=$3 WHERE tenant_id=$1::uuid AND run=$2",
     )
@@ -74,8 +74,8 @@ pub(super) async fn exercise(
         report.into_result().unwrap_err().kind(),
         rss_projection::ErrorKind::Cancelled
     );
-    assert_eq!(progress(h).await?, (None, 0, 0));
-    assert!(business(h, after).await?.0.is_empty());
+    assert_eq!(progress(&h.c).await?, (None, 0, 0));
+    assert!(business(&h.c, after).await?.0.is_empty());
 
     let mut ddl = h.c.operator.begin().await?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP TRIGGER {name} ON mdm.inventory;
@@ -136,8 +136,8 @@ pub(super) async fn exercise(
         report.into_result().unwrap_err().kind(),
         rss_projection::ErrorKind::CommitUnknown
     );
-    assert_eq!(progress(h).await?, (Some(3), 3, 1));
-    let snapshot = business(h, after).await?;
+    assert_eq!(progress(&h.c).await?, (Some(3), 3, 1));
+    let snapshot = business(&h.c, after).await?;
     assert_eq!((snapshot.0.len(), snapshot.1), (3, 1));
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "DROP TRIGGER {name} ON mdm.inventory; DROP FUNCTION {function}()"
@@ -154,7 +154,7 @@ pub(super) async fn exercise(
             .applied,
         0
     );
-    assert_eq!(business(h, after).await?, snapshot);
+    assert_eq!(business(&h.c, after).await?, snapshot);
     proxy.close().await;
     Ok(())
 }

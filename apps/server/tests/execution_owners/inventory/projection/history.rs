@@ -124,11 +124,38 @@ async fn release(h: &Harness, page: &Page) -> Result<()> {
     Ok(())
 }
 
+struct FirstWrite {
+    effect: rss_mdm_inventory_postgres::Inventory<rt::Clock>,
+    written: CancellationToken,
+    released: CancellationToken,
+}
+impl rss_projection_postgres::PgEffect for FirstWrite {
+    async fn apply(
+        &self,
+        tx: &mut rss_projection_postgres::PgTransaction<'_>,
+        scope: &rss_projection::ProjectionScope,
+        event: &rss_projection::Event,
+    ) -> std::result::Result<
+        rss_projection_postgres::PgEffectOutcome,
+        rss_projection_postgres::PgOperationError,
+    > {
+        let outcome = self.effect.apply(tx, scope, event).await?;
+        if event.position().get() == 1 {
+            self.written.cancel();
+            self.released.cancelled().await;
+        }
+        Ok(outcome)
+    }
+}
+pub(super) struct Baseline {
+    snapshot: Value,
+    receipts: Vec<BaselineReceipt>,
+}
 pub(super) async fn exercise(
     h: &Harness,
     page: &Page,
     store: &rss_projection_postgres::PgStore,
-) -> Result<()> {
+) -> Result<Baseline> {
     reset(h).await?;
     let token = CancellationToken::new();
     let control = page.control(&token);
@@ -159,76 +186,186 @@ pub(super) async fn exercise(
             .fetch_one(&h.c.operator)
             .await?;
     assert_eq!(snapshot["batch_id"], page.reports[2].id().as_str());
-    release(h, page).await?;
-    assert_eq!(
-        page.source.bounds(&control).await?.expired_through,
-        Some(Position::new(2)?)
-    );
-    let old = rss_projection::ProjectionScope::new(
-        page.scope.source().clone(),
-        page.scope.projection(),
-        "outdated",
-    )?;
+    let after = reset(h).await?;
+    let effect_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(h.c.inputs.options(&h.c.profile, "mdm_runtime")?)
+        .await?;
+    let effect_store = rss_projection_postgres::PgStore::new(effect_pool.clone(), &control).await?;
     let definition = rss_mdm_inventory_postgres::definition();
-    store
+    effect_store
         .initialize(
-            &old,
+            &page.scope,
             &definition,
             GenerationStart::beginning(),
             ReplayBound::Live,
             &control,
         )
         .await?;
-    let lagging = store.projection(
-        store.takeover(&old, &definition, &control).await?,
-        rss_mdm_inventory_postgres::Inventory::new(page.source.clone(), h.c.execution()),
+    let written = CancellationToken::new();
+    let released = CancellationToken::new();
+    let lagging = effect_store.projection(
+        effect_store
+            .takeover(&page.scope, &definition, &control)
+            .await?,
+        FirstWrite {
+            effect: rss_mdm_inventory_postgres::Inventory::new(
+                page.source.clone(),
+                h.c.execution(),
+            ),
+            written: written.clone(),
+            released: released.clone(),
+        },
     )?;
-    let failed = rss_projection::run_batched(&*page.source, &lagging, &control, limit()?).await;
-    assert!(
-        matches!(failed.stop, Stop::Failed(ref e) if e.kind()==rss_projection::ErrorKind::HistoryExpired)
+    let reclaim = async {
+        tokio::time::timeout(Duration::from_secs(20), written.cancelled()).await?;
+        let result = release(h, page).await;
+        released.cancel();
+        result
+    };
+    let (failed, reclaimed) = tokio::join!(
+        rss_projection::run_batched(&*page.source, &lagging, &control, limit()?),
+        reclaim
+    );
+    reclaimed?;
+    let Stop::Failed(error) = failed.stop else {
+        anyhow::bail!("released page completed")
+    };
+    assert_eq!(error.kind(), rss_projection::ErrorKind::HistoryExpired);
+    assert_eq!(
+        error.diagnostic().and_then(|d| d.position()),
+        Some(Position::new(2)?)
     );
     assert_eq!((failed.position, failed.applied), (None, 0));
-    reset(h).await?;
-    let mut restore = command::seed_transaction(&h.c).await?;
+    assert_eq!(progress(&h.c).await?, (None, 0, 0));
+    assert!(business(&h.c, after).await?.0.is_empty());
+    assert_eq!(
+        page.source.bounds(&control).await?.expired_through,
+        Some(Position::new(2)?)
+    );
+    let retry = rss_projection::run_batched(&*page.source, &lagging, &control, limit()?).await;
+    assert_eq!(
+        retry.into_result().unwrap_err().kind(),
+        rss_projection::ErrorKind::HistoryExpired
+    );
+    effect_pool.close().await;
+    Ok(Baseline { snapshot, receipts })
+}
+
+pub(super) async fn restore(
+    tenant: rss_request_context::TenantId,
+    page: &Page,
+    baseline: Baseline,
+) -> Result<()> {
+    use crate::authority_t2_support::Inputs;
+    let mut inputs = Inputs::load()?;
+    let profile = "inventory_capacity";
+    let original = inputs.database(profile, "postgres");
+    // This profile is a disposable database owned by this test environment.
+    let source = original
+        .name
+        .strip_prefix("t2_")
+        .ok_or_else(|| anyhow::anyhow!("expected a disposable source database"))?;
+    let source = Uuid::parse_str(source)?.simple();
+    let target = format!("t2_restore_{}", Uuid::new_v4().simple());
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(original.options()?.database("postgres"))
+        .await?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE DATABASE {target} TEMPLATE t2_{source}"
+    )))
+    .execute(&admin)
+    .await?;
+    let result = async {
+        for db in inputs.databases.get_mut(profile).unwrap().values_mut() {
+            db.name = target.clone();
+        }
+        let operator = inputs.pool(profile, "postgres").await?;
+        let c = Context::connect(
+            profile,
+            inputs,
+            operator,
+            tenant,
+            &crate::config::AuditConfig::Plain,
+        )
+        .await?;
+        let result = resume(&c, page, baseline).await;
+        c.close().await;
+        result
+    }
+    .await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP DATABASE {target} WITH (FORCE)"
+    )))
+    .execute(&admin)
+    .await?;
+    result?;
+    let source = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(original.options()?)
+        .await?;
+    let original_checkpoint:Option<i64>=sqlx::query_scalar("SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid AND projection_id='inventory'").bind(tenant.to_string()).fetch_one(&source).await?;
+    assert_eq!(original_checkpoint, None);
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mdm.inventory WHERE tenant_id=$1::uuid")
+            .bind(tenant.to_string())
+            .fetch_one(&source)
+            .await?;
+    assert_eq!(remaining, 0);
+    source.close().await;
+    admin.close().await;
+    Ok(())
+}
+
+async fn resume(c: &Context, page: &Page, baseline: Baseline) -> Result<()> {
+    let clock = &page.clock;
+    let token = CancellationToken::new();
+    let control = page.control(&token);
+    let options = c.inputs.options(&c.profile, "mdm_runtime")?;
+    let observation = rt::ObservationResource::open(options.clone(), clock.clone()).await?;
+    let mut restore = command::seed_transaction(c).await?;
+    // Discard only the restored target's verified empty checkpoint before opening traffic.
+    let removed=sqlx::query("DELETE FROM rss_projection.checkpoints WHERE tenant_id=$1::uuid AND source_id=$2 AND projection_id=$3 AND generation=$4 AND position IS NULL")
+        .bind(c.tenant.to_string()).bind(page.scope.source().source()).bind(page.scope.projection()).bind(page.scope.generation()).execute(&mut *restore).await?;
+    assert_eq!(removed.rows_affected(), 1);
     sqlx::query(
         "INSERT INTO mdm.inventory SELECT * FROM jsonb_populate_record(NULL::mdm.inventory,$1)",
     )
-    .bind(snapshot)
+    .bind(baseline.snapshot)
     .execute(&mut *restore)
     .await?;
     restore.commit().await?;
-    store
+    let initial = rt::ProjectionResource::open(options.clone(), clock.clone(), &control).await?;
+    initial
+        .store
         .initialize(
             &page.scope,
-            &definition,
-            GenerationStart::after(Position::new(2)?, receipts)?,
+            &rss_mdm_inventory_postgres::definition(),
+            GenerationStart::after(Position::new(2)?, baseline.receipts)?,
             ReplayBound::Live,
             &control,
         )
         .await?;
-
+    rss_runtime::ManagedResource::shutdown(&initial).await?;
     let restoration = sqlx::query_scalar::<_, i64>(
         "SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id=$1::uuid",
     )
-    .bind(h.c.tenant.to_string())
-    .fetch_one(&h.c.operator)
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
     .await?;
     for _ in 0..2 {
-        let resource = rt::ProjectionResource::open(
-            h.c.inputs.options(&h.c.profile, "mdm_runtime")?,
-            page.clock.clone(),
-            &control,
-        )
-        .await?;
+        let resource =
+            rt::ProjectionResource::open(options.clone(), clock.clone(), &control).await?;
         let inventory = Arc::new(rt::InventoryRuntime::new(
-            page.observation.clone(),
+            observation.store.clone(),
             resource.store.clone(),
-            h.c.database.inventory(),
-            h.c.database.long_operations.clone(),
-            h.audit.clone(),
-            h.c.execution().storage(),
-            h.c.execution().epoch(),
-            page.clock.clone(),
+            c.database.inventory(),
+            c.database.long_operations.clone(),
+            c.audit.clone(),
+            c.execution().storage(),
+            c.execution().epoch(),
+            clock.clone(),
             Arc::default(),
         ));
         let mut stack = rss_runtime::ShutdownStack::try_new(
@@ -243,30 +380,21 @@ pub(super) async fn exercise(
                 .registration(Arc::new(tokio::sync::Notify::new())),
         );
         launch.finish();
-        let last = &page.reports[3];
-        report_committed(h, Uuid::parse_str(last.id().as_str())?, last.id().as_str()).await?;
-        let audit = async {
+        tokio::time::timeout(Duration::from_secs(30),async {
             loop {
-                let d = inventory
-                    .diagnostics(
-                        h.c.execution(),
-                        rss_observation::Clock::now(&page.clock) + Duration::from_secs(5),
-                    )
-                    .await;
-                if matches!(d.projection,Some(rss_projection::ObservationStatus::Stopped(ref run)) if run.stop==Stop::CaughtUp && run.position==Some(Position::new(3)?))
-                {
-                    break;
-                }
+                let d=inventory.diagnostics(c.execution(),rss_observation::Clock::now(clock)+Duration::from_secs(5)).await;
+                if matches!(d.projection,Some(rss_projection::ObservationStatus::Stopped(ref run)) if run.stop==Stop::CaughtUp && run.position==Some(Position::new(3)?)) &&
+                    matches!(d.delivery,Ok(0)) { break }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            Ok::<_, anyhow::Error>(())
-        };
-        tokio::time::timeout(Duration::from_secs(25), audit).await??;
+            Ok::<_,anyhow::Error>(())
+        }).await??;
         anyhow::ensure!(stack.shutdown().join().await?.is_clean());
     }
-    let (rows, xids) = business(h, restoration).await?;
+    let (rows, xids) = business(c, restoration).await?;
     assert_eq!((rows.len(), xids), (1, 1));
     assert_eq!(rows[0]["batch_id"], page.reports[3].id().as_str());
-    assert_eq!(progress(h).await?, (Some(3), 3, 1));
+    assert_eq!(progress(c).await?, (Some(3), 3, 1));
+    rss_runtime::ManagedResource::shutdown(&observation).await?;
     Ok(())
 }

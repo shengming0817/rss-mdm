@@ -97,26 +97,28 @@ impl RunEvidence {
     }
 }
 
+pub struct ReportDiagnostics {
+    pub original: rss_mdm_audit_integration::operation::ReceiptSummary,
+    pub delivery: std::result::Result<crate::inventory_runtime::DeliveryStatus, Error>,
+}
+
 impl AssetService {
-    /// Only non-field collection evidence is exposed; inventory values retain their own scopes.
+    /// Read the original authorized collection before observing current delivery evidence.
     pub async fn collection_receipt(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
-    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
-    {
-        use rss_mdm_audit_integration::operation::{ReceiptStage, ReceiptSummary};
+    ) -> std::result::Result<Option<ReportDiagnostics>, Error> {
         let principal = &request.proof;
-        crate::transaction::inspect_budget(
+        let original = crate::transaction::inspect_budget(
             &self.runtime,
             principal.binding(),
             request.remaining()?,
-            (self, request, *device),
-            |context, tx| {
+            (principal, *device),
+            |ctx, tx| {
                 Box::pin(async move {
-                    let (assets, request, device) = *context;
-                    let principal = &request.proof;
+                    let (principal, device) = *ctx;
                     query_authority(tx, principal).await?.require(
                         principal,
                         rss_mdm_authorization_service::Permission::InventoryRead,
@@ -125,41 +127,37 @@ impl AssetService {
                     let Some(evidence) = RunEvidence::read(tx, device, id, false).await? else {
                         return Ok(None);
                     };
-                    let delivery = evidence
-                        .delivery(
-                            &assets.inventory,
-                            None,
-                            (
-                                rss_request_context::Deadline::at(request.deadline),
-                                rss_request_context::Cancellation::observe(
-                                    request.cancellation.as_ref(),
-                                ),
-                            ),
-                        )
-                        .await?;
-                    principal.check_live()?;
-                    let mut value = ReceiptSummary::new(id);
-                    value.object = Some(device.to_string());
-                    value.recorded_at = Some(evidence.row.try_get("started_at")?);
-                    value.completed_at = evidence.row.try_get("sealed_at")?;
-                    value.state = Some(evidence.row.try_get("result")?);
-                    value.executions.push(id);
-                    for (phase, state) in [
-                        ("observation", delivery.receipt.status()),
-                        ("projection", delivery.projection.status()),
-                    ] {
-                        value.stages.push(ReceiptStage {
-                            phase: phase.into(),
-                            revision: None,
-                            state: Some(state.into()),
-                        });
-                    }
-                    Ok(Some(value))
+                    let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    summary.object = Some(device.to_string());
+                    summary.recorded_at = Some(evidence.row.try_get("started_at")?);
+                    summary.completed_at = evidence.row.try_get("sealed_at")?;
+                    summary.state = Some(evidence.row.try_get("result")?);
+                    summary.executions.push(id);
+                    Ok(Some((summary, evidence)))
                 })
             },
             crate::transaction::TransactionOwner::Assets,
         )
-        .await
+        .await?;
+        let Some((original, evidence)) = original else {
+            return Ok(None);
+        };
+        let delivery = evidence
+            .delivery(
+                &self.inventory,
+                None,
+                (
+                    rss_request_context::Deadline::at(request.deadline),
+                    rss_request_context::Cancellation::observe(request.cancellation.as_ref()),
+                ),
+            )
+            .await
+            .map_err(|e| match e {
+                Fault::Request(error) => error,
+                _ => Error::Unavailable(Failure::CollectionQuery),
+            });
+        principal.check_live()?;
+        Ok(Some(ReportDiagnostics { original, delivery }))
     }
     pub(super) async fn collection_run(
         &self,

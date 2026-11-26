@@ -99,24 +99,22 @@ pub enum ReceiptStatus {
     NotFound,
     NoBatch,
 }
-impl ReceiptStatus {
-    pub(crate) fn status(&self) -> &'static str {
-        match self {
-            Self::Found { .. } => "found",
-            Self::Expired => "expired",
-            Self::NotFound => "not_found",
-            Self::NoBatch => "no_batch",
-        }
-    }
+/// Observation receipt state without report data; safe for operation diagnostics.
+#[derive(Clone, Copy, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptState {
+    Found,
+    Expired,
+    NotFound,
+    NoBatch,
 }
-impl ProjectionStatus {
-    pub(crate) fn status(self) -> &'static str {
+impl ReceiptStatus {
+    pub fn state(&self) -> ReceiptState {
         match self {
-            Self::Projected => "projected",
-            Self::Pending => "pending",
-            Self::PendingReceipt => "pending_receipt",
-            Self::Unconfirmed => "unconfirmed",
-            Self::NotApplicable => "not_applicable",
+            Self::Found { .. } => ReceiptState::Found,
+            Self::Expired => ReceiptState::Expired,
+            Self::NotFound => ReceiptState::NotFound,
+            Self::NoBatch => ReceiptState::NoBatch,
         }
     }
 }
