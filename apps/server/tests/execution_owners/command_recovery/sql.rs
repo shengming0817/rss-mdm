@@ -9,7 +9,7 @@ use tracing_subscriber::prelude::*;
 pub(super) struct Counts {
     total: usize,
     exact: usize,
-    point: usize,
+    pub(super) point: usize,
     cancel_saved: bool,
     pub(super) eligibility_after_save: usize,
 }
@@ -113,7 +113,29 @@ pub(super) async fn provider(h: &Harness, device: rss_mdm_agent_wire::DeviceId) 
                 ))
                 .await;
                 let rows = rows?;
-                assert_eq!(rows, single);
+                assert_eq!(single.len(), ids.len());
+                assert_eq!(rows.len(), ids.len());
+                for (i, (per_id, batched)) in single.iter().zip(&rows).enumerate() {
+                    if i == 1 {
+                        // Both database-clock runs expire this slot at their own observation time.
+                        let per_id = per_id.as_ref().expect("expired operation");
+                        let batched = batched.as_ref().expect("expired operation");
+                        for command in [per_id, batched] {
+                            assert_eq!(command.status(), rss_device_command::Status::TimedOut);
+                            assert!(
+                                command
+                                    .record()
+                                    .terminal_at
+                                    .is_some_and(|at| at >= command.spec().deadline())
+                            );
+                        }
+                        let mut expected = per_id.record().clone();
+                        expected.terminal_at = batched.record().terminal_at;
+                        assert_eq!(&expected, batched.record());
+                    } else {
+                        assert_eq!(per_id, batched);
+                    }
+                }
                 assert_eq!(rows.iter().flatten().count(), ids.len());
                 assert_eq!((per_id.exact, batch.exact, batch.point), (ids.len(), 1, 0));
                 assert!(batch.total < per_id.total);

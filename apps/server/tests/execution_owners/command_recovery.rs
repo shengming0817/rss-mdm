@@ -133,22 +133,31 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
     let first = Uuid::from_u128(1).to_string();
     let last = Uuid::from_u128(65);
     let mut tx = command::seed_transaction(&h.c).await?;
-    // Include an already-observed live command with unchanged version, and 64 terminal
-    // commands not yet observed by the owner. No worker or notification receiver is running.
-    sqlx::query("UPDATE rss_device_command.commands AS d SET status = 'cancelled', version = version + 1, terminal_at = queued_at + 1 FROM mdm_devices.control_operations AS o WHERE (o.tenant_id, CAST(o.id AS text)) = (d.tenant_id, d.command_id) AND o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.id <> $3").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).bind(Uuid::from_u128(1)).execute(&mut *tx).await?;
+    // The first slot stays live, the second expires in recover_exact, and the others are already terminal.
+    sqlx::query("UPDATE rss_device_command.commands AS d SET status = 'cancelled', version = version + 1, terminal_at = queued_at + 1 FROM mdm_devices.control_operations AS o WHERE (o.tenant_id, CAST(o.id AS text)) = (d.tenant_id, d.command_id) AND o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.id > $3").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).bind(Uuid::from_u128(2)).execute(&mut *tx).await?;
+    let second = Uuid::from_u128(2);
+    sqlx::query("UPDATE rss_device_command.commands SET deadline=queued_at+1 WHERE tenant_id=$1::uuid AND command_id=$2")
+        .bind(h.c.tenant.to_string()).bind(second.to_string()).execute(&mut *tx).await?;
     let foreign_version: i64 = sqlx::query_scalar("INSERT INTO rss_device_command.commands SELECT tenant_id,'foreign-owner',device_id,generation,authority_epoch,expected_digest,deadline,queued_at,'another.owner.v1','foreign-owner',outbox_fingerprint,status,version,published_at,received_at,terminal_at FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2 RETURNING version")
         .bind(h.c.tenant.to_string()).bind(&first).fetch_one(&mut *tx).await?;
     // A non-UUID text ID after all legal IDs must not be silently skipped by cursor decoding.
     sqlx::query("INSERT INTO rss_device_command.commands SELECT tenant_id,'zz-orphan',device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,'zz-orphan',outbox_fingerprint,status,version,published_at,received_at,terminal_at FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(h.c.tenant.to_string()).bind(&first).execute(&mut *tx).await?;
     tx.commit().await?;
     sql::provider(h, native.device).await?;
+    let second_slot = || sqlx::query_as::<_,(String,i64,i64)>("SELECT c.status,c.version,o.observed_command_version FROM rss_device_command.commands c JOIN mdm_devices.control_operations o ON (c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.id=$2")
+        .bind(h.c.tenant.to_string()).bind(second).fetch_one(&h.c.operator);
     use rss_transactional_messaging_postgres::PgTransactionFault;
     sql::unknown_page(h, &native.device, PgTransactionFault::CommitPending).await?;
     let rolled_back: (Option<String>,i64) = sqlx::query_as("SELECT recovery_after,(SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=r.tenant_id AND device=r.device AND observed_command_version>1) FROM mdm_devices.control_recovery r WHERE tenant_id=$1::uuid AND device=$2")
         .bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(rolled_back,(None,0));
+    assert_eq!(second_slot().await?,("queued".into(),1,1));
     assert!(command::recovery_fact(&h.c,Uuid::from_u128(2),2).await?.is_none());
     sql::unknown_page(h, &native.device, PgTransactionFault::CommitUnknownAfterAck).await?;
+    assert_eq!(second_slot().await?,("timed_out".into(),2,2));
+    let audit = command::recovery_fact(&h.c,second,2).await?.expect("committed timeout audit");
+    assert_eq!(audit["details"]["after"],"timed_out");
+    assert_eq!(audit["details"]["version"],2);
     let (observed,cursor):(i64,Option<String>)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND device=$2 AND observed_command_version>1),recovery_after FROM mdm_devices.control_recovery WHERE tenant_id=$1::uuid AND device=$2").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(
         observed, 63,

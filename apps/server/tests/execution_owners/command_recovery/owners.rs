@@ -37,7 +37,7 @@ impl Owner {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Metadata {
     platform: &'static str,
@@ -51,7 +51,7 @@ struct Page {
     owner: Owner,
     device: DeviceId,
     command_device: Uuid,
-    ids: [Uuid; 2],
+    ids: [Uuid; 3],
 }
 
 async fn seed(h: &Harness, owner: Owner, policy: Uuid, version: Uuid) -> Result<Page> {
@@ -68,7 +68,7 @@ async fn seed(h: &Harness, owner: Owner, policy: Uuid, version: Uuid) -> Result<
         owner,
         device,
         command_device: Uuid::new_v4(),
-        ids: [Uuid::new_v4(), Uuid::new_v4()],
+        ids: [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
     };
     let tenant = h.c.tenant.to_string();
     let metadata = Metadata {
@@ -107,11 +107,21 @@ impl Page {
     ) -> Result<()> {
         let tenant = h.c.tenant.to_string();
         for (index, id) in self.ids.into_iter().enumerate() {
-            let sealed = self.sealed(h, id, metadata)?;
+            let metadata = Metadata {
+                deadline: if index == 2 {
+                    now() + 300
+                } else {
+                    metadata.deadline
+                },
+                ..metadata.clone()
+            };
+            let deadline_us = metadata.deadline * 1_000_000;
+            let queued_us = (now() - 60) * 1_000_000;
+            let sealed = self.sealed(h, id, &metadata)?;
             let authority = self.authority(proof, id, policy, version, metadata.deadline)?;
-            sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,terminal_at,version) VALUES($1::uuid,$2,$3,1,1,$4,2000000,1000000,$5,$2,$4,$6,1000000,$7, $8)")
+            sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,terminal_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$9,$10,$5,$2,$4,$6,$10,$7,$8)")
             .bind(&tenant).bind(id.to_string()).bind(self.command_device).bind([1u8;32].as_slice()).bind(self.owner.domain().as_str())
-            .bind(if index==0 {"published"} else {"cancelled"}).bind((index==1).then_some(1000001_i64)).bind(if index==0 {2_i64} else {3}).execute(&mut **tx).await?;
+            .bind(if index==1 {"cancelled"} else {"published"}).bind((index==1).then_some(queued_us + 1)).bind(if index==1 {3_i64} else {2}).bind(deadline_us).bind(queued_us).execute(&mut **tx).await?;
             let software = matches!(self.owner, Owner::Software);
             let (column, param) = if software {
                 (",policy_version", ",$8")
@@ -315,16 +325,34 @@ impl Page {
         worker: &R,
     ) -> Result<()> {
         let tenant = h.c.tenant.to_string();
-        assert_eq!(self.apply(h, worker).await?, None);
-        for (id, status) in self.ids.into_iter().zip(["timed_out", "cancelled"]) {
+        // Revocation must cancel the still-live third command using the returned transition.
+        let mut tx = command::seed_transaction(&h.c).await?;
+        sqlx::query(
+            "UPDATE mdm_access.devices SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(&tenant)
+        .bind(self.device.into_uuid())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let (settled, counts) = sql::measure(self.apply(h, worker)).await;
+        assert_eq!(settled?, None);
+        assert_eq!(
+            counts.point, 1,
+            "only the cancellation reads its individual command"
+        );
+        for (id, status) in self
+            .ids
+            .into_iter()
+            .zip(["timed_out", "cancelled", "cancelled"])
+        {
             let versions:(String,i64,i64)=sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT c.status,c.version,o.observed_command_version FROM {}.operations o JOIN rss_device_command.commands c ON (c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.id=$2",self.owner.schema()))).bind(&tenant).bind(id).fetch_one(&h.c.operator).await?;
             assert_eq!(versions, (status.into(), 3, 3));
-            assert_eq!(
-                command::recovery_fact(&h.c, id, 3)
-                    .await?
-                    .expect("owner audit")["details"]["after"],
-                status
-            );
+            let audit = command::recovery_fact(&h.c, id, 3)
+                .await?
+                .expect("owner audit");
+            assert_eq!(audit["details"]["after"], status);
+            assert_eq!(audit["details"]["version"], 3);
         }
         assert_eq!(self.cursor(h).await?, None);
         Ok(())
