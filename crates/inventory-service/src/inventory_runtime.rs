@@ -688,7 +688,7 @@ impl InventoryRuntime {
                 .saturating_duration_since(self.clock.origin),
             &drain,
         );
-        let run = rss_projection::run(source.as_ref(), execution, &control, self.clock.policy.run);
+        let run = rss_projection::run_batched(source.as_ref(), execution, &control, self.clock.policy.run);
         {
             let mut latest = self
                 .latest_projection
