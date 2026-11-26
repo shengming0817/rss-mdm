@@ -3,8 +3,8 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
     vec![
         ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
-        ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
-        ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
+        ("observation-v1", rss_observation_postgres::MIGRATION_SQL),
+        ("projection-v1", rss_projection_postgres::MIGRATION_SQL),
         (
             "transactional-messaging-v1",
             rss_transactional_messaging_postgres::MIGRATION_SQL,
