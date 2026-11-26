@@ -119,3 +119,25 @@ pub async fn seed_transaction(c: &Context) -> Result<sqlx::Transaction<'static, 
         .await?;
     Ok(tx)
 }
+
+pub(crate) async fn recovery_fact(
+    c: &Context,
+    id: uuid::Uuid,
+    version: i64,
+) -> Result<Option<serde_json::Value>> {
+    use sha2::{Digest, Sha256};
+    let event_id = format!(
+        "e-{:x}",
+        Sha256::digest(format!("command:{id}:recover:{version}"))
+    );
+    let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
+        .bind(c.tenant.to_string()).bind(event_id).fetch_optional(&c.operator).await?;
+    bytes
+        .map(|bytes| {
+            let event = rss_audit_core::decode_untrusted(&bytes)?;
+            Ok(serde_json::from_slice(
+                event.event().context().payload().as_bytes(),
+            )?)
+        })
+        .transpose()
+}

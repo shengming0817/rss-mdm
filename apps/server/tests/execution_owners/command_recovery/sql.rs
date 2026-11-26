@@ -10,6 +10,8 @@ pub(super) struct Counts {
     total: usize,
     exact: usize,
     point: usize,
+    cancel_saved: bool,
+    pub(super) eligibility_after_save: usize,
 }
 #[derive(Clone, Default)]
 struct Counter(Arc<std::sync::Mutex<Counts>>);
@@ -17,6 +19,10 @@ struct Counter(Arc<std::sync::Mutex<Counts>>);
 impl tracing::field::Visit for Counts {
     fn record_str(&mut self, field: &tracing::field::Field, sql: &str) {
         if field.name() == "db.statement" {
+            self.cancel_saved |= sql.contains("SELECT rss_device_command.save(");
+            if self.cancel_saved && sql.contains("w.execution = x.id") {
+                self.eligibility_after_save += 1;
+            }
             self.exact += usize::from(sql.contains("WITH ORDINALITY AS requested(id, position)"));
             self.point += usize::from(sql.contains(
                 "FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2",
@@ -24,7 +30,9 @@ impl tracing::field::Visit for Counts {
         }
     }
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.record_str(field, &format!("{value:?}"));
+        if field.name() == "db.statement" {
+            self.record_str(field, &format!("{value:?}"));
+        }
     }
 }
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Counter {
@@ -36,7 +44,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Counter {
         }
     }
 }
-async fn measure<F: Future>(future: F) -> (F::Output, Counts) {
+pub(super) async fn measure<F: Future>(future: F) -> (F::Output, Counts) {
     let counter = Counter::default();
     let output = future
         .with_subscriber(tracing_subscriber::registry().with(counter.clone()))
@@ -126,37 +134,36 @@ pub(super) async fn provider(h: &Harness, device: rss_mdm_agent_wire::DeviceId) 
     Ok(())
 }
 
-pub(super) async fn unknown_page(h: &Harness, device: &rss_mdm_agent_wire::DeviceId) -> Result<()> {
-    let timer = rss_mdm_device_service::control::recovery::Timer::new();
-    let cancel = CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
-    let claim = claim_device(
+pub(super) async fn unknown_page(
+    h: &Harness,
+    device: &rss_mdm_agent_wire::DeviceId,
+    fault: rss_transactional_messaging_postgres::PgTransactionFault,
+) -> Result<()> {
+    on_claim(
         h,
         rss_mdm_device_service::control::recovery_scope(h.c.tenant),
         device,
-        &control,
+        async |claim, control, _| {
+            let ReconcileStep::Ready(diff) = h.a.service.observe(claim, control).await? else {
+                anyhow::bail!("deferred observation")
+            };
+            h.a.resources
+                .storage
+                .runtime
+                .inject_next_transaction_fault(fault);
+            // Let the owner report its own commit uncertainty when its transaction budget expires.
+            let (result, counts) = measure(h.a.service.apply(claim, diff, control)).await;
+            assert_eq!(
+                result.unwrap_err().kind(),
+                rss_reconcile::ErrorKind::CommitUnknown
+            );
+            assert_eq!((counts.exact, counts.point), (1, 0));
+            eprintln!(
+                "product apply: 64 ids, sql={} exact={} settlement_point_reads={}",
+                counts.total, counts.exact, counts.point
+            );
+            Ok(())
+        },
     )
-    .await?;
-    let ReconcileStep::Ready(diff) = h.a.service.observe(&claim, &control).await? else {
-        anyhow::bail!("deferred observation")
-    };
-    h.a.resources.storage.runtime.inject_next_transaction_fault(
-        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-    );
-    let (result, counts) = measure(control.run(h.a.service.apply(&claim, diff, &control))).await;
-    assert_eq!(
-        result.unwrap_err().kind(),
-        rss_reconcile::ErrorKind::CommitUnknown
-    );
-    h.a.resources
-        .storage
-        .reconcile
-        .release(&claim, &control)
-        .await?;
-    assert_eq!((counts.exact, counts.point), (1, 0));
-    eprintln!(
-        "product apply: 64 ids, 63 changed observations, sql={} exact={} settlement_point_reads={}",
-        counts.total, counts.exact, counts.point
-    );
-    Ok(())
+    .await
 }

@@ -186,24 +186,23 @@ impl Page {
         h: &Harness,
         worker: &R,
     ) -> Result<Option<rss_reconcile::ErrorKind>> {
-        let timer = rss_mdm_device_service::control::recovery::Timer::new();
-        let token = CancellationToken::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &token);
-        let claim = claim_device(h, self.owner.scope(&h.c), &self.device, &control).await?;
-        let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
-            anyhow::bail!("deferred observation")
-        };
-        let result = worker.apply(&claim, diff, &control).await;
-        h.a.resources
-            .storage
-            .reconcile
-            .release(&claim, &control)
-            .await?;
-        match result {
-            Ok(ReconcileStep::Ready(())) => Ok(None),
-            Err(error) => Ok(Some(error.kind())),
-            _ => anyhow::bail!("unexpected contention"),
-        }
+        on_claim(
+            h,
+            self.owner.scope(&h.c),
+            &self.device,
+            async |claim, control, _| {
+                let ReconcileStep::Ready(diff) = worker.observe(claim, control).await? else {
+                    anyhow::bail!("deferred observation")
+                };
+                let result = worker.apply(claim, diff, control).await;
+                match result {
+                    Ok(ReconcileStep::Ready(())) => Ok(None),
+                    Err(error) => Ok(Some(error.kind())),
+                    _ => anyhow::bail!("unexpected contention"),
+                }
+            },
+        )
+        .await
     }
     async fn verify<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
         &self,
@@ -253,7 +252,11 @@ impl Page {
             Some(rss_reconcile::ErrorKind::Permanent)
         );
         assert_eq!(cursor().await?, Some(Uuid::nil().to_string()));
-        assert!(faults::fact(&h.c, self.ids[0], 3).await?.is_none());
+        assert!(
+            command::recovery_fact(&h.c, self.ids[0], 3)
+                .await?
+                .is_none()
+        );
         let mut tx = command::seed_transaction(&h.c).await?;
         sqlx::query("UPDATE rss_device_command.commands SET outbox_domain='another.owner.v1' WHERE tenant_id=$1::uuid AND command_id=$2")
             .bind(&tenant).bind(&alias).execute(&mut *tx).await?;
@@ -263,7 +266,9 @@ impl Page {
             let versions:(String,i64,i64)=sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT c.status,c.version,o.observed_command_version FROM {}.operations o JOIN rss_device_command.commands c ON (c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.id=$2",self.owner.schema()))).bind(&tenant).bind(id).fetch_one(&h.c.operator).await?;
             assert_eq!(versions, (status.into(), 3, 3));
             assert_eq!(
-                faults::fact(&h.c, id, 3).await?.expect("owner audit")["details"]["after"],
+                command::recovery_fact(&h.c, id, 3)
+                    .await?
+                    .expect("owner audit")["details"]["after"],
                 status
             );
         }
@@ -282,43 +287,46 @@ impl Page {
 #[tokio::test]
 #[ignore = "T2: software, installation and credential recovery settle their own mixed pages and reject a wrong device atomically"]
 async fn native_owners_settle_their_selected_commands() -> Result<()> {
-    let h = Harness::open().await?;
-    let software = crate::assembly::software_t2::support::software(&h.c, "recovery-page").await?;
-    let (policy, version) = crate::assembly::software_t2::support::policy(
-        &h.c,
-        &software,
-        h.scope,
-        rss_mdm_policy::SoftwareChannel::Mdm,
-        vec![crate::assembly::software_t2::support::stage(h.scope)],
-    )
-    .await?;
-    seed(&h, Owner::Software, policy, version)
-        .await?
-        .verify(&h, h.a.software.service.as_ref())
+    with_harness(async |h| {
+        let software =
+            crate::assembly::software_t2::support::software(&h.c, "recovery-page").await?;
+        let (policy, version) = crate::assembly::software_t2::support::policy(
+            &h.c,
+            &software,
+            h.scope,
+            rss_mdm_policy::SoftwareChannel::Mdm,
+            vec![crate::assembly::software_t2::support::stage(h.scope)],
+        )
         .await?;
-    seed(&h, Owner::Installation, policy, version)
-        .await?
-        .verify(&h, h.a.registration.native.as_ref())
+        seed(h, Owner::Software, policy, version)
+            .await?
+            .verify(h, h.a.software.service.as_ref())
+            .await?;
+        seed(h, Owner::Installation, policy, version)
+            .await?
+            .verify(h, h.a.registration.native.as_ref())
+            .await?;
+        let s = &h.a.resources;
+        let assembly = crate::assembly::credential_execution::assemble(
+            s.storage.discovery_pool.clone(),
+            &s.config,
+            &s.background,
+            s.storage.runtime.clone(),
+            h.c.execution(),
+            s.storage.audit.clone(),
+            s.protection.clone(),
+            crate::assembly::credential_owners_t2::protection(&h.c, "old")?,
+            s.source.clone(),
+            s.storage.reconcile.clone(),
+            s.storage.worker_budget.clone(),
+        )
         .await?;
-    let s = &h.a.resources;
-    let assembly = crate::assembly::credential_execution::assemble(
-        s.storage.discovery_pool.clone(),
-        &s.config,
-        &s.background,
-        s.storage.runtime.clone(),
-        h.c.execution(),
-        s.storage.audit.clone(),
-        s.protection.clone(),
-        crate::assembly::credential_owners_t2::protection(&h.c, "old")?,
-        s.source.clone(),
-        s.storage.reconcile.clone(),
-        s.storage.worker_budget.clone(),
-    )
-    .await?;
-    seed(&h, Owner::Credentials, policy, version)
-        .await?
-        .verify(&h, assembly.native.as_ref())
-        .await?;
-    drop(assembly);
-    h.close().await
+        seed(h, Owner::Credentials, policy, version)
+            .await?
+            .verify(h, assembly.native.as_ref())
+            .await?;
+        drop(assembly);
+        Ok(())
+    })
+    .await
 }
