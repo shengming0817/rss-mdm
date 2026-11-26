@@ -15,6 +15,8 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 #[path = "query.rs"]
 mod query;
+#[path = "recovery_generation.rs"]
+mod recovery_generation;
 pub(crate) async fn seed(
     c: &Context,
     scope: Uuid,
@@ -296,14 +298,6 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     assert_eq!(foreign, 0);
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm.policy.configuration.v1'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(outbox, 1);
-    query::prove_batch(
-        &c,
-        &app,
-        &command.resources.storage.read_pool,
-        &key,
-        identity.0,
-    )
-    .await?;
     // The fifth real owner shares the RSS command scope, but never repairs a foreign orphan.
     let original:serde_json::Value=sqlx::query_scalar("SELECT to_jsonb(c) FROM rss_device_command.commands c WHERE tenant_id=$1::uuid AND command_id=$2")
         .bind(c.tenant.to_string()).bind(identity.0.to_string()).fetch_one(&c.operator).await?;
@@ -344,6 +338,15 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO rss_device_command.commands SELECT * FROM jsonb_populate_record(NULL::rss_device_command.commands,$1)").bind(&original).execute(&mut *tx).await?;
     tx.commit().await?;
+    query::prove_batch(
+        &c,
+        &app,
+        &command.resources.storage.read_pool,
+        &key,
+        identity.0,
+    )
+    .await?;
+    recovery_generation::verify(&c, app.runtime.clone(), *device).await?;
     drop(worker);
     drop(app);
     drop(owner);

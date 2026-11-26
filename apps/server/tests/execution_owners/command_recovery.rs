@@ -1,4 +1,7 @@
 //! Every real native command consumer ignores another owner and rejects its own orphan.
+mod faults;
+mod owners;
+mod sql;
 use super::*;
 use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
 use sha2::{Digest, Sha256};
@@ -80,7 +83,8 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
     // A non-UUID text ID after all legal IDs must not be silently skipped by cursor decoding.
     sqlx::query("INSERT INTO rss_device_command.commands SELECT tenant_id,'zz-orphan',device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,'zz-orphan',outbox_fingerprint,status,version,published_at,received_at,terminal_at FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(h.c.tenant.to_string()).bind(&first).execute(&mut *tx).await?;
     tx.commit().await?;
-    control_page(&h, &native.device).await?;
+    sql::provider(&h, native.device).await?;
+    sql::unknown_page(&h, &native.device).await?;
     let (observed,cursor):(i64,Option<String>)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND device=$2 AND observed_command_version>1),recovery_after FROM mdm_devices.control_recovery WHERE tenant_id=$1::uuid AND device=$2").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(
         observed, 63,
@@ -111,6 +115,12 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
     );
     let observed:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND device=$2 AND observed_command_version>1").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(observed, 65);
+    for n in 1..=65 {
+        assert!(
+            faults::fact(&h.c, Uuid::from_u128(n), 2).await?.is_some(),
+            "missing recovery fact for {n}"
+        );
+    }
     assert_eq!(sqlx::query_scalar::<_,i64>("SELECT version FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id='foreign-owner'")
         .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?, foreign_version);
     h.close().await
