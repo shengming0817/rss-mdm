@@ -90,26 +90,7 @@ async fn seed(h: &Harness, owner: Owner, policy: Uuid, version: Uuid) -> Result<
     sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {}.device_recovery(tenant_id,device,authority_epoch,expected_epoch,recovery_after) VALUES($1::uuid,$2,1,$3,$4)",owner.schema())))
         .bind(&tenant).bind(device.into_uuid()).bind(h.c.execution().epoch().get()).bind(Uuid::nil().to_string()).execute(&mut *tx).await?;
     for (index, id) in page.ids.into_iter().enumerate() {
-        let request = if is_credential {
-            json!({"kind":"command","command":{"requestType":"SetRecoveryLock","fields":{"NewPassword":{"type":"string","value":"fixture-password"}}}})
-        } else {
-            json!({"kind":"msi","job":{"product":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2","contentUrls":["https://localhost/test.msi"],"sha256":vec![1u8;32],"operation":id,"scope":"device","enforcement":{"commandLine":"/quiet","timeoutMinutes":5,"retryCount":1,"retryIntervalMinutes":1,"downloadFromAad":false}}})
-        };
-        let input = json!({"operationId":id,"inputVersion":metadata.input_version,"deadline":metadata.deadline,"target":metadata.target,"task":{"platform":platform,"request":request}});
-        #[derive(serde::Serialize)]
-        struct Identity {
-            operation: Uuid,
-            device: DeviceId,
-        }
-        let identity = serde_json::to_string(&Identity {
-            operation: id,
-            device,
-        })?;
-        let field = serde_json::to_string(&("native.operation.input/v1", &metadata))?;
-        let sealed = h.a.resources.protection.seal_bytes(
-            &serde_json::to_vec(&input)?,
-            &ProtectionContext::new(h.c.tenant, &identity, &field, 1)?.derive(),
-        )?;
+        let sealed = page.sealed(h, id, &metadata)?;
         let authority = match owner {
             Owner::Software => serde_json::to_value(deployment::authority::Authority::Software {
                 origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
@@ -181,6 +162,28 @@ async fn seed(h: &Harness, owner: Owner, policy: Uuid, version: Uuid) -> Result<
 }
 
 impl Page {
+    fn sealed(&self, h: &Harness, id: Uuid, metadata: &Metadata) -> Result<Vec<u8>> {
+        let request = if matches!(self.owner, Owner::Credentials) {
+            json!({"kind":"command","command":{"requestType":"SetRecoveryLock","fields":{"NewPassword":{"type":"string","value":"fixture-password"}}}})
+        } else {
+            json!({"kind":"msi","job":{"product":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2","contentUrls":["https://localhost/test.msi"],"sha256":vec![1u8;32],"operation":id,"scope":"device","enforcement":{"commandLine":"/quiet","timeoutMinutes":5,"retryCount":1,"retryIntervalMinutes":1,"downloadFromAad":false}}})
+        };
+        let input = json!({"operationId":id,"inputVersion":metadata.input_version,"deadline":metadata.deadline,"target":metadata.target,"task":{"platform":metadata.platform,"request":request}});
+        #[derive(serde::Serialize)]
+        struct Identity {
+            operation: Uuid,
+            device: DeviceId,
+        }
+        let identity = serde_json::to_string(&Identity {
+            operation: id,
+            device: self.device,
+        })?;
+        let field = serde_json::to_string(&("native.operation.input/v1", &metadata))?;
+        Ok(h.a.resources.protection.seal_bytes(
+            &serde_json::to_vec(&input)?,
+            &ProtectionContext::new(h.c.tenant, &identity, &field, 1)?.derive(),
+        )?)
+    }
     async fn apply<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
         &self,
         h: &Harness,
@@ -204,63 +207,90 @@ impl Page {
         )
         .await
     }
-    async fn verify<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
+    async fn cursor(&self, h: &Harness) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT recovery_after FROM {}.device_recovery WHERE tenant_id=$1::uuid AND device=$2",
+            self.owner.schema()
+        )))
+        .bind(h.c.tenant.to_string())
+        .bind(self.device.into_uuid())
+        .fetch_one(&h.c.operator)
+        .await?)
+    }
+    async fn assert_rejected<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
+        &self,
+        h: &Harness,
+        worker: &R,
+    ) -> Result<()> {
+        assert_eq!(
+            self.apply(h, worker).await?,
+            Some(rss_reconcile::ErrorKind::Permanent)
+        );
+        assert_eq!(self.cursor(h).await?, Some(Uuid::nil().to_string()));
+        assert!(
+            command::recovery_fact(&h.c, self.ids[0], 3)
+                .await?
+                .is_none()
+        );
+        Ok(())
+    }
+    async fn wrong_device<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
         &self,
         h: &Harness,
         worker: &R,
     ) -> Result<()> {
         let tenant = h.c.tenant.to_string();
-        let checkpoint = format!(
-            "SELECT recovery_after FROM {}.device_recovery WHERE tenant_id=$1::uuid AND device=$2",
-            self.owner.schema()
-        );
-        let cursor = || {
-            sqlx::query_scalar::<_, Option<String>>(sqlx::AssertSqlSafe(checkpoint.as_str()))
-                .bind(&tenant)
-                .bind(self.device.into_uuid())
-                .fetch_one(&h.c.operator)
-        };
         let foreign = Uuid::new_v4();
         let mut tx = command::seed_transaction(&h.c).await?;
         sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)").bind(&tenant).bind(foreign).execute(&mut *tx).await?;
         sqlx::query("UPDATE rss_device_command.commands SET device_id=$3 WHERE tenant_id=$1::uuid AND command_id=$2").bind(&tenant).bind(self.ids[1].to_string()).bind(foreign).execute(&mut *tx).await?;
         tx.commit().await?;
-        assert_eq!(
-            self.apply(h, worker).await?,
-            Some(rss_reconcile::ErrorKind::Permanent)
-        );
+        self.assert_rejected(h, worker).await?;
         let mut tx = command::seed_transaction(&h.c).await?;
         sqlx::query("UPDATE rss_device_command.commands SET device_id=$3 WHERE tenant_id=$1::uuid AND command_id=$2").bind(&tenant).bind(self.ids[1].to_string()).bind(self.command_device).execute(&mut *tx).await?;
         tx.commit().await?;
+        Ok(())
+    }
+    async fn missing<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
+        &self,
+        h: &Harness,
+        worker: &R,
+    ) -> Result<()> {
+        let tenant = h.c.tenant.to_string();
         let alias = format!("unselected:{}", self.ids[1]);
         let mut tx = command::seed_transaction(&h.c).await?;
         sqlx::query("UPDATE rss_device_command.commands SET command_id=$3,outbox_domain='another.owner.v1' WHERE tenant_id=$1::uuid AND command_id=$2")
             .bind(&tenant).bind(self.ids[1].to_string()).bind(&alias).execute(&mut *tx).await?;
         tx.commit().await?;
-        assert_eq!(
-            self.apply(h, worker).await?,
-            Some(rss_reconcile::ErrorKind::Permanent)
-        );
+        self.assert_rejected(h, worker).await?;
+        Ok(())
+    }
+    async fn orphan<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
+        &self,
+        h: &Harness,
+        worker: &R,
+    ) -> Result<()> {
+        let tenant = h.c.tenant.to_string();
+        let alias = format!("unselected:{}", self.ids[1]);
         let mut tx = command::seed_transaction(&h.c).await?;
         sqlx::query("UPDATE rss_device_command.commands SET command_id=$2,outbox_domain=$4 WHERE tenant_id=$1::uuid AND command_id=$3")
             .bind(&tenant).bind(self.ids[1].to_string()).bind(&alias).bind(self.owner.domain().as_str()).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO rss_device_command.commands SELECT tenant_id,$3,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,$3,outbox_fingerprint,status,version,published_at,received_at,terminal_at FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2")
             .bind(&tenant).bind(self.ids[1].to_string()).bind(&alias).execute(&mut *tx).await?;
         tx.commit().await?;
-        assert_eq!(
-            self.apply(h, worker).await?,
-            Some(rss_reconcile::ErrorKind::Permanent)
-        );
-        assert_eq!(cursor().await?, Some(Uuid::nil().to_string()));
-        assert!(
-            command::recovery_fact(&h.c, self.ids[0], 3)
-                .await?
-                .is_none()
-        );
+        self.assert_rejected(h, worker).await?;
         let mut tx = command::seed_transaction(&h.c).await?;
         sqlx::query("UPDATE rss_device_command.commands SET outbox_domain='another.owner.v1' WHERE tenant_id=$1::uuid AND command_id=$2")
             .bind(&tenant).bind(&alias).execute(&mut *tx).await?;
         tx.commit().await?;
+        Ok(())
+    }
+    async fn settle<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
+        &self,
+        h: &Harness,
+        worker: &R,
+    ) -> Result<()> {
+        let tenant = h.c.tenant.to_string();
         assert_eq!(self.apply(h, worker).await?, None);
         for (id, status) in self.ids.into_iter().zip(["timed_out", "cancelled"]) {
             let versions:(String,i64,i64)=sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT c.status,c.version,o.observed_command_version FROM {}.operations o JOIN rss_device_command.commands c ON (c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.id=$2",self.owner.schema()))).bind(&tenant).bind(id).fetch_one(&h.c.operator).await?;
@@ -272,14 +302,26 @@ impl Page {
                 status
             );
         }
-        assert_eq!(cursor().await?, None);
+        assert_eq!(self.cursor(h).await?, None);
+        Ok(())
+    }
+    async fn verify<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
+        &self,
+        h: &Harness,
+        worker: &R,
+    ) -> Result<()> {
+        let tenant = h.c.tenant.to_string();
+        self.wrong_device(h, worker).await?;
+        self.missing(h, worker).await?;
+        self.orphan(h, worker).await?;
+        self.settle(h, worker).await?;
         // Run the observed empty page through exactly the same production apply path.
         let mut tx = command::seed_transaction(&h.c).await?;
         sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {}.device_recovery SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2", self.owner.schema())))
             .bind(&tenant).bind(self.device.into_uuid()).bind(self.ids[1].to_string()).execute(&mut *tx).await?;
         tx.commit().await?;
         assert_eq!(self.apply(h, worker).await?, None);
-        assert_eq!(cursor().await?, None);
+        assert_eq!(self.cursor(h).await?, None);
         Ok(())
     }
 }

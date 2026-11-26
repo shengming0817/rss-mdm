@@ -22,9 +22,10 @@ async fn interrupt(h: &Harness, device: DeviceId, commit_competitor: bool) -> Re
         }
         if commit_competitor {
             competing.commit().await?;
+            // This worker reports a fenced storage transaction as retryable.
             assert_eq!(
                 apply.await.unwrap_err().kind(),
-                rss_reconcile::ErrorKind::Fenced
+                rss_reconcile::ErrorKind::Transient
             );
         } else {
             token.cancel();

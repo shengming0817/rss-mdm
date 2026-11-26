@@ -53,7 +53,8 @@ async fn on_claim<T>(
         .catch_unwind()
         .await;
     let cleanup = CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cleanup);
+    let cleanup_timer = Timer::new();
+    let control = rss_reconcile::Control::new(&cleanup_timer, Duration::from_secs(10), &cleanup);
     cleaned(
         result,
         h.a.resources
