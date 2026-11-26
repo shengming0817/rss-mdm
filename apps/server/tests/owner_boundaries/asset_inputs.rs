@@ -35,7 +35,7 @@ async fn consumer(c: &Context) -> Result<Arc<PgRuntime>> {
     ))
 }
 async fn message(c: &Context) -> Result<(MessageEnvelope<Vec<u8>>, Vec<u8>)> {
-    let (wire, fingerprint): (serde_json::Value,Vec<u8>) = sqlx::query_as("SELECT envelope,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-assets' AND envelope->>'route'='asset.changed' ORDER BY seq LIMIT 1")
+    let (wire, payload, fingerprint): (serde_json::Value,Vec<u8>,Vec<u8>) = sqlx::query_as("SELECT envelope,payload,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-assets' AND envelope->>'route'='asset.changed' ORDER BY seq LIMIT 1")
         .bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     let envelope = MessageEnvelope::new(
         MessageId::parse(wire["id"].as_str().context("message ID")?)?,
@@ -55,7 +55,7 @@ async fn message(c: &Context) -> Result<(MessageEnvelope<Vec<u8>>, Vec<u8>)> {
             ),
             MessageMetadataExtensions::new(None, None, None, BTreeMap::new()),
         ),
-        serde_json::from_value(wire["payload"].clone())?,
+        payload,
     );
     Ok((envelope, fingerprint))
 }
@@ -1770,7 +1770,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert!(published);
-    let (wire,fingerprint):(serde_json::Value,Vec<u8>)=sqlx::query_as("SELECT envelope,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-assets' AND envelope->>'route'='object.published' ORDER BY seq LIMIT 1").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    let (wire,payload,fingerprint):(serde_json::Value,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT envelope,payload,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-assets' AND envelope->>'route'='object.published' ORDER BY seq LIMIT 1").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     let event = MessageEnvelope::new(
         MessageId::parse(wire["id"].as_str().unwrap())?,
         MessageMetadata::new(
@@ -1787,7 +1787,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
             ),
             MessageMetadataExtensions::new(None, None, None, BTreeMap::new()),
         ),
-        serde_json::from_value::<Vec<u8>>(wire["payload"].clone())?,
+        payload,
     );
     assert_eq!(
         Sha256::digest(event.canonical_bytes()).as_slice(),
@@ -2125,15 +2125,20 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     })
     .await
     .context("three real asset effects waiting on Scope targets")??;
-    // Same projection and pool used by RSS renewal. With three connections
-    // this read cannot complete until an effect releases its lock.
-    tokio::time::timeout(Duration::from_secs(1), assets.next_delay(c.execution()))
-        .await
-        .context("fourth physical connection available while all three effects are held")??;
+    // Three ordinary effects are pinned. The fourth connection is reserved for lease renewal.
+    let wakeup = assets.next_delay(c.execution());
+    tokio::pin!(wakeup);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut wakeup)
+            .await
+            .is_err()
+    );
     assert_eq!(blocked().await?, (3, 3));
-    drop(assets);
     inputs.rollback().await?;
     barrier.close().await;
+    tokio::time::timeout(Duration::from_secs(4), &mut wakeup)
+        .await
+        .context("ordinary wakeup resumes when an effect releases its connection")??;
     let status = |id: String| {
         sqlx::query_scalar::<_, String>("SELECT status FROM rss_transactional_messaging.outbox WHERE domain='mdm-group' AND message_id=$1")
             .bind(id).fetch_one(&c.operator)

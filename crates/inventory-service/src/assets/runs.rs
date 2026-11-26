@@ -129,10 +129,7 @@ impl AssetService {
                 )
                 .await?
         } else {
-            crate::inventory_runtime::DeliveryStatus {
-                receipt: None,
-                projection: crate::inventory_runtime::ProjectionStatus::NotApplicable,
-            }
+            crate::inventory_runtime::DeliveryStatus::NO_BATCH
         };
         Ok(RunView {
             epoch: stored(Uuid::parse_str(coordinate.epoch().as_str()))?,

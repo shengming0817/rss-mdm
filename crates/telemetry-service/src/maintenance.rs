@@ -850,11 +850,11 @@ async fn step_on(
         },
     };
     proof.check_live().map_err(|_| Error::Denied)?;
-    if matches!(&result, Progress::Complete { .. })
+    if let Progress::Complete { processed, .. } = &result
         && let Action::Reclaim { target } = &input.action
     {
         sqlx::query("UPDATE mdm_telemetry.retention_targets SET phase=2,result=$3 WHERE tenant_id=$1::uuid AND stream=$2")
-                .bind(proof.binding().tenant().to_string()).bind(serde_json::to_value(target.stream(proof.binding().tenant(), &input.device)?)?).bind(sqlx::types::Json(&result)).execute(&mut *c).await?;
+                .bind(proof.binding().tenant().to_string()).bind(serde_json::to_value(target.stream(proof.binding().tenant(), &input.device)?)?).bind(sqlx::types::Json(crate::query::RetentionProgress::Complete { processed: *processed })).execute(&mut *c).await?;
     }
     sqlx::query(
         "UPDATE mdm_telemetry.maintenance SET result=$3 WHERE tenant_id=$1::uuid AND id=$2",

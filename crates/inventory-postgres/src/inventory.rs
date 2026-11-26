@@ -187,6 +187,7 @@ fn source_error(error: rss_projection::Error, event_position: Position) -> PgOpe
         .unwrap_or(event_position);
     let sqlstate = diagnostic.and_then(|d| d.sqlstate()).map(str::to_owned);
     match error.kind() {
+        ErrorKind::HistoryExpired => PgOperationError::history_expired(Some(position), error),
         ErrorKind::Unavailable
         | ErrorKind::Deadline
         | ErrorKind::Cancelled
@@ -245,6 +246,10 @@ mod tests {
             assert_eq!(diagnostic.position(), Some(position));
             assert!(!format!("{result:?}").contains("synthetic-secret"));
         }
+        let expired = Error::from(source_error(ErrorKind::HistoryExpired.into(), position));
+        assert_eq!(expired.kind(), ErrorKind::HistoryExpired);
+        assert_eq!(expired.diagnostic().unwrap().phase(), Phase::Restore);
+        assert_eq!(expired.diagnostic().unwrap().position(), Some(position));
         let result = Error::from(source_error(ErrorKind::Conflict.into(), position));
         assert_eq!(result.diagnostic().unwrap().position(), Some(position));
     }

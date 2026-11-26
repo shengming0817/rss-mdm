@@ -14,6 +14,7 @@ impl Authority for ReportAuthority {
             Access::Submit { scope, coverage } => {
                 scope == &self.scope && coverage == &self.coverage
             }
+            Access::Maintain { .. } => false,
             Access::ReadJournal { tenant } => tenant == self.scope.tenant(),
         };
         if allowed {

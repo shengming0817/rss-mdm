@@ -116,6 +116,59 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
     h.close().await
 }
 
+#[tokio::test]
+#[ignore = "T2: the installed command runtime supersedes multiple pages in the product transaction"]
+async fn command_generation_and_product_observation_settle_together() -> Result<()> {
+    use rss_device_command::{BatchLimit, Coordinate, Scope, Store};
+    use rss_transactional_messaging::policy::OperationDeadline;
+    let mut h = Harness::open().await?;
+    let native = super::retirement::native_controls(&mut h, 3).await?;
+    let tenant = h.c.tenant;
+    let command_device: Uuid = sqlx::query_scalar(
+        "SELECT command_device FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2"
+    ).bind(tenant.to_string()).bind(native.device.into_uuid()).fetch_one(&h.c.operator).await?;
+    let scope = Scope::new(
+        tenant,
+        rss_device_command::DeviceId::parse(&command_device.to_string())?,
+    );
+    let state = || {
+        sqlx::query_as::<_, (i64,i64,i64)>(
+        "SELECT a.generation, (SELECT count(*) FROM rss_device_command.commands c WHERE c.tenant_id=a.tenant_id AND c.device_id=a.device_id AND c.status='superseded'),
+        (SELECT observed_command_version FROM mdm_devices.control_operations WHERE tenant_id=a.tenant_id AND id=$3)
+        FROM rss_device_command.authorities a WHERE tenant_id=$1::uuid AND device_id=$2"
+    ).bind(tenant.to_string()).bind(command_device).bind(Uuid::from_u128(1)).fetch_one(&h.c.operator)
+    };
+    let before = state().await?;
+    assert_eq!((before.0, before.1), (1, 0));
+    for commit in [false, true] {
+        let caller = h.a.resources.storage.runtime.clone();
+        let (applied, observed) = tokio::sync::oneshot::channel();
+        let page = BatchLimit::new(1)?;
+        let old = Coordinate::new(1, 1)?;
+        let next = Coordinate::new(2, 2)?;
+        let outcome = caller.clone().local_tx(h.c.execution(), OperationDeadline::from_remaining(Duration::from_secs(10)), move |tx| Box::pin(async move {
+            let (_,store) = crate::assembly::host_storage::bind_command_in(caller, tx,
+                rss_device_command_postgres::CommandClock::Postgres, page, rss_mdm_device_service::control::messaging_domain()).await?;
+            store.advance(tx, scope, old, next).await?;
+            let rows = tx.with_connection(move |c| Box::pin(async move {
+                Ok(sqlx::query("UPDATE mdm_devices.control_operations SET observed_command_version=observed_command_version+1 WHERE tenant_id=$1::uuid AND id=$2")
+                    .bind(tenant.to_string()).bind(Uuid::from_u128(1)).execute(c).await?.rows_affected())
+            })).await?;
+            let _ = applied.send(rows);
+            if !commit { return Err(sqlx::Error::Protocol("interrupt after generation and product write".into()).into()); }
+            Ok(())
+        })).await;
+        assert_eq!(observed.await?, 1);
+        let committed = outcome.fold(|()| Ok(true), Err, |_| Ok(false), Err, Err, Err)?;
+        assert_eq!(committed, commit);
+        assert_eq!(
+            state().await?,
+            if commit { (2, 3, before.2 + 1) } else { before }
+        );
+    }
+    h.close().await
+}
+
 async fn native_cursor(
     h: &Harness,
     table: &str,

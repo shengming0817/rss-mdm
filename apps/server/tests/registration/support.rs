@@ -1,4 +1,5 @@
 //! Minimal pre-existing published installer and issued Bootstrap; actual admission stays in production.
+pub(crate) use super::connections::PRIMARY as AGENT_ORIGIN;
 use super::*;
 use identity::Native;
 use rss_mdm_native_protection::{ProtectionContext, Protector};

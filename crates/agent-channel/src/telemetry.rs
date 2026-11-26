@@ -8,7 +8,7 @@ fn failure(error: rss_mdm_telemetry_service::Error) -> AgentError {
         T::Unsupported => Error::Unsupported,
         T::NotFound => Error::NotFound,
         T::Invalid => Error::Malformed,
-        T::Conflict => Error::Conflict,
+        T::Conflict | T::HistoryUnavailable | T::SnapshotInvalidated => Error::Conflict,
         T::Denied => Error::Forbidden,
         T::Unknown => Error::CommitUnknown,
         T::Deadline => Error::Unavailable(Failure::RequestDeadline),

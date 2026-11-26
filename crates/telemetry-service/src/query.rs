@@ -376,13 +376,19 @@ async fn read_on(
     .await
     .map_err(|_| Error::Storage)?;
     let authorized = Authorized::<Query>::verify(&ReadAuthority(&query), query.clone())?;
-    let mut page = backend.query(&authorized, cursor.as_ref(), cutoff).await?;
+    let mut page = backend
+        .query(&authorized, cursor.as_ref(), cutoff)
+        .await
+        .map_err(Error::from_query)?;
     let mut candidates = std::mem::take(&mut page.rows);
     if input.mode == QueryMode::Latest {
         // Never resolve source priority from an incomplete page. A bounded exact resource read
         // either sees all candidates or fails explicitly; history retains provider pagination.
         while let Some(next) = page.next.take() {
-            let part = backend.query(&authorized, Some(&next), cutoff).await?;
+            let part = backend
+                .query(&authorized, Some(&next), cutoff)
+                .await
+                .map_err(Error::from_query)?;
             if candidates.len().saturating_add(part.rows.len())
                 > backend.budget.series.get() as usize
             {
@@ -568,7 +574,8 @@ async fn aggregate_on(
         Authorized::<AggregateQuery>::verify(&AggregateAuthority(&query), query.clone())?;
     let page = backend
         .aggregate(&authorized, cursor.as_ref(), cutoff)
-        .await?;
+        .await
+        .map_err(Error::from_query)?;
     let unavailable = page
         .availability
         .excluded
@@ -791,7 +798,31 @@ pub struct Retention {
     pub due_at: i64,
     #[schemars(extend("enum"=[0,1,2]))]
     pub phase: i16,
-    pub progress: Option<crate::maintenance::Progress>,
+    pub progress: Option<RetentionProgress>,
+}
+/// Progress retained by the automatic retention worker for this target.
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RetentionProgress {
+    Unknown,
+    Blocked { reason: RetentionBlock },
+    More { processed: u32 },
+    Complete { processed: u32 },
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum RetentionBlock {
+    Provider(
+        #[schemars(schema_with = "crate::contract_schema::maintenance_block")]
+        rss_timeseries::MaintenanceBlock,
+    ),
+    Product(RetentionLimit),
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionLimit {
+    AcceptedBatchesPending,
+    BudgetExceeded,
 }
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

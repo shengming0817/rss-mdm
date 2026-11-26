@@ -192,6 +192,51 @@ def ingress_capacity(browser, principal, deployed):
     wait(published, 'complete field vocabulary readback')
     return memory
 
+def report_history(deployed, browser, binding, call):
+    report_id = str(uuid.uuid4())
+    path = '/api/v1/agent/runtime/reports'
+    item = path + '/' + report_id
+    require(call('GET', item) == (404, {'code': 'report_not_found'}), 'unknown report identity')
+    field = 'channel.mdm.enrollment'
+    collection = next(c for c in binding['collections'] if any(f['key'] == field for f in c['fields']))
+    request = dict(wireVersion=1, reportId=report_id, sequence=1, observedAt=int(time.time()),
+                   collection=collection, body=dict(kind='snapshot', values=[
+                       dict(field=field, value=dict(kind='value', value=dict(kind='string', value='unenrolled')))]))
+    status, ack = call('POST', path, request)
+    require(status == 202 and ack['reportId'] == report_id, 'durable report intake')
+    expected = dict(ack=ack, observation='snapshot', projection='applied')
+    wait(lambda: call('GET', item) == (200, expected), 'confirmed report and projection')
+    run_path = f"/api/v1/tenants/{deployed.tenant}/devices/{binding['deviceId']}/collections/{report_id}"
+    def run():
+        status, body = browser.call('GET', run_path)
+        require(status == 200, 'authorized collection run')
+        return body['asset']['run']
+    require(run()['delivery']['receipt']['status'] == 'found', 'management receipt')
+    # Seed released content and an unacknowledged product delivery in this disposable database.
+    # The immutable RSS identity and independent projection receipt stay intact.
+    result = deployed.sql(f"""BEGIN;
+        SELECT set_config('rss.tenant_id','{deployed.tenant}',true),
+               set_config('rss.execution_epoch',expected_epoch::text,true)
+        FROM mdm_access.collection_runs WHERE tenant_id='{deployed.tenant}' AND id='{report_id}';
+        WITH released AS (
+            UPDATE rss_observation.batches SET raw=NULL,policy=NULL,decision=NULL
+            WHERE tenant_id='{deployed.tenant}' AND batch_id='{report_id}' AND raw IS NOT NULL RETURNING 1
+        ), pending AS (
+            UPDATE mdm_access.collection_runs SET delivery_pending=true
+            WHERE tenant_id='{deployed.tenant}' AND id='{report_id}' AND NOT delivery_pending RETURNING 1
+        ) SELECT (SELECT count(*) FROM released),(SELECT count(*) FROM pending);
+        COMMIT;""")
+    require('1|1' in result.splitlines(), 'seeded exactly one released report and one pending acknowledgement')
+    expected['observation'] = 'expired'
+    require(call('GET', item) == (200, expected), 'expired receipt preserves intake and projection')
+    def expired():
+        value = run()
+        return (value['delivery'] == dict(receipt={'status':'expired'}, projection='projected')
+                and value['deliveryPending'] is False)
+    wait(expired, 'same fingerprint settles expired pending delivery')
+    return ['report_not_found', 'report_projection_confirmed', 'expired_report_preserves_ack',
+            'expired_report_pending_delivery_settled']
+
 def native_pki_journey(deployed,browser):
     root=deployed.root;fixture=root/'pki/agent'
     csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
@@ -248,7 +293,7 @@ def native_pki_journey(deployed,browser):
         status,active=call(client,'POST','/api/v1/agent/enroll/activate',activation)
         require(status==200,'candidate actual mTLS activation failed')
         require(call(client,'POST','/api/v1/agent/enroll/activate',activation)==(status,active),'candidate activation replay changed registration')
-        require(call(client,'GET',path)[0]==404,'candidate active identity did not reach business lookup')
+        report_checks = report_history(deployed, browser, active['runtime'], lambda *args: call(client, *args))
     finally:client.close()
     deployed.restore_pki_bundle()
     client=connection()
@@ -267,7 +312,7 @@ def native_pki_journey(deployed,browser):
             require(response[0]==401,'published revoked certificate acquired a new identity')
         except (ssl.SSLError,ConnectionResetError):pass
     finally:client.close()
-    return ['native_public_packages','native_public_trust','real_ca_signing','original_signing_replay','candidate_identity_denial','actual_mtls_activation',
+    return report_checks + ['native_public_packages','native_public_trust','real_ca_signing','original_signing_replay','candidate_identity_denial','actual_mtls_activation',
             'activation_replay','joint_ca_mdm_audit_restore','same_registration_after_restore','retained_tls_revocation','signed_crl_serial_publication','new_tls_revocation']
 
 def run_smoke(directory):
@@ -336,7 +381,7 @@ def run_smoke(directory):
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
         result=dict(ingressMemory=memory,source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
-                    checks=pki_checks+["concurrent_snapshot_byte_reservation","five_shared_request_slots","cancel_releases_request_slot","large_profile_write_read_replay","large_field_publication","management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
+                    checks=pki_checks+["concurrent_snapshot_byte_reservation","five_shared_request_slots","cancel_releases_request_slot","large_profile_write_read_replay","large_field_publication","management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","interrupted_migration_resumed","committed_migration_receipts_preserved","installed_component_revisions","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
         if deployed.web is not None:
             result["ui"] = deployed.web

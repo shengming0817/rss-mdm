@@ -113,6 +113,8 @@ pub fn error(e: rss_mdm_telemetry_service::Error) -> Error {
         T::Invalid => Error::Malformed,
         T::Denied => Error::Forbidden,
         T::Conflict => Error::Conflict,
+        T::SnapshotInvalidated => Error::QueryCursorInvalidated,
+        T::HistoryUnavailable => Error::QueryResultUnavailable,
         T::Unknown => Error::CommitUnknown,
         T::Deadline => Error::RequestDeadline,
         T::Capacity => Error::CapacityExceeded,

@@ -1,3 +1,4 @@
+#![recursion_limit = "256"] // rustc computes the nested reconcile worker future layout in release builds.
 //! Product composition: Inventory owns facts, Group owns predicates and membership,
 //! Compliance owns assessments. Existing automation owns all task progress.
 mod discovery;

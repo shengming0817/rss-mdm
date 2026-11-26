@@ -510,7 +510,28 @@ class Candidate:
             self.sql("GRANT CREATE ON DATABASE mdm_test TO da_owner; GRANT CREATE ON SCHEMA public TO da_owner;")
             self.copy_runtime()
             self.runtime_volume=self.name+'_runtime';self.operator_volume=self.name+'_operator';self.gateway_inputs=self.name+'_gateway'
-            for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator('migrate','migrate.json',stage)
+            # Reserve only the next schema in the disposable database to interrupt the actual installer.
+            self.sql("CREATE SCHEMA rss_projection")
+            try:
+                self.operator('migrate', 'migrate.json', Stage.MIGRATION)
+            except DockerFailure as error:
+                if error.outcome != 'exit':
+                    raise
+            else:
+                raise RuntimeError('candidate installer accepted a conflicting projection schema')
+            prefix_sql = ("SELECT name,digest,xmin::text FROM public.mdm_migrations "
+                          "WHERE name IN ('audit-v1','audit-ledger-v1','observation-v1') AND complete ORDER BY name")
+            prefix = self.sql(prefix_sql)
+            require(len(prefix.splitlines()) == 3 and self.sql(
+                "SELECT count(*) FROM public.mdm_migrations WHERE name='projection-v1'") == '0',
+                'installation interrupted after its committed component prefix')
+            self.sql("DROP SCHEMA rss_projection")
+            self.operator('migrate', 'migrate.json', Stage.MIGRATION)
+            self.operator('migrate', 'migrate.json', Stage.REPLAY)
+            require(self.sql(prefix_sql) == prefix, 'reentry preserved original unit receipts')
+            require(self.sql("SELECT obj_description('rss_observation'::regnamespace, 'pg_namespace'), "
+                             "obj_description('rss_projection'::regnamespace, 'pg_namespace')") ==
+                    'rss-observation-postgres:4|rss-projection-postgres:4', 'installed component revisions')
             self.management_tenant=self.sql('SELECT management_tenant_id FROM public.mdm_installation')
             self.config['identity']['management_tenant']=self.management_tenant
             private(self.runtime/'config.json',self.config)

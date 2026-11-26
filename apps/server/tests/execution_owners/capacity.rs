@@ -12,7 +12,8 @@ use tower::ServiceExt;
 )]
 async fn complete_large_report_survives_authenticated_intake_replay_and_projection()
 -> anyhow::Result<()> {
-    let h = Harness::open().await?;
+    // This proof starts the whole host and observes installation-wide readiness.
+    let h = Harness::open_in("inventory_capacity").await?;
     let vocabulary = (0..1024)
         .map(|i| format!("state{i:04}{}", "s".repeat(128)))
         .collect::<std::collections::BTreeSet<_>>();
@@ -144,11 +145,13 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let clock = rt::Clock::new(crate::clock::monotonic(), runtime_policy.compile()?);
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_projection::Control::new(&clock, clock.startup_cutoff(), &cancel);
-    let observation =
-        rt::ObservationResource::open(h.c.inputs.options("shared", "mdm_runtime")?, clock.clone())
-            .await?;
+    let observation = rt::ObservationResource::open(
+        h.c.inputs.options(&h.c.profile, "mdm_runtime")?,
+        clock.clone(),
+    )
+    .await?;
     let projection = rt::ProjectionResource::open(
-        h.c.inputs.options("shared", "mdm_runtime")?,
+        h.c.inputs.options(&h.c.profile, "mdm_runtime")?,
         clock.clone(),
         &control,
     )
@@ -198,9 +201,9 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let (stream, _) = socket.accept().await?;
     let gateway =
         rss_mdm_certificate::GatewayConnection::from_stream(&stream, "127.0.0.1".parse()?)?;
-    let router = router.layer(axum::Extension(
-        gateway.request_origin("https://mdm.example.test".into()),
-    ));
+    let router = router.layer(axum::Extension(gateway.request_origin(
+        crate::assembly::registration_installation_t2::support::AGENT_ORIGIN.into(),
+    )));
     let evidence = report_certificate(&h.c, &h.p, &gateway).await?;
     let send_as =
         |bytes: Vec<u8>, evidence: Option<rss_mdm_certificate::ClientCertificateEvidence>| {
@@ -394,7 +397,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert!(page.next.is_none());
     tx.rollback().await?;
     // This tenant's management catalog contains only the built-in fields used by the client.
-    let module_context = Context::open("shared", &[]).await?;
+    let module_context = Context::open(&h.c.profile, &[]).await?;
     crate::assembly::registration_installation_t2::support::publish_agent_trust(
         &module_context,
         n.trust.clone(),
@@ -582,7 +585,9 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     module_context.close().await;
     // A still-valid certificate must not authenticate through either Agent entry after a tenant restore.
     assert!(enrollment.authenticate(&evidence).await.is_ok());
-    let origin = gateway.request_origin("https://mdm.example.test".into());
+    let origin = gateway.request_origin(
+        crate::assembly::registration_installation_t2::support::AGENT_ORIGIN.into(),
+    );
     let mut held = h.c.operator.begin().await?;
     let locker:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid FOR UPDATE")
         .bind(h.c.tenant.to_string()).fetch_one(&mut *held).await?;

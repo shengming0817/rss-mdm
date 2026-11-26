@@ -24,4 +24,6 @@ REVOKE ALL ON FUNCTION rss_device_command.save(t uuid, d uuid, c text, v bigint,
 
 GRANT ALL ON FUNCTION rss_device_command.save(t uuid, d uuid, c text, v bigint, s text, p bigint, r bigint, done bigint) TO mdm_command_runtime,mdm_policy_runtime;
 
+GRANT EXECUTE ON FUNCTION rss_device_command.save_page(uuid, uuid, text[], bigint[], text[], bigint[], bigint[], bigint[]) TO mdm_command_runtime,mdm_policy_runtime;
+
 GRANT SELECT ON TABLE rss_device_command.commands TO mdm_command_runtime,mdm_policy_runtime;

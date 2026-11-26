@@ -341,7 +341,7 @@ impl Upload {
     ) -> Result<()> {
         let mut query = self.history.clone();
         query["after"] = json!(other.cursor);
-        let (status, _) = browser
+        let (status, body) = browser
             .call(
                 Method::POST,
                 &format!(
@@ -353,8 +353,8 @@ impl Upload {
             )
             .await?;
         ensure!(
-            matches!(status, 400 | 403 | 409),
-            "foreign continuation {status}"
+            status == 400 && body["code"] == "malformed_request",
+            "foreign continuation {status} {body}"
         );
         Ok(())
     }
@@ -375,3 +375,6 @@ impl Upload {
         Ok(())
     }
 }
+
+#[path = "lifecycle_telemetry_snapshots.rs"]
+mod snapshots;

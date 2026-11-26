@@ -59,7 +59,7 @@ pub const MAX_REPORT_FIELDS: usize = 4096;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "de02a399d3a48936092f05fc8d4bbba08001ab63f3b2d074d70610eb12eddea0";
+    "f62c4f5587da65f81ca4d69193d9ed0f053eff6ddd9d8cc269444a66af2cc297";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,6 +553,8 @@ pub struct ReportAck {
 pub enum ObservationStatus {
     /// Awaiting the Observation worker.
     Pending,
+    /// The batch identity is retained but the original Observation receipt has expired.
+    Expired,
     /// A complete snapshot established the current baseline.
     Snapshot,
     /// A partial report requires another complete snapshot.
@@ -568,6 +570,8 @@ pub enum ObservationStatus {
 pub enum ProjectionStatus {
     /// Awaiting an applicable Observation decision or projection commit.
     Pending,
+    /// The receipt expired without an independently confirmed projection.
+    Unconfirmed,
     /// Applicable facts committed to the asset projection.
     Applied,
     /// The Observation decision deliberately carries no projectable facts.

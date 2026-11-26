@@ -22,6 +22,7 @@ async fn resources(
     );
     let password = root.join("metric-password");
     private(&password, Uuid::new_v4().simple().to_string())?;
+    let writer_password = root.join("clickhouse-writer-password");
     let key = root.join("metric-cursor");
     private(&key, [5u8; 32])?;
     let mut requests = Vec::new();
@@ -38,12 +39,13 @@ async fn resources(
         db.password_file = password.clone();
         let mut config = base.clone();
         config["connections"] = json!(1);
+        config["limits"]["max_points"] = json!(32);
         config["resource_id"] = json!(Uuid::new_v4());
         let mut ch = Value::Null;
         if kind == "click_house" {
             config.as_object_mut().unwrap().remove("cursor_key_file");
             config["backend"] = json!({"kind":kind,"control":db,"endpoint":providers["endpoint"],"ca_file":providers["ca"],
-                "writer":{"user":"metric_writer","password_file":password},"maintenance":{"user":"metric_maint","password_file":password},
+                "writer":{"user":"metric_writer","password_file":writer_password},"maintenance":{"user":"metric_maint","password_file":password},
                 "max_scan_rows":100000,"max_scan_bytes":16777216,"max_memory_bytes":67108864});
             ch = json!({"installer":{"user":"installer","password_file":area.join("installer-password")},"guard":{"user":"ch_guard","password_file":area.join("guard-password")},"backup_directory":area.join("backup"),"server_configuration_files":[area.join("config.d/telemetry.xml"),area.join("users.xml")]});
         } else {
@@ -52,12 +54,57 @@ async fn resources(
         }
         let request = json!({"operationId":Uuid::new_v4(),"directory":root.join(kind),"configuration":config,
             "administrator":administrator,"owner":format!("metrics_owner_{kind}"),"partitions":[],"clickhouse":ch});
-        telemetry::prepare(serde_json::from_value(request.clone())?)
-            .await
-            .with_context(|| format!("install {kind}"))?;
+        if kind == "click_house" {
+            check_clickhouse_installation(&request, &writer_password, &password).await?;
+        } else {
+            telemetry::prepare(serde_json::from_value(request.clone())?)
+                .await
+                .context("install shared Timescale")?;
+        }
         requests.push(request);
     }
     Ok(requests)
+}
+async fn check_clickhouse_installation(
+    request: &Value,
+    writer_password: &Path,
+    password: &Path,
+) -> Result<()> {
+    // The installer reads the writer secret during provisioning, after raw DDL commits.
+    let input = serde_json::from_value(request.clone())?;
+    ensure!(matches!(
+        telemetry::prepare(input).await,
+        Err(crate::installation::Error::Input)
+    ));
+    ensure!(recovery::admin_sql(request, "SELECT expr,type_full,granularity FROM system.data_skipping_indices WHERE database='rss_ts_ch' AND table='raw' AND name='raw_revision' FORMAT TabSeparated").await?.trim() == "revision\tbloom_filter(0.001)\t1");
+    private(writer_password, std::fs::read(password)?)?;
+
+    ensure!(
+        telemetry::prepare(serde_json::from_value(request.clone())?)
+            .await?
+            .admitted
+    );
+    recovery::admin_sql(request, "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision").await?;
+    recovery::admin_sql(
+        request,
+        "ALTER TABLE rss_ts_ch.raw ADD INDEX raw_revision revision TYPE minmax GRANULARITY 1",
+    )
+    .await?;
+    ensure!(
+        matches!(
+            telemetry::prepare(serde_json::from_value(request.clone())?).await,
+            Err(crate::installation::Error::Storage)
+        ),
+        "same-name incorrect index passed admission"
+    );
+    recovery::admin_sql(request, "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision").await?;
+    ensure!(
+        telemetry::prepare(serde_json::from_value(request.clone())?)
+            .await?
+            .admitted
+    );
+
+    Ok(())
 }
 async fn attach(
     source: &Value,
@@ -268,6 +315,7 @@ pub(super) async fn exercise(
     .await
     .context("B product intake")?;
     recovery::reader_isolation(root, &resources[0], a, b).await?;
+
     a_data
         .reject_foreign_cursor(&mut first_browser, &b_data)
         .await?;
@@ -295,6 +343,13 @@ pub(super) async fn exercise(
         .connect_with(primary.options()?)
         .await?;
     let service = running.telemetry.get().context("installed ingress")?;
+    let reader_password = crate::config::secret(&root.join("b-password"))?;
+    b_data
+        .exhaust_retention_fences(&resources[0], reader_password.as_str())
+        .await?;
+    b_data
+        .retention_health(&mut peer, &admin, "blocked", Some("budget_exceeded"))
+        .await?;
     let query = json!({"product":source,"tenant":b,"operationId":request["operationId"]});
     let mut unchanged = request.clone();
     unchanged["action"] = b_reader.clone();
@@ -466,6 +521,8 @@ pub(super) async fn exercise(
     );
     sqlx::raw_sql("DROP TRIGGER pause_cold_receipt ON mdm_telemetry.batches; DROP FUNCTION public.pause_cold_receipt()").execute(&admin).await?;
     admin.close().await;
+    // An external reader keeps its own credential. The restore uses only its archive.
+    let client_password = crate::config::secret(&root.join("a-password"))?;
     Box::pin(recovery::cold(
         root,
         source,
@@ -514,6 +571,24 @@ pub(super) async fn exercise(
     b_data
         .replay(restarted.telemetry.get().unwrap(), &mut peer)
         .await?;
+    shared_data.aggregate_pages(&mut shared).await?;
+    let retention_admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(primary.options()?)
+        .await?;
+    shared_data
+        .retention_health(&mut shared, &retention_admin, "complete", None)
+        .await?;
+    retention_admin.close().await;
+    // The backend client has its own task, as it would outside the running host.
+    let clickhouse = resources[0].clone();
+    let mut first_browser = tokio::spawn(async move {
+        a_data
+            .verify_snapshot(&mut first_browser, client_password.as_str(), &clickhouse)
+            .await?;
+        Ok::<_, anyhow::Error>(first_browser)
+    })
+    .await??;
     recovery::interrupt_retirement(&resources[0], b).await?;
     attach(source, &resources[0], b, 2, json!({"kind":"retire"})).await?;
     available(&mut peer, b, false).await?;

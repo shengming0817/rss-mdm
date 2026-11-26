@@ -531,6 +531,14 @@ fn query_recovery_errors_remain_client_actionable() {
     use crate::Error;
     use rss_timeseries::Error as Backend;
     assert!(matches!(
+        Error::from_query(Backend::HistoryExpired),
+        Error::HistoryUnavailable
+    ));
+    assert!(matches!(
+        Error::from_query(Backend::SnapshotInvalidated),
+        Error::SnapshotInvalidated
+    ));
+    assert!(matches!(
         Error::from(Backend::InvalidCursor),
         Error::Invalid
     ));

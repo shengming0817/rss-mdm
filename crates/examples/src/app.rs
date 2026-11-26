@@ -244,7 +244,7 @@ impl App {
     pub async fn inspect(&self, id: &Id) -> Result<serde_json::Value> {
         let scope = self.authority.scope();
         self.authority.authorize(Access::Read { scope })?;
-        let receipt = self
+        let lookup = self
             .observation
             .lookup(
                 &ReadGrant::verify(&self.authority, scope.clone())?,
@@ -253,14 +253,25 @@ impl App {
             )
             .await?;
         // RSS PgSource v1 event identity is the exact record fingerprint in lowercase hex.
-        let event_id = receipt
-            .as_ref()
-            .map(|r| {
-                r.batch()
-                    .fingerprint(r.scope())
-                    .map(|fp| fp.iter().map(|b| format!("{b:02x}")).collect::<String>())
-            })
-            .transpose()?;
+        let (receipt, event_id) = match &lookup {
+            rss_observation::LookupOutcome::Found(record) => {
+                let fingerprint = record.batch().fingerprint(record.scope())?;
+                let id = fingerprint
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                (
+                    serde_json::json!({"status":"found","batchId":record.batch().id().as_str(),"receivedAt":record.received_at(),"decision":record.decision()}),
+                    Some(id),
+                )
+            }
+            rss_observation::LookupOutcome::Expired => {
+                (serde_json::json!({"status":"expired"}), None)
+            }
+            rss_observation::LookupOutcome::NotFound => {
+                (serde_json::json!({"status":"not_found"}), None)
+            }
+        };
         let projection = self.projection_scope();
         let source = projection.source().clone();
         let tenant = source.tenant();
@@ -285,7 +296,8 @@ impl App {
             .and_then(|status| status.checkpoint())
             .and_then(|checkpoint| checkpoint.position)
             .map(|p| p.get());
-        let projected = status.is_some_and(|status| status.is_settled());
+        let projection =
+            BatchProjection::from_evidence(&lookup, status.is_some_and(|s| s.is_settled()));
         let selected = scope.clone();
         let assets = self
             .projection
@@ -313,7 +325,7 @@ impl App {
             })
             .await?;
         Ok(
-            serde_json::json!({"receipt":receipt.map(|r|serde_json::json!({"batchId":r.batch().id().as_str(),"receivedAt":r.received_at(),"decision":r.decision()})),"projection":if projected { BatchProjection::Projected } else { BatchProjection::NotProjected },"checkpoint":position,"assets":assets}),
+            serde_json::json!({"receipt":receipt,"projection":projection,"checkpoint":position,"assets":assets}),
         )
     }
     /// Call only after every operation/worker has been joined or dropped.
@@ -349,5 +361,34 @@ impl App {
 #[serde(rename_all = "snake_case")]
 enum BatchProjection {
     Projected,
+    Unconfirmed,
     NotProjected,
+}
+
+impl BatchProjection {
+    fn from_evidence(receipt: &rss_observation::LookupOutcome, settled: bool) -> Self {
+        match (receipt, settled) {
+            (_, true) => Self::Projected,
+            (rss_observation::LookupOutcome::Expired, false) => Self::Unconfirmed,
+            _ => Self::NotProjected,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BatchProjection;
+    use rss_observation::LookupOutcome::{Expired, NotFound};
+
+    #[test]
+    fn inspect_distinguishes_missing_evidence_from_a_negative_result() {
+        for (lookup, settled, expected) in [
+            (Expired, false, "unconfirmed"),
+            (Expired, true, "projected"),
+            (NotFound, false, "not_projected"),
+        ] {
+            let result = BatchProjection::from_evidence(&lookup, settled);
+            assert_eq!(serde_json::to_value(result).unwrap(), expected);
+        }
+    }
 }

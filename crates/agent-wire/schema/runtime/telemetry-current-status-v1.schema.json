@@ -9,6 +9,11 @@
           "type": "string"
         },
         {
+          "const": "expired",
+          "description": "The batch identity is retained but the original Observation receipt has expired.",
+          "type": "string"
+        },
+        {
           "const": "snapshot",
           "description": "A complete snapshot established the current baseline.",
           "type": "string"
@@ -36,6 +41,11 @@
         {
           "const": "pending",
           "description": "Awaiting an applicable Observation decision or projection commit.",
+          "type": "string"
+        },
+        {
+          "const": "unconfirmed",
+          "description": "The receipt expired without an independently confirmed projection.",
           "type": "string"
         },
         {

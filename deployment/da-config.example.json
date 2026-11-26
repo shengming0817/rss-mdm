@@ -75,7 +75,7 @@
     },
     "trust_file": "/srv/rss-da/runtime/device-trust.json",
     "providers": [],
-    "certificate_days": 30,
+    "certificate_days": 365,
     "configuration_revision": null,
     "configuration_lifetime": 86400
   },

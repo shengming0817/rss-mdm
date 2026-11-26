@@ -128,6 +128,7 @@ pub(crate) enum ProblemKind {
     ScopeMismatch,
     OutOfOrder,
     SourceContract,
+    HistoryExpired,
     Fenced,
     Unavailable,
     Rejected,
@@ -139,6 +140,7 @@ pub(crate) enum ProblemKind {
 }
 fn observation_kind(kind: rss_observation::ErrorKind) -> ProblemKind {
     match kind {
+        rss_observation::ErrorKind::HistoryExpired => ProblemKind::HistoryExpired,
         rss_observation::ErrorKind::InvalidInput => ProblemKind::InvalidInput,
         rss_observation::ErrorKind::Unauthorized => ProblemKind::Unauthorized,
         rss_observation::ErrorKind::Conflict => ProblemKind::Conflict,
@@ -155,6 +157,7 @@ fn observation_kind(kind: rss_observation::ErrorKind) -> ProblemKind {
 }
 fn projection_kind(kind: rss_projection::ErrorKind) -> ProblemKind {
     match kind {
+        rss_projection::ErrorKind::HistoryExpired => ProblemKind::HistoryExpired,
         rss_projection::ErrorKind::InvalidInput => ProblemKind::InvalidInput,
         rss_projection::ErrorKind::ScopeMismatch => ProblemKind::ScopeMismatch,
         rss_projection::ErrorKind::OutOfOrder => ProblemKind::OutOfOrder,

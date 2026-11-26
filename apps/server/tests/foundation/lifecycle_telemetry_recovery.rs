@@ -18,7 +18,7 @@ fn clickhouse_client(ch: &Value) -> Result<(reqwest::Client, &str)> {
         .build()?;
     Ok((client, endpoint))
 }
-fn reader(ch: &Value, tenant: Uuid) -> Result<String> {
+pub(super) fn reader(ch: &Value, tenant: Uuid) -> Result<String> {
     let physical = Uuid::parse_str(
         ch["configuration"]["resource_id"]
             .as_str()
@@ -71,21 +71,22 @@ pub(super) async fn interrupt_retirement(ch: &Value, tenant: Uuid) -> Result<()>
         .error_for_status()?;
     Ok(())
 }
-async fn admin_sql(ch: &Value, sql: &str) -> Result<()> {
+pub(super) async fn admin_sql(ch: &Value, sql: &str) -> Result<String> {
     let (client, url) = clickhouse_client(ch)?;
     let secret = crate::config::secret(Path::new(
         ch["clickhouse"]["installer"]["password_file"]
             .as_str()
             .context("installer")?,
     ))?;
-    client
+    Ok(client
         .post(url)
         .basic_auth("installer", Some(secret.as_str()))
         .body(sql.to_owned())
         .send()
         .await?
-        .error_for_status()?;
-    Ok(())
+        .error_for_status()?
+        .text()
+        .await?)
 }
 pub(super) async fn unrelated_rotation(
     root: &Path,

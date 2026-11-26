@@ -23,6 +23,7 @@ impl Authority for FixtureAuthority {
                     && scope.dataset().as_str() == DATASET
             }
             // This local operator owns journal processing for the configured tenant.
+            Access::Maintain { .. } => false,
             Access::ReadJournal { tenant } => tenant == self.scope.tenant(),
         };
         if allowed {
