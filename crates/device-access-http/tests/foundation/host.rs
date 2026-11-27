@@ -140,7 +140,7 @@ pub async fn verify(
         "Inventory admission accepted a worker unable to acknowledge reports"
     );
     drop((browser, protocol));
-    let oidc = super::device_oidc::Keycloak::start(&m.directory, &origin).await?;
+    let oidc = super::device_oidc::Keycloak::start(&c.inputs.directory, &origin).await?;
     let (end, end_requested) = tokio::sync::oneshot::channel();
     let federated_host = tokio::spawn(rss_da_app::host::serve(
         serde_json::from_value(value.clone())?,

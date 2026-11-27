@@ -127,7 +127,9 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
                 &format!("{base}/api/v1/identity/tenants/{}", c.tenant),
             )
             .await?;
-            let account = c.account(&[]).await?;
+            let account = c
+                .account(&[rss_mdm_authorization_service::Permission::OperationRead])
+                .await?;
             identity_http::session_lifecycle(
                 &client,
                 &format!("{base}/api/v1/identity/tenants/{}", c.tenant),

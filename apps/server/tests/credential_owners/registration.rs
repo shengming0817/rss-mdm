@@ -257,15 +257,51 @@ async fn embedded_status(
         assert_eq!(status["device"], serde_json::json!(da.device));
         assert_eq!(status["login"], "unknown");
         assert_eq!(status["deployment"], "unobserved");
-        Box::pin(embedded_step_up(c, &client, &base, &admin, da, &oidc))
-            .await
-            .context("embedded OIDC employee operation")?;
+        let employee_device =
+            register_employee_device(c, &client, &base, &origin, &provider, &admin).await?;
+        Box::pin(embedded_step_up(
+            c,
+            &client,
+            &base,
+            &admin,
+            &employee_device,
+            &oidc,
+        ))
+        .await
+        .context("embedded OIDC employee operation")?;
         Box::pin(lifecycle_http(
             c, &client, &base, &origin, &provider, &admin, agent,
         ))
         .await
     })
     .await
+}
+
+async fn register_employee_device(
+    c: &Context,
+    client: &reqwest::Client,
+    base: &str,
+    origin: &str,
+    fixture: &provider::Provider,
+    admin: &crate::authority_t2_support::Account,
+) -> Result<rss_mdm_registration_service::device::endpoints::DaRegistration> {
+    let session = admin.cookie_session()?;
+    let grant = client
+        .post(format!("{base}/api/v1/tenants/{}/da/grants", c.tenant))
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1")
+        .header("x-csrf-token", session.csrf())
+        .header(
+            "cookie",
+            format!("__Host-identity-session={}", session.expose()),
+        );
+    let (_, registered) =
+        activate_from_grant(fixture, &format!("{origin}/api/v1/da"), grant, 3).await?;
+    Ok(
+        rss_mdm_registration_service::device::endpoints::DaRegistration {
+            device: registered.device,
+        },
+    )
 }
 
 async fn employee_device(
