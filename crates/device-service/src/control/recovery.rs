@@ -281,7 +281,7 @@ impl Service {
         audit.identify_service("command-dispatch");
         let result=crate::control::Transaction::run(&self.transactions.audit_store,&self.transactions.runtime,execution,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
-            crate::control::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
+            service.transactions.audit_store.prepare_in(tx,audit,&[]).await?;
             let operation_id=*id;
             let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
@@ -434,13 +434,11 @@ pub(crate) async fn prepare(
         }
     };
 
-    crate::control::transaction::prepare_audit_in(
-        &service.transactions.audit_store,
-        tx,
-        audit,
-        &partitions,
-    )
-    .await?;
+    service
+        .transactions
+        .audit_store
+        .prepare_in(tx, audit, &partitions)
+        .await?;
     Ok(Some(prepared))
 }
 pub(crate) async fn apply_prepared(

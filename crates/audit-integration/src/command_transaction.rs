@@ -1,6 +1,7 @@
 //! Settle a product command on the original fenced RSS transaction.
 //! ref: rss transactional-messaging-postgres/src/transaction.rs@9843ec49
 use crate::RequestAudit;
+use futures::future::BoxFuture;
 use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::{marker::PhantomData, sync::Mutex, time::Duration};
@@ -88,12 +89,8 @@ impl<F: CommandFault> Transaction<F> {
         operation: Op,
     ) -> Result<R, F::Error>
     where
-        Op: for<'c> FnOnce(
-                &'c mut C,
-                &'c mut PgTransaction<'_>,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, F>> + Send + 'c>,
-            > + Send,
+        Op: for<'c> FnOnce(&'c mut C, &'c mut PgTransaction<'_>) -> BoxFuture<'c, Result<R, F>>
+            + Send,
     {
         let failure = Mutex::new(None);
         let attempt = runtime
@@ -130,12 +127,8 @@ impl<F: CommandFault> Transaction<F> {
         operation: Op,
     ) -> Result<R, F::Error>
     where
-        Op: for<'c> FnOnce(
-                &'c mut C,
-                &'c mut PgTransaction<'_>,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, F>> + Send + 'c>,
-            > + Send,
+        Op: for<'c> FnOnce(&'c mut C, &'c mut PgTransaction<'_>) -> BoxFuture<'c, Result<R, F>>
+            + Send,
     {
         Self::inspect_budget(runtime, binding, deadline(), context, operation).await
     }
@@ -148,12 +141,8 @@ impl<F: CommandFault> Transaction<F> {
         operation: Op,
     ) -> Result<R, F::Error>
     where
-        Op: for<'c> FnOnce(
-                &'c mut C,
-                &'c mut PgTransaction<'_>,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, F>> + Send + 'c>,
-            > + Send,
+        Op: for<'c> FnOnce(&'c mut C, &'c mut PgTransaction<'_>) -> BoxFuture<'c, Result<R, F>>
+            + Send,
     {
         let failure = Mutex::new(None);
         let attempt = runtime

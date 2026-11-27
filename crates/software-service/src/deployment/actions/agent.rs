@@ -90,13 +90,11 @@ impl SoftwareService {
             .collect::<Vec<_>>();
         let partitions = [];
 
-        crate::deployment::transaction::prepare_audit_in(
-            &service.transactions.audit_store,
-            tx,
-            audit,
-            &partitions,
-        )
-        .await?;
+        service
+            .transactions
+            .audit_store
+            .prepare_in(tx, audit, &partitions)
+            .await?;
         for (id, run_id) in versions {
             let policy =
                 db::load_policy_version(&service.transactions.policy_reader, tx, id).await?;
@@ -272,13 +270,10 @@ impl SoftwareService {
         {
             return Err(Error::Conflict.into());
         }
-        crate::deployment::transaction::prepare_audit_in(
-            &self.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await?;
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
         Ok(())
     }
     pub async fn agent_replay_event_in(
@@ -294,13 +289,10 @@ impl SoftwareService {
         run.source.audit(audit);
         audit.target(&id.to_string());
         let plan = db::load_source(&self.transactions, tx, run.source).await?;
-        crate::deployment::transaction::prepare_audit_in(
-            &self.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await?;
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
 
         if matches!(input.event(), wire::TaskEvent::Start) {
             let now = storage::now(tx).await?;
@@ -338,13 +330,11 @@ impl SoftwareService {
         let service = self;
         let mut run = db::load_run(tx, id).await?;
         belongs(&run, p)?;
-        crate::deployment::transaction::prepare_audit_in(
-            &service.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await?;
+        service
+            .transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
         run.source.audit(audit);
         audit.target(&id.to_string());
         let plan = db::load_source(&service.transactions, tx, run.source).await?;

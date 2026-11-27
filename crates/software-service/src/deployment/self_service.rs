@@ -303,13 +303,11 @@ impl SoftwareService {
         crate::deployment::actions::agent::principal(&service.transactions, tx, p).await?;
         let hash = fingerprint(input)?;
         let now = storage::now(tx).await?;
-        crate::deployment::transaction::prepare_audit_in(
-            &service.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await?;
+        service
+            .transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
         let policy = crate::deployment::sources::storage::read_in(
             &service.transactions.policy_reader,
             tx,

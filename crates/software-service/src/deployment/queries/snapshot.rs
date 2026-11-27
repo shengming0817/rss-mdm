@@ -47,7 +47,7 @@ impl Queries {
 
         let started = self.clock.now();
         let remaining = || {
-            crate::deployment::transaction::TRANSACTION_BUDGET
+            rss_mdm_audit_integration::command_transaction::TRANSACTION_BUDGET
                 .saturating_sub(self.clock.now().saturating_duration_since(started))
         };
         let deadline = || Error::Unavailable(Failure::RequestDeadline);

@@ -24,14 +24,11 @@ impl Service {
         })
         .await??;
         actions::run_recovery::lock_device(tx, p.device()).await?;
-        crate::control::transaction::prepare_audit_in(
-            &self.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await
-        .map_err(Into::into)
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await
+            .map_err(Into::into)
     }
     #[allow(
         clippy::too_many_arguments,

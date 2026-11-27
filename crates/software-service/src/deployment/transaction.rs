@@ -1,6 +1,6 @@
 //! Host transaction settlement for execution and action-plan requests.
 use crate::deployment::{Error, Failure};
-use rss_transactional_messaging_postgres::{PgError, PgTransaction};
+use rss_transactional_messaging_postgres::PgError;
 #[derive(Debug, thiserror::Error)]
 pub enum Fault {
     #[error(transparent)]
@@ -24,7 +24,7 @@ pub fn json(v: &impl serde::Serialize) -> Result<Value> {
     checked_input(serde_json::to_value(v))
 }
 use rss_mdm_audit_integration::command_transaction as shared;
-pub use rss_mdm_audit_integration::command_transaction::{TRANSACTION_BUDGET, deadline};
+pub use rss_mdm_audit_integration::command_transaction::deadline;
 pub type Transaction = shared::Transaction<Fault>;
 
 impl shared::CommandFault for Fault {
@@ -53,8 +53,6 @@ impl From<crate::deployment::authorization::error::AuthorizationError> for Fault
         Error::from(error).into()
     }
 }
-
-use rss_mdm_audit_integration::RequestAudit;
 
 impl From<rss_mdm_audit_integration::Error> for Fault {
     fn from(error: rss_mdm_audit_integration::Error) -> Self {
@@ -153,15 +151,6 @@ impl From<crate::deployment::scope::SourceError> for Error {
             Fault::Sql(_) | Fault::Storage(_) => Self::Unavailable(Failure::PlanningStorage),
         }
     }
-}
-
-pub(crate) async fn prepare_audit_in(
-    store: &rss_mdm_audit_integration::AuditStore,
-    tx: &mut PgTransaction<'_>,
-    audit: &RequestAudit,
-    business: &[rss_transactional_messaging::message::PartitionIdentity],
-) -> std::result::Result<(), rss_mdm_audit_integration::Error> {
-    store.prepare_in(tx, audit, business).await
 }
 
 /// One protected/source input batch, independent of the size of the filtered directory.

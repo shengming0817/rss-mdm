@@ -175,7 +175,7 @@ impl SoftwareService {
         audit.identify_service("command-dispatch");
         let result=crate::deployment::Transaction::run(&self.transactions.audit_store,&self.transactions.runtime,execution,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
-            crate::deployment::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
+            service.transactions.audit_store.prepare_in(tx,audit,&[]).await?;
             let run=super::storage::read_run(tx,*id).await?;
             let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction, &format!("action:{id}:dispatch"), 200, "success", None)?
                 .with_activity(&super::activity::run(&run,rss_mdm_audit_integration::activity::ActivityPhase::Dispatched))?;

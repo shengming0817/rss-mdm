@@ -55,13 +55,10 @@ impl Service {
         let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
         storage::lock_request(tx, input.operation_id).await?;
         actions::run_recovery::lock_device(tx, device).await?;
-        crate::control::transaction::prepare_audit_in(
-            &self.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await?;
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
         let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -151,7 +148,7 @@ impl Service {
             let permissions=if reauthorize {op.authority.required().to_vec()}else{vec![Permission::OperationCancel]};
             let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
             storage::lock_request(tx, change.request_id).await?;actions::run_recovery::lock_device(tx,device).await?;
-            crate::control::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
+            service.transactions.audit_store.prepare_in(tx,audit,&[]).await?;
             let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v1",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
             if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); return stored(serde_json::from_value(value));}
