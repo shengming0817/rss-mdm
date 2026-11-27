@@ -72,34 +72,12 @@ async fn confirm_and_cancel(
     account: &crate::authority_t2_support::Account,
     reader: &crate::authority_t2_support::Account,
 ) -> Result<()> {
-    use rss_mdm_device_service::control::device_control::{Action, Input};
     let id = Uuid::new_v4();
-    let mut input = Input {
-        operation_id: id,
-        deadline: time::OffsetDateTime::now_utc().unix_timestamp() + 300,
-        action: Action::Wipe { confirmed: false },
-    };
     let path = format!(
         "{base}/api/v1/tenants/{}/devices/{}/operations",
         c.tenant, device
     );
-    assert_eq!(
-        post(client, account, &path, serde_json::to_value(&input)?)
-            .await?
-            .0,
-        400
-    );
-    let count:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2)+(SELECT count(*) FROM mdm_devices.control_requests WHERE tenant_id=$1::uuid AND id=$2)+(SELECT count(*) FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2::text)").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
-    assert_eq!(count, 0);
-    input.action = Action::Wipe { confirmed: true };
-    let (status, receipt) = post(client, account, &path, serde_json::to_value(&input)?).await?;
-    assert_eq!(status, 202);
-    assert_eq!(receipt["operationId"], id.to_string());
-    assert_eq!(
-        post(client, account, &path, serde_json::to_value(&input)?).await?,
-        (202, receipt.clone())
-    );
-
+    let receipt = create_confirmed(c, client, account, &path, id).await?;
     let change =
         serde_json::json!({"requestId":Uuid::new_v4(),"expectedRevision":receipt["revision"]});
 
@@ -153,4 +131,37 @@ async fn confirm_and_cancel(
     let stored:Uuid=sqlx::query_scalar("SELECT device FROM mdm_devices.control_operations WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
     assert_eq!(stored, device.into_uuid());
     Ok(())
+}
+
+async fn create_confirmed(
+    c: &Context,
+    client: &reqwest::Client,
+    account: &crate::authority_t2_support::Account,
+    path: &str,
+    id: Uuid,
+) -> Result<serde_json::Value> {
+    use rss_mdm_device_service::control::device_control::{Action, Input};
+    let mut input = Input {
+        operation_id: id,
+        deadline: time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+        action: Action::Wipe { confirmed: false },
+    };
+    assert_eq!(
+        post(client, account, path, serde_json::to_value(&input)?)
+            .await?
+            .0,
+        400
+    );
+    let count:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2)+(SELECT count(*) FROM mdm_devices.control_requests WHERE tenant_id=$1::uuid AND id=$2)+(SELECT count(*) FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2::text)").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
+    assert_eq!(count, 0);
+    input.action = Action::Wipe { confirmed: true };
+    let (status, receipt) = post(client, account, path, serde_json::to_value(&input)?).await?;
+    assert_eq!(status, 202);
+    assert_eq!(receipt["operationId"], id.to_string());
+    assert_eq!(
+        post(client, account, path, serde_json::to_value(&input)?).await?,
+        (202, receipt.clone())
+    );
+
+    Ok(receipt)
 }
