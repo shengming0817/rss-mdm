@@ -50,7 +50,7 @@ impl Service {
         self: Arc<Self>,
         policy: rss_reconcile::Policy,
         drain: std::time::Duration,
-        signals: Arc<crate::installation::worker_wake::Signals>,
+        signals: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) =
             rss_runtime::ManagedTask::prepare("mdm-registration-installation-recovery", drain);
@@ -63,7 +63,7 @@ impl Service {
         self: &Arc<Self>,
         policy: rss_reconcile::Policy,
         cancel: &tokio_util::sync::CancellationToken,
-        signals: &crate::installation::worker_wake::Signals,
+        signals: &tokio::sync::Notify,
     ) -> std::result::Result<(), rss_runtime::ShutdownError> {
         let service = self.as_ref();
         let owner = self.clone();
@@ -72,7 +72,7 @@ impl Service {
             &budget,
             policy,
             cancel,
-            signals.command_recovery(),
+            signals,
             |after| async move {
                 let discovered = tokio::time::timeout(
                     Duration::from_secs(5),
@@ -120,7 +120,7 @@ impl Service {
 
     pub async fn project_native_in(
         tx: &mut PgTransaction<'_>,
-        dispatch: &rss_mdm_work_page::relay::Dispatch,
+        dispatch: &rss_mdm_work_page::relay::Dispatch<'_>,
         store: &rss_mdm_audit_integration::AuditStore,
         protection: &rss_mdm_native_protection::Protector,
     ) -> Result<bool> {
@@ -144,8 +144,10 @@ impl Service {
             ))) => return Ok(false),
             other => other?,
         };
-        let stored = dispatch.native_status_in(tx).await?;
-        let Ok(status) = dc::Status::restore(&stored) else {
+        let stored = dispatch
+            .native_status_in(tx, operation.scope.device().as_uuid())
+            .await?;
+        let Some(status) = stored.and_then(|value| dc::Status::restore(&value).ok()) else {
             return Ok(false);
         };
         let mut activity = crate::installation::timeline::native_activity(

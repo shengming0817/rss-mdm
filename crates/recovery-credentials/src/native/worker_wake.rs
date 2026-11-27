@@ -2,7 +2,7 @@
 //! ref: PostgreSQL LISTEN/NOTIFY commit and initial-snapshot rules;
 //! sqlx 0.9 sqlx-postgres/src/listener.rs (try_recv reports a completed reconnect).
 use sqlx::PgConnection;
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -21,19 +21,6 @@ impl Work {
             Self::CommandRecovery => "credential_native_recovery",
             Self::Apple => "apple",
         }
-    }
-}
-#[derive(Default)]
-pub struct Signals([Arc<Notify>; 2]);
-impl Signals {
-    pub fn from_handles(handles: [Arc<Notify>; 2]) -> Self {
-        Self(handles)
-    }
-    pub fn command_relay(&self) -> &Notify {
-        &self.0[0]
-    }
-    pub fn command_recovery(&self) -> &Notify {
-        &self.0[1]
     }
 }
 

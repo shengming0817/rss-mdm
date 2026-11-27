@@ -566,7 +566,7 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
     .await;
     finish(&request, result)?;
     let stop = tokio_util::sync::CancellationToken::new();
-    let signals = owner::worker_wake::Signals::default();
+    let signals = tokio::sync::Notify::new();
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
         claim_batch_size: 64,
         scan_budget: 64,

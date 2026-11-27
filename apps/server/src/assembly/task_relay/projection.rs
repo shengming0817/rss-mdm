@@ -75,6 +75,7 @@ impl PgConsumerEffect<Vec<u8>> for Effect {
         };
         let binding = ExecutionBinding::new(self.storage, tx.tenant_id(), tx.expected_epoch());
         let dispatch = Dispatch {
+            message_id: message.id(),
             binding,
             id,
             fingerprint: MessageFingerprint::of(message),
@@ -160,14 +161,12 @@ fn deadline(seconds: u64) -> OperationDeadline {
     OperationDeadline::from_remaining(Duration::from_secs(seconds))
 }
 impl Projection {
-    pub(crate) async fn open(
+    pub(crate) async fn connect(
         config: &crate::config::Config,
         binding: ExecutionBinding,
-        audit: &AuditStore,
-        protection: Arc<Protector>,
         lane: Lane,
-    ) -> Result<Arc<Self>, Error> {
-        let invalid = || Error::Configuration(crate::ConfigIssue::BusinessDatabase);
+    ) -> Result<Arc<PgRuntime>, Error> {
+        let invalid = || Error::Configuration(crate::ConfigIssue::CommandProjection);
         let password_file = config
             .command_projection_password_files
             .get(lane.role)
@@ -177,61 +176,64 @@ impl Projection {
             password_file: password_file.clone(),
             ..config.command_database.clone()
         };
-        let runtime = crate::local_delivery::consumer_runtime(&db, binding.storage()).await?;
-        let opened = async {
-            let audit_budget =
-                rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
-            let audit = audit
-                .on_runtime(runtime.clone(), binding, &audit_budget.control())
-                .await?;
-            let unavailable = |_| Error::Unavailable(Failure::Database);
-            let capture = PgRecoveryCapture::new(runtime.clone(), protection.clone(), deadline(6))
-                .await
-                .map_err(unavailable)?;
-            let collection_wake = if lane == INVENTORY {
-                Some(
-                    rss_reconcile_postgres::PgMessagingStore::new(
-                        runtime.clone(),
-                        binding,
-                        deadline(6),
-                    )
-                    .await
-                    .map_err(|_| Error::Unavailable(Failure::Database))?,
-                )
-            } else {
-                None
-            };
-            let effect = Effect {
-                lane,
-                audit,
-                protection,
-                storage: binding.storage(),
-                collection_wake,
-            };
-            let ttl = Duration::from_secs(30);
-            let io = Duration::from_secs(6);
-            let engine = PgLocalProjection::new(
-                capture,
-                ConsumerGroup::parse(lane.role).expect("command group"),
-                MessagingDomain::parse(lane.domain).expect("command domain"),
-                effect,
-                DeliveryBudget::new(ttl, io, io, io).map_err(|_| invalid())?,
-                LeaseRenewalPolicy::from_ttl(ttl).map_err(|_| invalid())?,
-                deadline(6),
-            )
+        crate::local_delivery::consumer_runtime(&db, binding.storage()).await
+    }
+
+    pub(crate) async fn bind(
+        runtime: Arc<PgRuntime>,
+        binding: ExecutionBinding,
+        audit: &AuditStore,
+        protection: Arc<Protector>,
+        lane: Lane,
+    ) -> Result<Arc<Self>, Error> {
+        let invalid = || Error::Configuration(crate::ConfigIssue::CommandProjection);
+        let audit_budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
+        let audit = audit
+            .on_runtime(runtime.clone(), binding, &audit_budget.control())
+            .await?;
+        let unavailable = |_| Error::Unavailable(Failure::Database);
+        let capture = PgRecoveryCapture::new(runtime.clone(), protection.clone(), deadline(6))
             .await
-            .map_err(|_| Error::Unavailable(Failure::Database))?;
-            Ok(Arc::new(Self {
-                lane,
-                runtime: runtime.clone(),
-                engine,
-            }))
-        }
-        .await;
-        if opened.is_err() {
-            runtime.close().await;
-        }
-        opened
+            .map_err(unavailable)?;
+        let collection_wake = if lane == INVENTORY {
+            Some(
+                rss_reconcile_postgres::PgMessagingStore::new(
+                    runtime.clone(),
+                    binding,
+                    deadline(6),
+                )
+                .await
+                .map_err(|_| Error::Unavailable(Failure::Database))?,
+            )
+        } else {
+            None
+        };
+        let effect = Effect {
+            lane,
+            audit,
+            protection,
+            storage: binding.storage(),
+            collection_wake,
+        };
+        let ttl = Duration::from_secs(30);
+        let io = Duration::from_secs(6);
+        let engine = PgLocalProjection::new(
+            capture,
+            ConsumerGroup::parse(lane.role).expect("command group"),
+            MessagingDomain::parse(lane.domain).expect("command domain"),
+            effect,
+            DeliveryBudget::new(ttl, io, io, io).map_err(|_| invalid())?,
+            LeaseRenewalPolicy::from_ttl(ttl).map_err(|_| invalid())?,
+            deadline(6),
+        )
+        .await
+        .map_err(|_| Error::Unavailable(Failure::Database))?;
+        Ok(Arc::new(Self {
+            lane,
+            runtime: runtime.clone(),
+            engine,
+        }))
     }
 
     #[cfg(test)]
@@ -241,6 +243,14 @@ impl Projection {
     ) -> Result<(), PgError> {
         self.engine
             .inject_next_projection_fault(fault, std::future::ready(()))
+    }
+    // Only an acknowledged capability probe identifies a loss shared by the whole login.
+    async fn claim_denied(&self, binding: ExecutionBinding) -> bool {
+        self.runtime.local_tx(binding,deadline(1),|tx| Box::pin(async move {
+            tx.with_connection(|c| Box::pin(async move {
+                sqlx::query_scalar("SELECT NOT has_function_privilege(current_user,'rss_transactional_messaging.claim_outbox(uuid,text,integer,integer,bigint)','EXECUTE')").fetch_one(c).await
+            })).await
+        })).await.fold(|denied|denied, |_|false, |_|false, |_|false, |_|false, |_|false)
     }
     pub(crate) async fn poll<S: Send>(
         &self,
@@ -253,7 +263,7 @@ impl Projection {
             binding,
             originals: Default::default(),
         };
-        let batch = self
+        let claimed = self
             .engine
             .project_batch(
                 binding,
@@ -262,9 +272,14 @@ impl Projection {
                 deadline(1),
                 Duration::from_secs(12),
             )
-            .await
-            .map_err(|error| {
-                let kind = provider_kind(&error);
+            .await;
+        let batch = match claimed {
+            Ok(batch) => batch,
+            Err(error) => {
+                let mut kind = provider_kind(&error);
+                if kind == ErrorKind::Permanent && self.claim_denied(binding).await {
+                    kind = ErrorKind::StorageContract;
+                }
                 self.log(binding, None, "claim", kind, Some(&error));
                 if let Some(scope) = scope {
                     scope.claim(Err(kind));
@@ -272,8 +287,9 @@ impl Projection {
                         scope.owner_failed(kind);
                     }
                 }
-                kind
-            })?;
+                return Err(kind);
+            }
+        };
         if let Some(scope) = scope {
             scope.claim(Ok(()));
         }

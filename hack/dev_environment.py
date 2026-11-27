@@ -24,9 +24,11 @@ import ipaddress
 from urllib.parse import urlsplit
 from build_run import lease_fds, require_lease
 
-COMMAND_PROJECTION_ROLES = ('mdm_dispatch_device', 'mdm_dispatch_policy', 'mdm_dispatch_script', 'mdm_dispatch_inventory', 'mdm_dispatch_software', 'mdm_dispatch_installation', 'mdm_dispatch_enrollment', 'mdm_dispatch_device_access', 'mdm_dispatch_mdm_credentials', 'mdm_dispatch_da_credentials', 'mdm_dispatch_native_credentials')
+from release import business_role_sql, command_roles
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMAND_CATALOG = ROOT/'apps/server/schema/command-lanes.csv'
+COMMAND_PROJECTION_ROLES = command_roles(COMMAND_CATALOG)
 PROVIDERS = json.loads((ROOT / 'deployment/providers.lock.json').read_text())
 PKI_CA = {**json.loads((ROOT / 'fixtures/pki-tools.lock.json').read_text())['step-ca'], 'image': PROVIDERS['step-ca']}
 
@@ -264,7 +266,7 @@ class Environment:
         sources = [ROOT/f'apps/server/schema/{name}-roles.sql'
                    for name in ('business','software-publication','commands','identity','audit','webhook')]
         sources.append(ROOT/'crates/device-access-runtime/schema/roles.sql')
-        fingerprint = hashlib.sha256(b''.join(p.read_bytes() for p in sources)).hexdigest()
+        fingerprint = hashlib.sha256(b''.join(p.read_bytes() for p in [*sources, COMMAND_CATALOG])).hexdigest()
         marker = self.root/'roles.sha256'
         present = self.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'") == '1'
         if present:
@@ -276,7 +278,7 @@ class Environment:
             sql += f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOBYPASSRLS;"
         # Publication defines the borrowed relay role required by subsequent role files.
         for source in sources:
-            sql += source.read_text()
+            sql += business_role_sql(source, COMMAND_CATALOG) if source.name == "business-roles.sql" else source.read_text()
         sql += "GRANT rss_tmsg_relay TO da_owner;"
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
                      'mdm_observation_maintenance','mdm_inventory_runtime','mdm_scope_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_wns_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator','mdm_scope_group_consumer','mdm_asset_ingress_consumer',*COMMAND_PROJECTION_ROLES):

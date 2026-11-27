@@ -534,12 +534,7 @@ impl Workers {
                     .registration(
                         background.commands,
                         background.commands_drain,
-                        Arc::new(
-                            rss_mdm_device_service::control::worker_wake::Signals::from_handles([
-                                signals.handle(worker_wake::Work::CommandRelay),
-                                signals.handle(worker_wake::Work::CommandRecovery),
-                            ]),
-                        ),
+                        signals.handle(worker_wake::Work::CommandRecovery),
                     )
                     .critical(),
             );
@@ -548,12 +543,11 @@ impl Workers {
                     .software
                     .service
                     .clone()
-                    .registration(background.commands, background.commands_drain, Arc::new(
-                        rss_mdm_software_service::deployment::worker_wake::Signals::from_handles([
-                            signals.handle(worker_wake::Work::CommandRelay),
-                            signals.handle(worker_wake::Work::SoftwareRecovery),
-                        ]),
-                    ))
+                    .registration(
+                        background.commands,
+                        background.commands_drain,
+                        signals.handle(worker_wake::Work::SoftwareRecovery),
+                    )
                     .critical(),
             );
         }

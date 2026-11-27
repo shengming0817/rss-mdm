@@ -13,6 +13,7 @@ enum Key {
     Scan(Scope),
     Attempt(Target),
     RelayRound(String),
+    StoppedRelay(String),
     DeadLetters(Scope, i64),
     RelayClaim(Scope, i64),
     RelayMessage(Scope, i64, MessagingDomain, MessageId),
@@ -24,6 +25,7 @@ impl Key {
             Self::Discovery(_) => Some(0),
             Self::Scan(_) => Some(1),
             Self::RelayRound(_)
+            | Self::StoppedRelay(_)
             | Self::DeadLetters(..)
             | Self::RelayClaim(..)
             | Self::RelayMessage(..) => Some(2),
@@ -357,6 +359,14 @@ impl Observations {
     /// A whole relay invocation is distinct from every tenant/epoch it attempted.
     pub fn relay_round(&mut self, domain: &str, outcome: Result<(), ErrorKind>, at: Option<i64>) {
         self.record(Key::RelayRound(domain.into()), outcome, Evidence::Phase, at);
+    }
+    pub(crate) fn stop_relay(&mut self, domain: &str, kind: ErrorKind, at: Option<i64>) {
+        self.record(
+            Key::StoppedRelay(domain.into()),
+            Err(kind),
+            Evidence::Phase,
+            at,
+        );
     }
     pub(crate) fn dead_letters(
         &mut self,

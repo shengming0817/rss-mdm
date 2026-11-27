@@ -233,7 +233,7 @@ impl Transactions {
     }
     pub async fn project_native_in(
         tx: &mut PgTransaction<'_>,
-        dispatch: &rss_mdm_work_page::relay::Dispatch,
+        dispatch: &rss_mdm_work_page::relay::Dispatch<'_>,
         store: &rss_mdm_audit_integration::AuditStore,
         protection: &rss_mdm_native_protection::Protector,
     ) -> Result<bool> {
@@ -257,8 +257,10 @@ impl Transactions {
             ))) => return Ok(false),
             other => other?,
         };
-        let stored = dispatch.native_status_in(tx).await?;
-        let Ok(status) = dc::Status::restore(&stored) else {
+        let stored = dispatch
+            .native_status_in(tx, operation.scope.device().as_uuid())
+            .await?;
+        let Some(status) = stored.and_then(|value| dc::Status::restore(&value).ok()) else {
             return Ok(false);
         };
         let mut activity = activity(

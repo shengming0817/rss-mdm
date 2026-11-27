@@ -242,46 +242,9 @@ impl ManagedResource for Listener {
 mod tests;
 
 impl Signals {
-    pub(crate) fn execution(&self) -> Arc<rss_mdm_device_service::control::worker_wake::Signals> {
-        Arc::new(
-            rss_mdm_device_service::control::worker_wake::Signals::from_handles([
-                self.handle(Work::CommandRelay),
-                self.handle(Work::CommandRecovery),
-            ]),
-        )
-    }
-}
-
-impl Signals {
     pub(crate) fn policy(&self) -> Arc<rss_mdm_policy_service::worker_wake::Signals> {
         Arc::new(rss_mdm_policy_service::worker_wake::Signals::from_handles(
             [self.handle(Work::Policy), self.handle(Work::PolicyEvents)],
         ))
-    }
-}
-
-impl Signals {
-    pub(crate) fn software(
-        &self,
-    ) -> Arc<rss_mdm_software_service::deployment::worker_wake::Signals> {
-        Arc::new(
-            rss_mdm_software_service::deployment::worker_wake::Signals::from_handles([
-                self.handle(Work::CommandRelay),
-                self.handle(Work::SoftwareRecovery),
-            ]),
-        )
-    }
-}
-
-impl Signals {
-    pub(crate) fn installation(
-        &self,
-    ) -> Arc<rss_mdm_registration_service::installation::worker_wake::Signals> {
-        Arc::new(
-            rss_mdm_registration_service::installation::worker_wake::Signals::from_handles([
-                self.handle(Work::CommandRelay),
-                self.handle(Work::InstallationRecovery),
-            ]),
-        )
     }
 }

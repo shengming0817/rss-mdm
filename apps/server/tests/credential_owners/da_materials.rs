@@ -422,6 +422,20 @@ async fn directory_da_target_isolation(
         .bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?)
         .bind(serde_json::json!({"installation":agent.installation(),"epoch":epoch,"authority":null}))
         .execute(&mut *tx).await?;
+    sqlx::query("SET LOCAL ROLE mdm_dispatch_device_access")
+        .execute(&mut *tx)
+        .await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT FROM rss_da.access_runs WHERE tenant_id=$1 AND id=$2)",
+    )
+    .bind(binding.tenant)
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    assert!(
+        !visible,
+        "the fixed Agent projection excludes the standalone DA target"
+    );
     sqlx::query("SET LOCAL ROLE mdm_command_runtime")
         .execute(&mut *tx)
         .await?;

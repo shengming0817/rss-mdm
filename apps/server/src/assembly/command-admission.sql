@@ -123,7 +123,7 @@ SELECT current_setting('server_encoding')='UTF8' AND current_user='mdm_command_r
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
  AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['control_operations','control_recovery','control_requests','unmanage_policy_recovery','unmanage_receipts','unmanage_runs'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind<>'r' OR relpersistence<>'p' OR NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
-  OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
+  OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND NOT (polname='command_initial_state' AND NOT polpermissive AND polcmd='a' AND pg_get_expr(polwithcheck,polrelid)='(NOT gateway_accepted)') AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
    AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
    AND pg_get_expr(polqual,polrelid)=pg_get_expr(polwithcheck,polrelid)))

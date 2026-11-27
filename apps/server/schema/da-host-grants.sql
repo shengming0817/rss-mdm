@@ -12,7 +12,7 @@ GRANT USAGE ON SCHEMA rss_da TO mdm_command_runtime;
 GRANT SELECT,INSERT ON rss_da.access_runs TO mdm_identity_runtime;
 CREATE POLICY access_host_management_insert ON rss_da.access_runs AS RESTRICTIVE FOR INSERT TO mdm_identity_runtime
  WITH CHECK(da_target IS NOT NULL);
-CREATE POLICY access_host_agent_path ON rss_da.access_runs AS RESTRICTIVE TO mdm_command_runtime,mdm_policy_runtime
+CREATE POLICY access_host_agent_path ON rss_da.access_runs AS RESTRICTIVE TO mdm_command_runtime,mdm_policy_runtime,mdm_dispatch_device_access
  USING(da_target IS NULL) WITH CHECK(da_target IS NULL);
 GRANT SELECT,INSERT ON rss_da.access_runs,rss_da.access_policy_recovery TO mdm_command_runtime;
 GRANT UPDATE(state,result) ON rss_da.access_runs TO mdm_command_runtime;
@@ -60,7 +60,7 @@ GRANT SELECT ON rss_da.agent_delivery,rss_da.access_runs TO mdm_access;
 GRANT UPDATE(enabled,revision) ON rss_da.agent_delivery TO mdm_access,mdm_command_runtime;
 GRANT SELECT ON rss_da.recovery_recipient_selection,rss_da.recovery_entries,rss_da.recovery_versions,rss_da.recovery_disclosures TO mdm_identity_runtime;
 CREATE POLICY credential_host_agent_path ON rss_da.credential_runs AS RESTRICTIVE
- TO mdm_command_runtime,mdm_policy_runtime USING(da_execution IS NULL) WITH CHECK(da_execution IS NULL);
+ TO mdm_command_runtime,mdm_policy_runtime,mdm_dispatch_da_credentials USING(da_execution IS NULL) WITH CHECK(da_execution IS NULL);
 GRANT SELECT,INSERT,UPDATE(state) ON rss_da.credential_runs TO mdm_identity_runtime;
 CREATE POLICY credential_host_management ON rss_da.credential_runs AS RESTRICTIVE TO mdm_identity_runtime
  USING(da_execution IS NOT NULL) WITH CHECK(da_execution IS NOT NULL);
@@ -96,7 +96,6 @@ GRANT EXECUTE ON FUNCTION rss_da.binding_application_current(jsonb,bigint) TO md
 GRANT SELECT ON rss_da.report_heads,rss_da.report_history,rss_da.signing_heads,rss_da.signing_versions,rss_da.signing_acknowledgements TO mdm_identity_runtime;
 GRANT SELECT,INSERT ON rss_da.configuration_exports TO mdm_identity_runtime;
 GRANT SELECT(tenant_id,usage,key_id,private_key,max_verify_until),UPDATE(max_verify_until) ON rss_da.signing_keys TO mdm_identity_runtime;
-COMMIT;
 
 GRANT SELECT ON rss_da.recovery_recipient_selection TO mdm_command_runtime;
 
@@ -107,3 +106,7 @@ GRANT USAGE ON SCHEMA rss_da TO mdm_dispatch_device_access;
 GRANT SELECT,UPDATE(gateway_accepted) ON rss_da.access_runs TO mdm_dispatch_device_access;
 GRANT USAGE ON SCHEMA rss_da TO mdm_dispatch_da_credentials;
 GRANT SELECT,UPDATE(gateway_accepted) ON rss_da.credential_runs TO mdm_dispatch_da_credentials;
+
+CREATE POLICY command_initial_state ON rss_da.access_runs AS RESTRICTIVE FOR INSERT TO mdm_command_runtime,mdm_policy_runtime WITH CHECK (NOT gateway_accepted);
+CREATE POLICY command_initial_state ON rss_da.credential_runs AS RESTRICTIVE FOR INSERT TO mdm_command_runtime,mdm_policy_runtime WITH CHECK (NOT gateway_accepted);
+COMMIT;

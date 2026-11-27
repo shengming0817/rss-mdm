@@ -26,25 +26,11 @@ ALTER ROLE mdm_asset_ingress_consumer SET default_transaction_isolation='read co
 CREATE ROLE mdm_wns_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
 ALTER ROLE mdm_wns_runtime SET default_transaction_isolation='read committed';
 
-CREATE ROLE mdm_dispatch_device NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_device SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_policy NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_policy SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_script NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_script SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_inventory NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_inventory SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_software NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_software SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_installation NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_installation SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_enrollment NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_enrollment SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_device_access NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_device_access SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_mdm_credentials NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_mdm_credentials SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_da_credentials NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_da_credentials SET default_transaction_isolation='read committed';
-CREATE ROLE mdm_dispatch_native_credentials NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
-ALTER ROLE mdm_dispatch_native_credentials SET default_transaction_isolation='read committed';
+DO $dispatch$
+DECLARE login text;
+BEGIN
+ FOREACH login IN ARRAY string_to_array('{command_roles}', ',') LOOP
+  EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION',login);
+  EXECUTE format('ALTER ROLE %I SET default_transaction_isolation=%L',login,'read committed');
+ END LOOP;
+END $dispatch$;

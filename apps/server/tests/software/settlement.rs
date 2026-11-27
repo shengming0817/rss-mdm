@@ -79,8 +79,30 @@ pub(super) async fn check_dispatch(c: &Context, a: &Fixture, id: Uuid) -> Result
         },
     )
     .await?;
+    sqlx::query("REVOKE SELECT ON rss_transactional_messaging.outbox FROM mdm_dispatch_software")
+        .execute(&c.operator)
+        .await?;
     lane.inject(PgTransactionFault::CommitUnknownAfterAck)?;
     let stack = register()?;
+    command::wait_relay(async || {
+        Ok(state().await?.1 == "published"
+            && service.health().relay == Some(Phase::Failed(ErrorKind::CommitUnknown)))
+    })
+    .await?;
+    assert_eq!(
+        scope
+            .check()
+            .unwrap()
+            .message()
+            .fingerprint
+            .unwrap()
+            .as_bytes()
+            .as_slice(),
+        initial.3
+    );
+    sqlx::query("GRANT SELECT ON rss_transactional_messaging.outbox TO mdm_dispatch_software")
+        .execute(&c.operator)
+        .await?;
     command::wait_relay(async || Ok(state().await?.1 == "published" && scope.check().is_none()))
         .await?;
     assert!(stack.shutdown().join().await?.is_clean());

@@ -351,11 +351,20 @@ pub(crate) async fn registration(
             crate::Error::Configuration(crate::ConfigIssue::BusinessDatabase),
         )?;
         let owner = owners.swap_remove(index);
-        let projection = Projection::open(config, binding, audit, protection.clone(), lane).await?;
+        let runtime = Projection::connect(config, binding, lane)
+            .await
+            .inspect_err(|_| {
+                eprintln!("command relay startup: role={} stage=connect", lane.role);
+            })?;
         resource(crate::owner_storage::Resource::new(
-            projection.runtime.clone(),
+            runtime.clone(),
             lane.role,
         ));
+        let projection = Projection::bind(runtime, binding, audit, protection.clone(), lane)
+            .await
+            .inspect_err(|_| {
+                eprintln!("command relay startup: role={} stage=admission", lane.role);
+            })?;
         projections.push((owner, projection));
     }
     Ok(register(

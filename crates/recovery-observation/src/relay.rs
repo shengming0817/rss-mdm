@@ -63,9 +63,9 @@ impl<'a> RelayScope<'a> {
         })
     }
     pub fn owner_failed(&self, kind: rss_reconcile::ErrorKind) {
-        self.state.lock().expect("relay observations").relay_round(
+        self.state.lock().expect("relay observations").stop_relay(
             self.scope.reconciler(),
-            Err(kind),
+            kind,
             self.at,
         );
     }

@@ -21,14 +21,20 @@ impl Prepared {
         c: &Context,
         lane: crate::assembly::task_relay::lanes::Lane,
     ) -> Result<Arc<crate::assembly::task_relay::projection::Projection>> {
-        Ok(crate::assembly::task_relay::projection::Projection::open(
-            &self.config,
+        use crate::assembly::task_relay::projection::Projection;
+        let runtime = Projection::connect(&self.config, c.execution(), lane).await?;
+        let result = Projection::bind(
+            runtime.clone(),
             c.execution(),
             &c.audit,
             self.protection.clone(),
             lane,
         )
-        .await?)
+        .await;
+        if result.is_err() {
+            runtime.close().await;
+        }
+        Ok(result?)
     }
     pub(crate) async fn project_once(
         &self,

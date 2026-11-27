@@ -111,7 +111,7 @@ pub async fn audit_recovery(
 impl Service {
     pub async fn project_action_in(
         tx: &mut PgTransaction<'_>,
-        dispatch: &rss_mdm_work_page::relay::Dispatch,
+        dispatch: &rss_mdm_work_page::relay::Dispatch<'_>,
         store: &rss_mdm_audit_integration::AuditStore,
     ) -> Result<bool> {
         use rss_mdm_audit_integration::operation::OperationOwner;

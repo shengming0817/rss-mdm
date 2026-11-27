@@ -56,7 +56,7 @@ pub async fn audit_recovery(
 impl Service {
     pub async fn project_action_in(
         tx: &mut PgTransaction<'_>,
-        dispatch: &rss_mdm_work_page::relay::Dispatch,
+        dispatch: &rss_mdm_work_page::relay::Dispatch<'_>,
         store: &rss_mdm_audit_integration::AuditStore,
         profile: rss_mdm_audit_integration::StorageProfile,
     ) -> Result<bool> {
@@ -71,7 +71,7 @@ impl Service {
         );
         audit.target(&id.to_string());
         store.bind_in(tx).await?;
-        if !dispatch.accept_in(tx, match profile { rss_mdm_audit_integration::StorageProfile::Mdm => "UPDATE mdm_recovery_tasks.runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted", rss_mdm_audit_integration::StorageProfile::Da => "UPDATE rss_da.credential_runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted", }).await? {
+        if !dispatch.accept_in(tx, match profile { rss_mdm_audit_integration::StorageProfile::Mdm => "UPDATE mdm_recovery_tasks.runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted", rss_mdm_audit_integration::StorageProfile::Da => "UPDATE rss_da.credential_runs SET gateway_accepted=true WHERE da_execution IS NULL AND tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted", }).await? {
             audit.finalize(None);
             return Ok(false);
         }

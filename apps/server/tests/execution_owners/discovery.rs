@@ -128,39 +128,21 @@ async fn registered_owners_recover_discovery_without_restart() -> Result<()> {
         task!("credentials", worker);
     }
     macro_rules! native {
-        ($name:expr, $owner:expr, $signals:ty) => {{
+        ($name:expr, $owner:expr) => {{
             let owner = $owner.clone();
             register!(
                 $name,
-                owner.clone().registration(
-                    policy()?,
-                    Duration::from_secs(20),
-                    Arc::new(<$signals>::default())
-                ),
+                owner
+                    .clone()
+                    .registration(policy()?, Duration::from_secs(20), Arc::default()),
                 move || owner.health().discovery
             );
         }};
     }
-    native!(
-        "device control",
-        fixture.service,
-        rss_mdm_device_service::control::worker_wake::Signals
-    );
-    native!(
-        "software",
-        fixture.software.service,
-        rss_mdm_software_service::deployment::worker_wake::Signals
-    );
-    native!(
-        "installation",
-        fixture.registration.native,
-        rss_mdm_registration_service::installation::worker_wake::Signals
-    );
-    native!(
-        "native credentials",
-        credentials.native,
-        rss_mdm_recovery_credentials::native::worker_wake::Signals
-    );
+    native!("device control", fixture.service);
+    native!("software", fixture.software.service);
+    native!("installation", fixture.registration.native);
+    native!("native credentials", credentials.native);
     let groups = owners.groups.clone();
     register!(
         "group",

@@ -201,7 +201,10 @@ fn project(
                     );
                 if name.ends_with("_file") && value.is_string() {
                     project_file(value, journal, mounts, !public_file(name), local, optional)?;
-                } else if matches!(name.as_str(), "key_files" | "credential_keys") {
+                } else if matches!(
+                    name.as_str(),
+                    "key_files" | "credential_keys" | "command_projection_password_files"
+                ) {
                     for key in value.as_object_mut().ok_or(Error::Input)?.values_mut() {
                         project_file(key, journal, mounts, true, local, optional)?;
                     }

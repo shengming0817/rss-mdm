@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a Docker-default-platform OCI candidate from the current working source."""
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -77,16 +78,28 @@ def build(out, header, web_image=None, target_platform=None, product="mdm"):
 
 RUNTIME_TOOLS = ("ingress_network.py", "gateway_fixture.py", "release.py", "candidate_runtime.py", "candidate_fixture.py",  "candidate_installation.py", "candidate_installation_driver.py")
 ROLE_NAMES = ("business", "software-publication", "identity", "commands", "audit", "webhook", "device-access")
-DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/render_gateway.py", "deployment/body_limits.json", *(
+DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'deployment/command-lanes.csv', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/render_gateway.py", "deployment/body_limits.json", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 DA_DEPLOYMENT_FILES=("deployment/da.compose.yaml","deployment/initialize_da.py","deployment/providers.lock.json","deployment/device-access-roles.sql","deployment/da-config.example.json")
+def command_roles(catalog):
+    with catalog.open(newline='') as source:
+        names = [row['owner'] for row in csv.DictReader(source)]
+    if not names or len(set(names)) != len(names) or any(not re.fullmatch(r'[a-z_]+', name) for name in names):
+        raise ValueError('invalid command projection role catalog')
+    return ['mdm_dispatch_' + name for name in names]
+
+def business_role_sql(source, catalog):
+    return source.read_text().replace('{command_roles}', ','.join(command_roles(catalog)))
+
 def deployment_files(product):
     if product=="mdm":return DEPLOYMENT_FILES
     if product=="da":return DA_DEPLOYMENT_FILES
     raise ValueError("unknown product")
 
 def deployment_source(name):
+    if name == "deployment/command-lanes.csv":
+        return Path("apps/server/schema/command-lanes.csv")
     if name == "deployment/body_limits.json":
         return Path("crates/management-http/src/body_limits.json")
     if name == "deployment/device-access-roles.sql":
@@ -208,7 +221,10 @@ def build_staged(out, header, web_image=None, target_platform=None, product="mdm
         for name in deployment_files(product):
             target = out / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(source / deployment_source(name), target)
+            if name == "deployment/business-roles.sql":
+                target.write_text(business_role_sql(source/deployment_source(name), source/deployment_source("deployment/command-lanes.csv")))
+            else:
+                shutil.copy(source / deployment_source(name), target)
             deployment[name] = sha(target)
         exports = [("http-contract", "http-contract.json")]
         if product == "da":

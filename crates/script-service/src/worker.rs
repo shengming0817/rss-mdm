@@ -217,6 +217,18 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
                                 |ctx, tx| {
                                     Box::pin(async move {
                                         let (service, entity, _audit, error, ready) = ctx;
+                                        if matches!(ready, Prepared::Quarantined) {
+                                            return Ok(
+                                                rss_reconcile_postgres::ProtectedStep::Ready(()),
+                                            );
+                                        }
+                                        if matches!(ready, Prepared::AwaitProjection) {
+                                            return Ok(
+                                                rss_reconcile_postgres::ProtectedStep::Deferred(
+                                                    Duration::from_secs(5),
+                                                ),
+                                            );
+                                        }
                                         if matches!(ready, Prepared::Deferred) {
                                             return Ok(
                                                 rss_reconcile_postgres::ProtectedStep::Deferred(
@@ -261,6 +273,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
     }
 }
 enum Prepared {
+    AwaitProjection,
+    Quarantined,
     Deferred,
     Ready,
     Policy(Option<Box<crate::policy_recovery::Prepared>>),
@@ -285,7 +299,22 @@ async fn prepare_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        Some(crate::storage::read_run(tx, id).await?.target.device)
+        match crate::storage::read_run(tx, id).await {
+            Ok(run) => Some(run.target.device),
+            Err(crate::transaction::Fault::Request(Error::Invariant)) => {
+                // The relay owns an unreadable run only while its exact original has not been accepted.
+                // Other corruption keeps the recovery worker's normal fault semantics.
+                let status: Option<String> = tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query_scalar("SELECT o.status FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.domain='mdm.script.v1' AND o.message_id='script.'||r.id::text AND o.fingerprint=r.dispatch_fingerprint WHERE r.id=$1 AND r.tenant_id=current_setting('rss.tenant_id')::uuid AND NOT r.gateway_accepted").bind(id).fetch_optional(c).await
+                })).await?;
+                return match status.as_deref() {
+                    Some("dead_letter") => Ok(Prepared::Quarantined),
+                    Some("pending" | "publishing") => Ok(Prepared::AwaitProjection),
+                    _ => Err(Error::Invariant.into()),
+                };
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         None
     };

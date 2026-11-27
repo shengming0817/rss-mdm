@@ -227,6 +227,23 @@ impl Config {
         self.native_protection.load()
     }
     pub(crate) fn compile(self) -> Result<Compiled, Error> {
+        use crate::assembly::task_relay::lanes;
+        if self
+            .command_projection_password_files
+            .keys()
+            .any(|role| !lanes::LANES.iter().any(|lane| lane.role == role))
+            || lanes::enabled(
+                self.device_access.is_some(),
+                self.recovery_credentials.is_some(),
+            )
+            .any(|lane| {
+                !self
+                    .command_projection_password_files
+                    .contains_key(lane.role)
+            })
+        {
+            return Err(Error::Configuration(ConfigIssue::CommandProjection));
+        }
         let background = self.background.compile(&self)?;
         let audit_query = self.audit_query.compile()?;
         let inventory_runtime = self.inventory_runtime.compile()?;

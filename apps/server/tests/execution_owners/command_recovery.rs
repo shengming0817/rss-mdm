@@ -309,7 +309,6 @@ async fn native_cursor_isolation(credentials: bool) -> Result<()> {
     ];
     let state = &a.a.resources;
     let notify = Arc::new(tokio::sync::Notify::new());
-    let handles = [Arc::default(), notify.clone()];
     let registration = if credentials {
         let assembly = crate::assembly::credential_execution::assemble(
             state.storage.discovery_pool.clone(),
@@ -328,19 +327,13 @@ async fn native_cursor_isolation(credentials: bool) -> Result<()> {
         assembly.native.registration(
             state.background.commands,
             state.background.commands_drain,
-            Arc::new(
-                rss_mdm_recovery_credentials::native::worker_wake::Signals::from_handles(handles),
-            ),
+            notify.clone(),
         )
     } else {
         a.a.registration.native.clone().registration(
             state.background.commands,
             state.background.commands_drain,
-            Arc::new(
-                rss_mdm_registration_service::installation::worker_wake::Signals::from_handles(
-                    handles,
-                ),
-            ),
+            notify.clone(),
         )
     };
     let timer = rss_mdm_device_service::control::recovery::Timer::new();

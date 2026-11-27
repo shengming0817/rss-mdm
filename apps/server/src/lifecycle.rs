@@ -618,17 +618,12 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                     credentials
                                         .native
                                         .clone()
-                                        .registration(background.tasks, background.tasks_drain, Arc::new(
-                                            rss_mdm_recovery_credentials::native::worker_wake::Signals::from_handles([
-                                                signals.handle(Work::CommandRelay),
-                                                signals.handle(Work::CredentialNativeRecovery),
-                                            ]),
-                                        ))
+                                        .registration(background.tasks, background.tasks_drain, signals.handle(Work::CredentialNativeRecovery))
                                         .critical(),
                                 );
                             }
                             tasks.extend([
-                                control.clone().registration(background.commands, background.commands_drain, signals.execution()).critical(),
+                                control.clone().registration(background.commands, background.commands_drain, signals.handle(Work::CommandRecovery)).critical(),
                                 script_work
                                     .clone()
                                     .registration(background.tasks, background.tasks_drain, signals.handle(Work::ScriptRecovery))
@@ -640,12 +635,12 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 software_owner
                                     .service
                                     .clone()
-                                    .registration(background.commands, background.commands_drain, signals.software())
+                                    .registration(background.commands, background.commands_drain, signals.handle(Work::SoftwareRecovery))
                                     .critical(),
                                 registration_owner
                                     .native
                                     .clone()
-                                    .registration(background.tasks, background.tasks_drain, signals.installation())
+                                    .registration(background.tasks, background.tasks_drain, signals.handle(Work::InstallationRecovery))
                                     .critical(),
                                 registration_owner
                                     .worker
@@ -668,7 +663,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 background.commands.concurrency(),
                                 probe,
                                 signals.handle(Work::CommandRelay),
-                            ).await.map_err(assembly_error)?.critical();
+                            ).await.map_err(|e| ProcessError::at("startup.command_relay", e))?.critical();
                             (tasks, relay)
                         };
                         let windows_business = Arc::new(crate::assembly::windows_business::WindowsBusiness(

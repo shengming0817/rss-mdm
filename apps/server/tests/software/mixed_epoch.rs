@@ -180,7 +180,7 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
     )
     .await
     .context("publish the new assignment and its wake in the Policy transaction")?;
-    let signals = owner::worker_wake::Signals::default();
+    let signals = tokio::sync::Notify::new();
     let stop = tokio_util::sync::CancellationToken::new();
     let (worker, observed) = tokio::join!(
         fixture

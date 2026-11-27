@@ -60,6 +60,7 @@ pub enum ConfigIssue {
     AppleChallengeWebhook,
     AppleNotifyWebhook,
     CommandStorage,
+    CommandProjection,
     Content,
     BusinessDatabase,
     Publication,

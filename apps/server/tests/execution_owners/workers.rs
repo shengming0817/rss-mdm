@@ -849,6 +849,9 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     wait(ordered_peer.clone(), "published").await?;
     let rejection: (String, bool, bool) = sqlx::query_as("SELECT d.reason,r.gateway_accepted,other.partition_key<>o.partition_key FROM rss_transactional_messaging.outbox o JOIN rss_transactional_messaging.consumer_dead_letter d USING(tenant_id,message_id,fingerprint) JOIN mdm_script.runs r ON r.tenant_id=o.tenant_id AND r.dispatch_fingerprint=o.fingerprint JOIN rss_transactional_messaging.outbox other ON other.tenant_id=o.tenant_id AND other.domain=o.domain AND other.message_id=$3 WHERE o.tenant_id=$1::uuid AND o.message_id=$2 AND o.domain=$4 AND d.consumer_group=$5")
         .bind(h.c.tenant.to_string()).bind(&poison).bind(&ordered_peer).bind(crate::assembly::task_relay::lanes::SCRIPT.domain).bind(crate::assembly::task_relay::lanes::SCRIPT.role).fetch_one(&h.c.operator).await?;
+    let peer: (bool,String) = sqlx::query_as("SELECT r.gateway_accepted,i.disposition FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.fingerprint=r.dispatch_fingerprint JOIN rss_transactional_messaging.inbox i ON i.tenant_id=o.tenant_id AND i.message_id=o.message_id AND i.fingerprint=o.fingerprint WHERE r.tenant_id=$1::uuid AND o.message_id=$2 AND i.consumer_group=$3")
+        .bind(h.c.tenant.to_string()).bind(&ordered_peer).bind(crate::assembly::task_relay::lanes::SCRIPT.role).fetch_one(&h.c.operator).await?;
+    assert_eq!(peer, (true, "succeeded".to_owned()));
     assert_eq!(rejection, ("rejected_permanent".into(), false, true));
     assert_eq!(status(successor.clone()).await?, "pending");
     wait(format!("script.{b}"), "published").await?;
@@ -930,6 +933,41 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     assert!(accepted);
     fresh.close().await?;
     late.close().await?;
+    h.close().await
+}
+
+#[tokio::test]
+#[ignore = "T2: a corrupt admitted Script row is isolated by relay and recovery while the host serves readyz"]
+async fn quarantined_script_keeps_host_ready() -> Result<()> {
+    let h = Harness::open_in("script_quarantine").await?;
+    let announce = w::TaskClaimRequest::new(
+        Uuid::new_v4(),
+        vec![w::ExecutorProfile::PowerShell7],
+        context(),
+    )?;
+    h.delivery.claim(&h.p, &announce, &request(&h.c)).await?;
+    let (_, version) = h.policy("quarantine").await?;
+    let id = Uuid::new_v4();
+    assert!(matches!(
+        h.admit(version, id).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    sqlx::query("UPDATE mdm_script.runs SET result=$3 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(h.c.tenant.to_string())
+        .bind(id)
+        .bind(serde_json::json!({"invalid":true}))
+        .execute(&h.c.operator)
+        .await?;
+    let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let config =
+        crate::host_t2_support::configuration(&h.c.inputs, &h.c.profile, address, Uuid::new_v4())
+            .await?;
+    let c = &h.c;
+    crate::host_t2_support::run(config, |client,base| async move {
+        command::wait_relay(async || Ok(sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_reconcile.targets t JOIN rss_transactional_messaging.outbox o ON o.tenant_id=t.tenant_id WHERE o.tenant_id=$1::uuid AND t.reconciler='mdm.script.v1' AND t.entity=$2 AND o.domain=t.reconciler AND o.message_id=$3 AND o.status='dead_letter' AND t.result='converged' AND t.next_run IS NULL)").bind(c.tenant.to_string()).bind(format!("run:{id}")).bind(format!("script.{id}")).fetch_one(&c.operator).await?)).await?;
+        assert_eq!(client.get(format!("{base}/readyz")).send().await?.status(), reqwest::StatusCode::OK);
+        Ok(())
+    }).await?;
     h.close().await
 }
 

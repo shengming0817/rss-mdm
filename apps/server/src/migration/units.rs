@@ -68,11 +68,11 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "audit-runtime-v1",
-            include_str!("../../schema/audit-runtime.sql"),
+            include_str!(concat!(env!("OUT_DIR"), "/audit-runtime.sql")),
         ),
         (
             "audit-ledger-runtime-v1",
-            include_str!("../../schema/audit-ledger-runtime.sql"),
+            include_str!(concat!(env!("OUT_DIR"), "/audit-ledger-runtime.sql")),
         ),
         (
             "installation-binding-v1",
@@ -546,7 +546,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "command-projections-v1",
-            include_str!("../../schema/command-projections.sql"),
+            include_str!(concat!(env!("OUT_DIR"), "/command-projections.sql")),
         ),
     ]
 }
