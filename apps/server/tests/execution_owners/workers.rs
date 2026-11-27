@@ -1016,7 +1016,7 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
     due(&drained, false).await?;
     let (in_flight, drain) =
         tokio::sync::oneshot::channel::<sqlx::Transaction<'static, sqlx::Postgres>>();
-    crate::host_t2_support::run_with_drain(configuration().await?, async |client,base| {
+    crate::host_t2_support::run_with_drain(configuration().await?, "/readyz", async |client,base| {
         command::wait_relay(async || Ok(sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_reconcile.targets t JOIN rss_transactional_messaging.outbox o ON o.tenant_id=t.tenant_id WHERE o.tenant_id=$1::uuid AND t.reconciler='mdm.script.v1' AND t.entity=$2 AND o.domain=t.reconciler AND o.message_id=$3 AND o.status='dead_letter' AND t.result='converged' AND t.next_run IS NULL)").bind(c.tenant.to_string()).bind(format!("run:{id}")).bind(format!("script.{id}")).fetch_one(&c.operator).await?)).await?;
         command::wait_relay(async || Ok(status(&bad).await? == "dead_letter")).await?;
         assert_eq!(status(&peer).await?, "pending");
@@ -1038,26 +1038,27 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
         previous.tenant(),
         rss_transactional_messaging::fence::Epoch::new(2)?,
     );
-    let mut replacement = configuration().await?;
-    replacement["storage_binding"]["epoch"] = serde_json::json!(2);
-    let management = replacement["identity"]["management_tenant"]
-        .as_str()
-        .unwrap();
-    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE epoch=1 AND tenant_id IN ($1::uuid,$2::uuid)").bind(c.tenant.to_string()).bind(management).execute(&c.operator).await?.rows_affected(),2);
+    let replacement = configuration().await?;
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE epoch=1 AND tenant_id=$1::uuid").bind(c.tenant.to_string()).execute(&c.operator).await?.rows_affected(),1);
     let template = Uuid::parse_str(peer.strip_prefix("script.").unwrap())?;
     let [next_peer] = ordered_scripts_in(&h, template, next, [("healthy", false)])
         .await
         .map_err(|e| e.context("seed ordered work in the new tenant epoch"))?;
-    crate::host_t2_support::run(replacement, async |client, base| {
-        command::wait_relay(async || published(&next_peer).await).await?;
-        assert_eq!(status(&bad).await?, "dead_letter");
-        assert_eq!(status(&successor).await?, "pending");
-        assert_eq!(
-            client.get(format!("{base}/readyz")).send().await?.status(),
-            reqwest::StatusCode::OK
-        );
-        Ok(())
-    })
+    crate::host_t2_support::run_with_drain(
+        replacement,
+        "/livez",
+        async |client, base| {
+            command::wait_relay(async || published(&next_peer).await).await?;
+            assert_eq!(status(&bad).await?, "dead_letter");
+            assert_eq!(status(&successor).await?, "pending");
+            assert_eq!(
+                client.get(format!("{base}/livez")).send().await?.status(),
+                reqwest::StatusCode::OK
+            );
+            Ok(())
+        },
+        || async { Ok(()) },
+    )
     .await
     .map_err(|e| e.context("second host startup and delivery"))?;
     h.close().await

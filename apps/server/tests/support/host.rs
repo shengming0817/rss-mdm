@@ -76,12 +76,13 @@ where
     F: FnOnce(reqwest::Client, String) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    run_with_drain(configuration, proof, || async { Ok(()) }).await
+    run_with_drain(configuration, "/readyz", proof, || async { Ok(()) }).await
 }
 
 #[allow(clippy::disallowed_methods, reason = "production host clock")]
 pub(crate) async fn run_with_drain<F, Fut, D, Drain>(
     configuration: Value,
+    probe: &str,
     proof: F,
     drain: D,
 ) -> Result<()>
@@ -121,7 +122,7 @@ where
     let exercise = async {
         tokio::time::timeout(Duration::from_secs(90), async {
             loop {
-                if let Ok(response) = client.get(format!("{base}/readyz")).send().await
+                if let Ok(response) = client.get(format!("{base}{probe}")).send().await
                     && response.status().is_success()
                 {
                     break;
