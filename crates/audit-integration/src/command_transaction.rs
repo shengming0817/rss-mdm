@@ -177,13 +177,14 @@ impl<F: CommandFault> Transaction<F> {
 }
 
 /// Background admission evidence is appended by the owner on the projection transaction.
-pub fn dispatch_audit(
+pub async fn record_dispatch<T, E>(
     profile: crate::StorageProfile,
     binding: ExecutionBinding,
     owner: crate::operation::OperationOwner,
     id: uuid::Uuid,
     actor: &'static str,
-) -> RequestAudit {
+    record: impl AsyncFnOnce(&RequestAudit) -> Result<T, E>,
+) -> Result<T, E> {
     let audit = RequestAudit::new(
         crate::Origin::Background,
         profile,
@@ -198,5 +199,12 @@ pub fn dispatch_audit(
         crate::AuditIntent::Management,
     );
     audit.identify_service(actor);
-    audit
+    let result = record(&audit).await;
+    audit.finalize(
+        result
+            .as_ref()
+            .err()
+            .map(|_| crate::FailureReason::Transaction),
+    );
+    result
 }

@@ -87,37 +87,39 @@ impl CollectionService {
         if !dispatch.accept_in(tx, "UPDATE mdm_inventory.collection_tasks SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted").await? {
             return Ok(false);
         }
-        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
+        rss_mdm_audit_integration::command_transaction::record_dispatch(
             rss_mdm_audit_integration::StorageProfile::Mdm,
             dispatch.binding,
             OperationOwner::CollectionExecution,
             id,
             "collection-dispatch",
-        );
-        audit.target(&id.to_string());
-        let fact = Fact::business(
-            &audit,
-            OperationOwner::CollectionExecution,
-            &format!("collection:{id}:dispatch"),
-            200,
-            "success",
-            None,
-        )?;
-        store.append_in(tx, &fact).await?;
-        let fingerprint = dispatch.fingerprint;
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query("SELECT public.mdm_dispatch_collection_wake($1,$2)")
-                    .bind(id)
-                    .bind(fingerprint.as_bytes().as_slice())
-                    .execute(c)
-                    .await?;
-                Ok(())
-            })
-        })
-        .await?;
-        audit.finalize(None);
-        Ok(true)
+            async |audit| {
+                audit.target(&id.to_string());
+                let fact = Fact::business(
+                    audit,
+                    OperationOwner::CollectionExecution,
+                    &format!("collection:{id}:dispatch"),
+                    200,
+                    "success",
+                    None,
+                )?;
+                store.append_in(tx, &fact).await?;
+                let fingerprint = dispatch.fingerprint;
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        sqlx::query("SELECT public.mdm_dispatch_collection_wake($1,$2)")
+                            .bind(id)
+                            .bind(fingerprint.as_bytes().as_slice())
+                            .execute(c)
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .await?;
+                Ok(true)
+            },
+        )
+        .await
     }
 }
 pub async fn recover_one(

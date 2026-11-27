@@ -76,7 +76,7 @@ where
     F: FnOnce(reqwest::Client, String) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    run_with_drain(configuration, "/readyz", proof, || async { Ok(()) }).await
+    run_with_drain(configuration, "/readyz", proof, |_| async { Ok(()) }).await
 }
 
 #[allow(clippy::disallowed_methods, reason = "production host clock")]
@@ -89,7 +89,7 @@ pub(crate) async fn run_with_drain<F, Fut, D, Drain>(
 where
     F: FnOnce(reqwest::Client, String) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
-    D: FnOnce() -> Drain,
+    D: FnOnce(String) -> Drain,
     Drain: std::future::Future<Output = Result<()>>,
 {
     use std::{sync::Arc, time::Duration};
@@ -139,10 +139,28 @@ where
     };
     stop.send(())
         .map_err(|_| anyhow::anyhow!("host lost stop receiver"))?;
-    let drain_result = drain().await;
+    let drain_result = drain(address).await;
     tokio::time::timeout(Duration::from_secs(70), &mut server).await???;
     drain_result?;
     result
+}
+
+pub(crate) async fn wait_listener_closed(address: &str) -> Result<()> {
+    use std::time::Duration;
+    // A fresh TCP connection can no longer enter once the production HTTP listener has stopped.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match tokio::net::TcpStream::connect(address).await {
+                Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    return Ok::<_, std::io::Error>(());
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    })
+    .await??;
+    Ok(())
 }
 
 pub(crate) async fn reject(response: reqwest::Response, status: u16, code: &str) -> Result<Value> {

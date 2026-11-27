@@ -120,11 +120,19 @@ impl PgConsumerEffect<Vec<u8>> for Effect {
             },
             _=>false,
         };
-        Ok(if accepted {
-            TerminalDisposition::Succeeded
-        } else {
-            reject
-        })
+        if accepted {
+            return Ok(TerminalDisposition::Succeeded);
+        }
+        // A row hidden by policy drift cannot prove a permanent business contradiction.
+        if !business_admitted_in(tx, self.lane)
+            .await
+            .map_err(EffectFailure::infrastructure)?
+        {
+            return Err(EffectFailure::infrastructure(std::io::Error::other(
+                "command owner access contract changed",
+            )));
+        }
+        Ok(reject)
     }
 }
 /// Results are bounded by the number of admitted slots. Every failed item is
@@ -436,31 +444,33 @@ async fn business_admitted(
     binding: ExecutionBinding,
     lane: Lane,
 ) -> Option<bool> {
+    runtime
+        .local_tx(binding, deadline(1), move |tx| {
+            Box::pin(business_admitted_in(tx, lane))
+        })
+        .await
+        .fold(Some, |_| None, |_| None, |_| None, |_| None, |_| None)
+}
+
+async fn business_admitted_in(tx: &mut PgTransaction<'_>, lane: Lane) -> Result<bool, PgError> {
     let native = matches!(
         lane,
         DEVICE | SOFTWARE | POLICY | INSTALLATION | NATIVE_CREDENTIALS
     );
-    runtime
-        .local_tx(binding, deadline(1), move |tx| {
-            Box::pin(async move {
-                tx.with_connection(move |c| {
-                    Box::pin(async move {
-                        sqlx::query_scalar(rss_mdm_work_page::command_admission_sql!(
-                            "business-admission.sql"
-                        ))
-                        .bind(lane.tables)
-                        .bind(native)
-                        .bind(lane == INVENTORY)
-                        .bind(lane == DEVICE)
-                        .fetch_one(c)
-                        .await
-                    })
-                })
-                .await
-            })
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_scalar(rss_mdm_work_page::command_admission_sql!(
+                "business-admission.sql"
+            ))
+            .bind(lane.tables)
+            .bind(native)
+            .bind(lane == INVENTORY)
+            .bind(lane == DEVICE)
+            .fetch_one(c)
+            .await
         })
-        .await
-        .fold(Some, |_| None, |_| None, |_| None, |_| None, |_| None)
+    })
+    .await
 }
 fn provider_kind(error: &PgError) -> ErrorKind {
     if matches!(error, PgError::IncompatibleStorageContract(_)) {

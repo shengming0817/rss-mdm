@@ -181,37 +181,42 @@ impl Service {
             rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
         activity.delivery = Some(ActivityDelivery::Dispatched);
-        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
+        rss_mdm_audit_integration::command_transaction::record_dispatch(
             rss_mdm_audit_integration::StorageProfile::Mdm,
             dispatch.binding,
             OperationOwner::DeviceControl,
             id,
             "command-dispatch",
-        );
-        let fact = Fact::business(
-            &audit,
-            OperationOwner::DeviceControl,
-            &format!("command:{id}:dispatch"),
-            200,
-            "success",
-            None,
-        )?
-        .with_activity(&activity)?;
-        store.append_in(tx, &fact).await?;
-        if matches!(
-            &operation.request.task,
-            crate::control::Task::Windows { .. }
-        ) {
-            crate::control::worker_wake::notify_in(
-                tx,
-                crate::control::worker_wake::Work::WindowsPush,
-            )
-            .await?;
-        }
-        crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::Apple)
-            .await?;
-        audit.finalize(None);
-        Ok(true)
+            async |audit| {
+                let fact = Fact::business(
+                    audit,
+                    OperationOwner::DeviceControl,
+                    &format!("command:{id}:dispatch"),
+                    200,
+                    "success",
+                    None,
+                )?
+                .with_activity(&activity)?;
+                store.append_in(tx, &fact).await?;
+                if matches!(
+                    &operation.request.task,
+                    crate::control::Task::Windows { .. }
+                ) {
+                    crate::control::worker_wake::notify_in(
+                        tx,
+                        crate::control::worker_wake::Work::WindowsPush,
+                    )
+                    .await?;
+                }
+                crate::control::worker_wake::notify_in(
+                    tx,
+                    crate::control::worker_wake::Work::Apple,
+                )
+                .await?;
+                Ok(true)
+            },
+        )
+        .await
     }
 }
 async fn device(

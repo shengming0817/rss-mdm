@@ -309,7 +309,7 @@ async fn prepare_in(
                 // The relay owns an unreadable run only while its exact original has not been accepted.
                 // Other corruption keeps the recovery worker's normal fault semantics.
                 let status: Option<String> = tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query_scalar("SELECT o.status FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.domain='mdm.script.v1' AND o.message_id='script.'||r.id::text AND o.fingerprint=r.dispatch_fingerprint WHERE r.id=$1 AND r.tenant_id=current_setting('rss.tenant_id')::uuid AND NOT r.gateway_accepted").bind(id).fetch_optional(c).await
+                    sqlx::query_scalar("SELECT o.status FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.domain=$2 AND o.message_id='script.'||r.id::text AND o.fingerprint=r.dispatch_fingerprint WHERE r.id=$1 AND r.tenant_id=current_setting('rss.tenant_id')::uuid AND NOT r.gateway_accepted").bind(id).bind(rss_mdm_work_page::relay::lanes::SCRIPT.domain).fetch_optional(c).await
                 })).await?;
                 return match status.as_deref() {
                     Some("dead_letter") => Ok(Prepared::Quarantined),
@@ -397,8 +397,8 @@ async fn pending_in(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         let row: Option<(Option<bool>,bool)> = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_as("SELECT state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed', NOT t.gateway_accepted AND EXISTS(SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=t.tenant_id AND o.domain='mdm.script.v1' AND o.message_id='script.'||t.id::text AND o.fingerprint=t.dispatch_fingerprint AND o.status='dead_letter') FROM mdm_script.runs t WHERE tenant_id=$1::uuid AND id=$2")
-                .bind(tenant).bind(id).fetch_optional(c).await
+            sqlx::query_as("SELECT state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed', NOT t.gateway_accepted AND EXISTS(SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=t.tenant_id AND o.domain=$3 AND o.message_id='script.'||t.id::text AND o.fingerprint=t.dispatch_fingerprint AND o.status='dead_letter') FROM mdm_script.runs t WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant).bind(id).bind(rss_mdm_work_page::relay::lanes::SCRIPT.domain).fetch_optional(c).await
         })).await?;
         let Some((pending, isolated)) = row else {
             return Ok(false);

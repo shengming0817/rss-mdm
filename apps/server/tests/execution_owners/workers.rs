@@ -940,6 +940,27 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         }
     })
     .await?;
+    // A changed effective Script policy hides a valid original from the consumer. Other owners still run.
+    sqlx::query("CREATE POLICY t2_hidden_script ON mdm_script.runs AS RESTRICTIVE FOR UPDATE TO mdm_dispatch_script USING(false)").execute(&late.c.operator).await?;
+    let [hidden] =
+        ordered_scripts_in(&late, restart, late.c.execution(), [("drift", false)]).await?;
+    command::wait_relay(async || {
+        Ok(fresh.a.script_work.health().relay
+            == Some(rss_mdm_recovery_observation::Phase::Failed(
+                rss_reconcile::ErrorKind::StorageContract,
+            )))
+    })
+    .await?;
+    let [unclaimed] =
+        ordered_scripts_in(&late, restart, late.c.execution(), [("next", false)]).await?;
+    let unaffected = accept_collection(&late).await?;
+    wait(format!("collection.{unaffected}"), "published").await?;
+    assert_eq!(status(hidden.clone()).await?, "pending");
+    let attempts:i32=sqlx::query_scalar("SELECT retry_count FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2 AND status='pending'").bind(late.c.tenant.to_string()).bind(&unclaimed).fetch_one(&late.c.operator).await?;
+    assert_eq!(attempts, 0);
+    sqlx::query("DROP POLICY t2_hidden_script ON mdm_script.runs")
+        .execute(&late.c.operator)
+        .await?;
     assert!(stack.shutdown().join().await?.is_clean());
     assert_eq!(status(poison).await?, "dead_letter");
     assert_eq!(status(successor).await?, "pending");
@@ -1030,7 +1051,14 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
         command::wait_relay(async || Ok(status(&drained).await? == "publishing")).await?;
         in_flight.send(lock).map_err(|_| anyhow::anyhow!("drain receiver closed"))?;
         Ok(())
-    }, || async {if let Ok(lock)=drain.await {lock.rollback().await?;} Ok(())}).await.map_err(|e| e.context("first host isolation and drain"))?;
+    }, async |address| {
+        if let Ok(lock)=drain.await {
+            crate::host_t2_support::wait_listener_closed(&address).await?;
+            assert_eq!(status(&drained).await?, "publishing");
+            lock.rollback().await?;
+        }
+        Ok(())
+    }).await.map_err(|e| e.context("first host isolation and drain"))?;
     assert!(published(&drained).await?);
     let previous = c.execution();
     let next = rss_transactional_messaging::fence::ExecutionBinding::new(
@@ -1057,7 +1085,7 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
             );
             Ok(())
         },
-        || async { Ok(()) },
+        |_| async { Ok(()) },
     )
     .await
     .map_err(|e| e.context("second host startup and delivery"))?;

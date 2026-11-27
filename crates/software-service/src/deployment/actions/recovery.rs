@@ -173,26 +173,28 @@ impl SoftwareService {
             &run,
             rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
-        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
+        rss_mdm_audit_integration::command_transaction::record_dispatch(
             rss_mdm_audit_integration::StorageProfile::Mdm,
             dispatch.binding,
             OperationOwner::SoftwareAction,
             id,
             "command-dispatch",
-        );
-        audit.target(&id.to_string());
-        let fact = Fact::business(
-            &audit,
-            OperationOwner::SoftwareAction,
-            &format!("action:{id}:dispatch"),
-            200,
-            "success",
-            None,
-        )?
-        .with_activity(&activity)?;
-        store.append_in(tx, &fact).await?;
-        audit.finalize(None);
-        Ok(true)
+            async |audit| {
+                audit.target(&id.to_string());
+                let fact = Fact::business(
+                    audit,
+                    OperationOwner::SoftwareAction,
+                    &format!("action:{id}:dispatch"),
+                    200,
+                    "success",
+                    None,
+                )?
+                .with_activity(&activity)?;
+                store.append_in(tx, &fact).await?;
+                Ok(true)
+            },
+        )
+        .await
     }
 }
 

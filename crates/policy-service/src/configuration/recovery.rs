@@ -261,36 +261,38 @@ impl Transactions {
             rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
         activity.delivery = Some(ActivityDelivery::Dispatched);
-        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
+        rss_mdm_audit_integration::command_transaction::record_dispatch(
             rss_mdm_audit_integration::StorageProfile::Mdm,
             dispatch.binding,
             OperationOwner::Configuration,
             id,
             "configuration-dispatch",
-        );
-        let fact = Fact::business(
-            &audit,
-            OperationOwner::Configuration,
-            &format!("command:{id}:dispatch"),
-            200,
-            "success",
-            None,
-        )?
-        .with_activity(&activity)?;
-        store.append_in(tx, &fact).await?;
-        tx.with_connection(|c| {
-            Box::pin(async move {
-                sqlx::query(
+            async |audit| {
+                let fact = Fact::business(
+                    audit,
+                    OperationOwner::Configuration,
+                    &format!("command:{id}:dispatch"),
+                    200,
+                    "success",
+                    None,
+                )?
+                .with_activity(&activity)?;
+                store.append_in(tx, &fact).await?;
+                tx.with_connection(|c| {
+                    Box::pin(async move {
+                        sqlx::query(
                     "SELECT pg_notify('mdm_work','apple'),pg_notify('mdm_work','windows_push')",
                 )
                 .execute(c)
                 .await?;
-                Ok(())
-            })
-        })
-        .await?;
-        audit.finalize(None);
-        Ok(true)
+                        Ok(())
+                    })
+                })
+                .await?;
+                Ok(true)
+            },
+        )
+        .await
     }
 }
 
