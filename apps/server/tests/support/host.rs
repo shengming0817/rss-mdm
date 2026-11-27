@@ -76,6 +76,21 @@ where
     F: FnOnce(reqwest::Client, String) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
+    run_with_drain(configuration, proof, || async { Ok(()) }).await
+}
+
+#[allow(clippy::disallowed_methods, reason = "production host clock")]
+pub(crate) async fn run_with_drain<F, Fut, D, Drain>(
+    configuration: Value,
+    proof: F,
+    drain: D,
+) -> Result<()>
+where
+    F: FnOnce(reqwest::Client, String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+    D: FnOnce() -> Drain,
+    Drain: std::future::Future<Output = Result<()>>,
+{
     use std::{sync::Arc, time::Duration};
     let address = configuration["listen"].as_str().unwrap().to_owned();
     let config = serde_json::from_value(configuration)?;
@@ -123,7 +138,9 @@ where
     };
     stop.send(())
         .map_err(|_| anyhow::anyhow!("host lost stop receiver"))?;
+    let drain_result = drain().await;
     tokio::time::timeout(Duration::from_secs(70), &mut server).await???;
+    drain_result?;
     result
 }
 

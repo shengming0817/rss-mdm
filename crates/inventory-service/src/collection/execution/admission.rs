@@ -407,8 +407,10 @@ pub async fn occurrence_available_in(
             .await?)
 }
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
-    rss_transactional_messaging::message::MessagingDomain::parse("mdm.collection.v1")
-        .expect("fixed Collection domain")
+    rss_transactional_messaging::message::MessagingDomain::parse(
+        rss_mdm_work_page::relay::lanes::INVENTORY.domain,
+    )
+    .expect("fixed Collection domain")
 }
 fn dispatch(
     tenant: rss_request_context::TenantId,

@@ -25,7 +25,11 @@ impl Worker {
         store: rss_mdm_work_page::scheduler::Scheduler,
         budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     ) -> Self {
-        let readiness = rss_mdm_recovery_observation::Readiness::new("mdm.script.v1", true, false);
+        let readiness = rss_mdm_recovery_observation::Readiness::new(
+            rss_mdm_work_page::relay::lanes::SCRIPT.domain,
+            true,
+            false,
+        );
         Self {
             read_pool,
             storage,
@@ -129,7 +133,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
         let binding = self.execution(claim, control).await?;
         control.check()?;
-        if claim.target().scope().reconciler() != "mdm.script.v1" {
+        if claim.target().scope().reconciler() != rss_mdm_work_page::relay::lanes::SCRIPT.domain {
             return Err(failure(Error::Invariant));
         }
         let service = &self.service;
@@ -159,7 +163,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         let binding = self.execution(claim, control).await?;
         control.check()?;
         let service = &self.service;
-        if claim.target().scope().reconciler() != "mdm.script.v1" {
+        if claim.target().scope().reconciler() != rss_mdm_work_page::relay::lanes::SCRIPT.domain {
             return Err(failure(Error::Invariant));
         }
         let audit = RequestAudit::new(
@@ -392,14 +396,14 @@ async fn pending_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        let row: Option<(bool,bool)> = tx.with_connection(move |c| Box::pin(async move {
+        let row: Option<(Option<bool>,bool)> = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as("SELECT state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed', NOT t.gateway_accepted AND EXISTS(SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=t.tenant_id AND o.domain='mdm.script.v1' AND o.message_id='script.'||t.id::text AND o.fingerprint=t.dispatch_fingerprint AND o.status='dead_letter') FROM mdm_script.runs t WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(id).fetch_optional(c).await
         })).await?;
         let Some((pending, isolated)) = row else {
             return Ok(false);
         };
-        if pending && isolated {
+        if pending != Some(false) && isolated {
             // Only a matching terminal quarantine takes over an unreadable business run.
             // A readable run still processes its ordinary cancellation and deadline.
             match crate::storage::read_run(tx, id).await {
@@ -408,7 +412,8 @@ async fn pending_in(
                 Ok(_) => {}
             }
         }
-        return Ok(pending);
+        // Missing fields need owner validation in prepare_in before they can converge.
+        return Ok(pending.unwrap_or(true));
     }
 
     Err(Error::Invariant.into())

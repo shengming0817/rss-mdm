@@ -10,7 +10,9 @@ pub fn scope(
     rss_reconcile::Scope::new(
         tenant,
         match profile {
-            rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
+            rss_mdm_install_support::StorageProfile::Mdm => {
+                rss_mdm_work_page::relay::lanes::ENROLLMENT.domain
+            }
             rss_mdm_install_support::StorageProfile::Da => "da.registration.enrollment.v1",
         },
     )

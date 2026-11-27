@@ -120,7 +120,7 @@ async fn prepare_roles(input: &Input, tag: &str, secrets: &str) -> Result<()> {
     if marker.as_deref() == Some(format!("{tag}:reserved").as_str()) {
         for sql in [
             "CREATE ROLE mdm_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION; CREATE ROLE mdm_api NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION; CREATE ROLE mdm_access NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;",
-            include_str!(concat!(env!("OUT_DIR"), "/business-roles.sql")),
+            BUSINESS_ROLES.as_str(),
             include_str!("../../../../crates/device-access-runtime/schema/roles.sql"),
             include_str!("../../schema/software-publication-roles.sql"),
             include_str!("../../schema/commands-roles.sql"),
@@ -169,3 +169,7 @@ fn identifier(name: &str) -> Result<String> {
 #[cfg(test)]
 #[path = "../../tests/setup/postgres.rs"]
 mod tests;
+
+static BUSINESS_ROLES: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    crate::assembly::task_relay::lanes::render_sql(include_str!("../../schema/business-roles.sql"))
+});

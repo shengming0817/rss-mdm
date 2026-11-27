@@ -59,3 +59,15 @@ impl Dispatch<'_> {
         .await
     }
 }
+
+/// Fixed product message domains and their declared consumer logins.
+pub mod lanes {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Lane {
+        pub role: &'static str,
+        pub domain: &'static str,
+        pub owner: &'static str,
+        pub tables: &'static [&'static str],
+    }
+    include!(concat!(env!("OUT_DIR"), "/command_lanes.rs"));
+}

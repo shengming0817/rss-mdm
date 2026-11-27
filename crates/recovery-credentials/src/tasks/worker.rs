@@ -31,8 +31,12 @@ impl Worker {
     ) -> Self {
         let readiness = rss_mdm_recovery_observation::Readiness::new(
             match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => "mdm.recovery.credentials.v1",
-                rss_mdm_install_support::StorageProfile::Da => "da.recovery.credentials.v1",
+                rss_mdm_install_support::StorageProfile::Mdm => {
+                    rss_mdm_work_page::relay::lanes::CREDENTIALS.domain
+                }
+                rss_mdm_install_support::StorageProfile::Da => {
+                    rss_mdm_work_page::relay::lanes::DA_CREDENTIALS.domain
+                }
             },
             true,
             false,
@@ -160,8 +164,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         control.check()?;
         if claim.target().scope().reconciler()
             != (match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => "mdm.recovery.credentials.v1",
-                rss_mdm_install_support::StorageProfile::Da => "da.recovery.credentials.v1",
+                rss_mdm_install_support::StorageProfile::Mdm => {
+                    rss_mdm_work_page::relay::lanes::CREDENTIALS.domain
+                }
+                rss_mdm_install_support::StorageProfile::Da => {
+                    rss_mdm_work_page::relay::lanes::DA_CREDENTIALS.domain
+                }
             })
         {
             return Err(failure(Error::Invariant));
@@ -197,8 +205,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         let service = &self.service;
         if claim.target().scope().reconciler()
             != (match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => "mdm.recovery.credentials.v1",
-                rss_mdm_install_support::StorageProfile::Da => "da.recovery.credentials.v1",
+                rss_mdm_install_support::StorageProfile::Mdm => {
+                    rss_mdm_work_page::relay::lanes::CREDENTIALS.domain
+                }
+                rss_mdm_install_support::StorageProfile::Da => {
+                    rss_mdm_work_page::relay::lanes::DA_CREDENTIALS.domain
+                }
             })
         {
             return Err(failure(Error::Invariant));

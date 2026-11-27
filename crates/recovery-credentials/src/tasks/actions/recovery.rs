@@ -62,17 +62,8 @@ impl Service {
     ) -> Result<bool> {
         use rss_mdm_audit_integration::operation::OperationOwner;
         let id = dispatch.id;
-        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
-            profile,
-            dispatch.binding,
-            OperationOwner::CredentialTask,
-            id,
-            "command-dispatch",
-        );
-        audit.target(&id.to_string());
         store.bind_in(tx).await?;
         if !dispatch.accept_in(tx, match profile { rss_mdm_audit_integration::StorageProfile::Mdm => "UPDATE mdm_recovery_tasks.runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted", rss_mdm_audit_integration::StorageProfile::Da => "UPDATE rss_da.credential_runs SET gateway_accepted=true WHERE da_execution IS NULL AND tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted", }).await? {
-            audit.finalize(None);
             return Ok(false);
         }
         let run = match super::storage::read_run(profile, tx, id).await {
@@ -85,6 +76,14 @@ impl Service {
             &run,
             rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
+        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
+            profile,
+            dispatch.binding,
+            OperationOwner::CredentialTask,
+            id,
+            "command-dispatch",
+        );
+        audit.target(&id.to_string());
         let fact = Fact::business(
             &audit,
             OperationOwner::CredentialTask,

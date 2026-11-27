@@ -66,14 +66,8 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "software-release-outbox-writer-v1",
             rss_mdm_software_release_postgres::OUTBOX_MIGRATION_SQL,
         ),
-        (
-            "audit-runtime-v1",
-            include_str!(concat!(env!("OUT_DIR"), "/audit-runtime.sql")),
-        ),
-        (
-            "audit-ledger-runtime-v1",
-            include_str!(concat!(env!("OUT_DIR"), "/audit-ledger-runtime.sql")),
-        ),
+        ("audit-runtime-v1", AUDIT_RUNTIME.as_str()),
+        ("audit-ledger-runtime-v1", AUDIT_LEDGER_RUNTIME.as_str()),
         (
             "installation-binding-v1",
             include_str!("../../schema/installation.sql"),
@@ -544,9 +538,20 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "da-shared-owner-grants-v1",
             include_str!("../../schema/da-shared-grants.sql"),
         ),
-        (
-            "command-projections-v1",
-            include_str!(concat!(env!("OUT_DIR"), "/command-projections.sql")),
-        ),
+        ("command-projections-v1", COMMAND_PROJECTIONS.as_str()),
     ]
 }
+
+static AUDIT_RUNTIME: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    crate::assembly::task_relay::lanes::render_sql(include_str!("../../schema/audit-runtime.sql"))
+});
+static AUDIT_LEDGER_RUNTIME: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    crate::assembly::task_relay::lanes::render_sql(include_str!(
+        "../../schema/audit-ledger-runtime.sql"
+    ))
+});
+static COMMAND_PROJECTIONS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    crate::assembly::task_relay::lanes::render_sql(include_str!(
+        "../../schema/command-projections.sql"
+    ))
+});

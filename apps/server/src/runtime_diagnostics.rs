@@ -145,6 +145,16 @@ impl RuntimeDiagnostics {
                 },
                 health.recovery,
             );
+            if let Some(relay) = health.relay {
+                let phase = execution_phase(PhaseName::Relay, relay);
+                if let Some(reason) = phase.reason {
+                    policy.reasons.push(reason);
+                }
+                if matches!(phase.state, PhaseState::Failed) {
+                    policy.health = Health::Degraded;
+                }
+                policy.phases.push(phase);
+            }
             if !health.blocks_readiness {
                 policy.readiness = task_readiness;
             }
@@ -750,6 +760,22 @@ impl RuntimeDiagnostics {
     }
 }
 // Only phases actually owned by each worker participate in readiness.
+fn execution_phase(
+    name: PhaseName,
+    phase: rss_mdm_recovery_observation::Phase,
+) -> PhaseObservation {
+    use rss_mdm_recovery_observation::Phase;
+    let (state, reason) = match phase {
+        Phase::Unobserved => (PhaseState::Unobserved, Some(Reason::Unobserved)),
+        Phase::Healthy => (PhaseState::Healthy, None),
+        Phase::Failed(kind) => (PhaseState::Failed, Some(execution_failure(kind))),
+    };
+    PhaseObservation {
+        name,
+        state,
+        reason,
+    }
+}
 fn recovery_component(
     name: ComponentName,
     state: &rss_mdm_recovery_observation::Health,
@@ -768,19 +794,11 @@ fn recovery_component(
         .chain(state.relay.map(|phase| (PhaseName::Relay, phase)))
         .chain(state.inputs.map(|phase| (PhaseName::Inputs, phase)))
     {
-        let (state, reason) = match phase {
-            Phase::Unobserved => (PhaseState::Unobserved, Some(Reason::Unobserved)),
-            Phase::Healthy => (PhaseState::Healthy, None),
-            Phase::Failed(kind) => (PhaseState::Failed, Some(execution_failure(kind))),
-        };
-        if let Some(reason) = reason {
+        let phase = execution_phase(name, phase);
+        if let Some(reason) = phase.reason {
             result.reasons.push(reason);
         }
-        result.phases.push(PhaseObservation {
-            name,
-            state,
-            reason,
-        });
+        result.phases.push(phase);
     }
     if state
         .phases()

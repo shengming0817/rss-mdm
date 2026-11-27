@@ -79,7 +79,7 @@ pub use target::Target;
 pub use transaction::*;
 pub use transactions::{Materials, Transactions};
 use uuid::Uuid;
-const DOMAIN: &str = "mdm.software.deployment.v1";
+const DOMAIN: &str = rss_mdm_work_page::relay::lanes::SOFTWARE.domain;
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
     rss_transactional_messaging::message::MessagingDomain::parse(DOMAIN)
         .expect("fixed Software domain")

@@ -37,7 +37,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
 $$;
 CREATE FUNCTION mdm_software_deployment.work_relay_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid,expected_epoch bigint,claimable boolean,quarantined boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT * FROM public.mdm_command_relay_tenants('mdm.software.deployment.v1',after_tenant)
+ SELECT * FROM public.mdm_command_relay_tenants('mdm_dispatch_software',after_tenant)
 $$;
 ALTER FUNCTION mdm_software_deployment.work_scopes(uuid) OWNER TO mdm_owner;
 ALTER FUNCTION mdm_software_deployment.work_epoch(uuid,text) OWNER TO mdm_owner;

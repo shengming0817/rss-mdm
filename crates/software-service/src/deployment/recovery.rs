@@ -132,16 +132,8 @@ impl SoftwareService {
     ) -> Result<bool> {
         use rss_mdm_audit_integration::operation::OperationOwner;
         let id = dispatch.id;
-        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
-            rss_mdm_audit_integration::StorageProfile::Mdm,
-            dispatch.binding,
-            OperationOwner::SoftwareDeployment,
-            id,
-            "command-dispatch",
-        );
         store.bind_in(tx).await?;
         if !dispatch.accept_in(tx, "UPDATE mdm_software_deployment.operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted").await? {
-            audit.finalize(None);
             return Ok(false);
         }
         let operation = match storage::load(tx, protection, id).await {
@@ -162,6 +154,13 @@ impl SoftwareService {
             rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
         activity.delivery = Some(ActivityDelivery::Dispatched);
+        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
+            dispatch.binding,
+            OperationOwner::SoftwareDeployment,
+            id,
+            "command-dispatch",
+        );
         let fact = Fact::business(
             &audit,
             OperationOwner::SoftwareDeployment,

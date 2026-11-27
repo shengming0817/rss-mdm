@@ -1,11 +1,4 @@
-//! Named, separately authorized command consumers. Each domain is installed for exactly one login.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Lane {
-    pub role: &'static str,
-    pub domain: &'static str,
-    pub owner: &'static str,
-}
-include!(concat!(env!("OUT_DIR"), "/command_lanes.rs"));
+pub(crate) use rss_mdm_work_page::relay::lanes::*;
 
 /// The installer, admission budget and host all use this exact physical-pool inventory.
 pub(crate) fn enabled(device_access: bool, recovery: bool) -> impl Iterator<Item = Lane> {
@@ -15,4 +8,15 @@ pub(crate) fn enabled(device_access: bool, recovery: bool) -> impl Iterator<Item
         CREDENTIALS | NATIVE_CREDENTIALS => recovery,
         _ => true,
     })
+}
+
+pub(crate) fn render_sql(template: &str) -> String {
+    let roles: Vec<_> = LANES.iter().map(|lane| lane.role).collect();
+    let bindings: Vec<_> = LANES
+        .iter()
+        .map(|lane| format!("{}={}", lane.role, lane.domain))
+        .collect();
+    template
+        .replace("{command_roles}", &roles.join(","))
+        .replace("{command_bindings}", &bindings.join(","))
 }

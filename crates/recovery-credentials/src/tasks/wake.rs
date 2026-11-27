@@ -10,8 +10,12 @@ pub fn scope(
     rss_reconcile::Scope::new(
         tenant,
         match profile {
-            rss_mdm_install_support::StorageProfile::Mdm => "mdm.recovery.credentials.v1",
-            rss_mdm_install_support::StorageProfile::Da => "da.recovery.credentials.v1",
+            rss_mdm_install_support::StorageProfile::Mdm => {
+                rss_mdm_work_page::relay::lanes::CREDENTIALS.domain
+            }
+            rss_mdm_install_support::StorageProfile::Da => {
+                rss_mdm_work_page::relay::lanes::DA_CREDENTIALS.domain
+            }
         },
     )
     .expect("fixed Enrollment scope")

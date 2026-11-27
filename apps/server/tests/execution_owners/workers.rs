@@ -693,14 +693,21 @@ async fn accept_collection(h: &Harness) -> Result<Uuid> {
 /// Two ordered partitions of one tenant/domain. The first head has an invalid persisted
 /// Script result. Its successor and the independent head both have valid owner rows.
 async fn ordered_scripts(h: &Harness, template: Uuid) -> Result<[String; 3]> {
+    ordered_scripts_in(h, template, h.c.execution()).await
+}
+
+async fn ordered_scripts_in(
+    h: &Harness,
+    template: Uuid,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
+) -> Result<[String; 3]> {
     use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
     use rss_transactional_messaging::{
         message::*,
         outbox::{OutboxWriter, PendingMessage},
     };
     use rss_transactional_messaging_postgres::PgOutboxWriter;
-    let binding = h.c.execution();
-    let domain = MessagingDomain::parse("mdm.script.v1")?;
+    let domain = MessagingDomain::parse(crate::assembly::task_relay::lanes::SCRIPT.domain)?;
     let keys = [
         PartitionKey::parse("broken")?,
         PartitionKey::parse("healthy")?,
@@ -758,8 +765,8 @@ async fn ordered_scripts(h: &Harness, template: Uuid) -> Result<[String; 3]> {
     let mut tx = command::seed_transaction(&h.c).await?;
     for (index, run) in runs.into_iter().enumerate() {
         let written = sqlx::query("INSERT INTO mdm_script.runs(expected_epoch,tenant_id,id,policy_version,resource_id,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,invocation,result,dispatch_fingerprint)
-            SELECT r.expected_epoch,r.tenant_id,$3,r.policy_version,r.resource_id,r.origin,r.source_objects,r.device,$4,r.created_at,r.available_at,r.deadline,r.state,r.invocation,$5,o.fingerprint FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.message_id=$4 AND o.domain='mdm.script.v1' WHERE r.tenant_id=$1::uuid AND r.id=$2")
-            .bind(h.c.tenant.to_string()).bind(template).bind(run).bind(&ids[index]).bind((index==0).then(||serde_json::json!({"invalid":true}))).execute(&mut *tx).await?;
+            SELECT $6,r.tenant_id,$3,r.policy_version,r.resource_id,r.origin,r.source_objects,r.device,$4,r.created_at,r.available_at,r.deadline,r.state,r.invocation,$5,o.fingerprint FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.message_id=$4 AND o.domain='mdm.script.v1' WHERE r.tenant_id=$1::uuid AND r.id=$2")
+            .bind(h.c.tenant.to_string()).bind(template).bind(run).bind(&ids[index]).bind((index==0).then(||serde_json::json!({"invalid":true}))).bind(binding.epoch().get()).execute(&mut *tx).await?;
         assert_eq!(written.rows_affected(), 1);
     }
     tx.commit().await?;
@@ -800,6 +807,16 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         w::PolicyEventDecision::Accepted { .. }
     ));
     let collection = accept_collection(&h).await?;
+    let limited =
+        h.c.inputs
+            .pool(
+                &h.c.profile,
+                crate::assembly::task_relay::lanes::INVENTORY.role,
+            )
+            .await?;
+    let (wake, unrestricted): (bool,bool) = sqlx::query_as("SELECT has_function_privilege(current_user,'public.mdm_dispatch_collection_wake(uuid,bytea)','EXECUTE'),EXISTS(SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='rss_reconcile' AND p.proname IN ('claim_due','finish','wake') AND has_schema_privilege(current_user,n.oid,'USAGE') AND has_function_privilege(current_user,p.oid,'EXECUTE'))").fetch_one(&limited).await?;
+    assert!(wake && !unrestricted);
+    limited.close().await;
     let [poison, successor, ordered_peer] = ordered_scripts(&h, a).await?;
     let (_, expired_version) = h.policy("expired-window").await?;
     let expired = Uuid::new_v4();
@@ -952,22 +969,67 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
         h.admit(version, id).await?,
         w::PolicyEventDecision::Accepted { .. }
     ));
-    sqlx::query("UPDATE mdm_script.runs SET result=$3 WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(h.c.tenant.to_string())
+    let c = &h.c;
+    let [bad, successor, peer] = ordered_scripts(&h, id).await?;
+    sqlx::query("UPDATE mdm_script.runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string())
         .bind(id)
         .bind(serde_json::json!({"invalid":true}))
-        .execute(&h.c.operator)
+        .execute(&c.operator)
         .await?;
-    let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
-    let config =
-        crate::host_t2_support::configuration(&h.c.inputs, &h.c.profile, address, Uuid::new_v4())
-            .await?;
-    let c = &h.c;
-    crate::host_t2_support::run(config, |client,base| async move {
+    let configuration = async || {
+        let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+        crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4()).await
+    };
+    let status = async |message: &str| -> Result<String> {
+        Ok(sqlx::query_scalar("SELECT status FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain=$2 AND message_id=$3")
+            .bind(c.tenant.to_string()).bind(crate::assembly::task_relay::lanes::SCRIPT.domain).bind(message).fetch_one(&c.operator).await?)
+    };
+    let published = async |message: &str| -> Result<bool> {
+        Ok(sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.fingerprint=r.dispatch_fingerprint JOIN rss_transactional_messaging.inbox i ON (i.tenant_id,i.message_id,i.fingerprint)=(o.tenant_id,o.message_id,o.fingerprint) WHERE r.tenant_id=$1::uuid AND o.domain=$2 AND o.message_id=$3 AND i.consumer_group=$4 AND i.disposition='succeeded' AND r.gateway_accepted AND o.status='published')")
+            .bind(c.tenant.to_string()).bind(crate::assembly::task_relay::lanes::SCRIPT.domain).bind(message).bind(crate::assembly::task_relay::lanes::SCRIPT.role).fetch_one(&c.operator).await?)
+    };
+    let (_, drain_policy) = h.policy("drain").await?;
+    let draining = Uuid::new_v4();
+    assert!(matches!(
+        h.admit(drain_policy, draining).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    let mut lock = command::seed_transaction(c).await?;
+    sqlx::query("SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(c.tenant.to_string())
+        .bind(draining)
+        .fetch_one(&mut *lock)
+        .await?;
+    let drained = format!("script.{draining}");
+    crate::host_t2_support::run_with_drain(configuration().await?, async |client,base| {
         command::wait_relay(async || Ok(sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_reconcile.targets t JOIN rss_transactional_messaging.outbox o ON o.tenant_id=t.tenant_id WHERE o.tenant_id=$1::uuid AND t.reconciler='mdm.script.v1' AND t.entity=$2 AND o.domain=t.reconciler AND o.message_id=$3 AND o.status='dead_letter' AND t.result='converged' AND t.next_run IS NULL)").bind(c.tenant.to_string()).bind(format!("run:{id}")).bind(format!("script.{id}")).fetch_one(&c.operator).await?)).await?;
+        command::wait_relay(async || Ok(status(&bad).await? == "dead_letter" && published(&peer).await? && status(&drained).await? == "publishing")).await?;
+        assert_eq!(status(&successor).await?, "pending");
         assert_eq!(client.get(format!("{base}/readyz")).send().await?.status(), reqwest::StatusCode::OK);
         Ok(())
-    }).await?;
+    }, || async {lock.rollback().await?; Ok(())}).await?;
+    assert!(published(&drained).await?);
+    let previous = c.execution();
+    let next = rss_transactional_messaging::fence::ExecutionBinding::new(
+        previous.storage(),
+        previous.tenant(),
+        rss_transactional_messaging::fence::Epoch::new(2)?,
+    );
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1").bind(c.tenant.to_string()).execute(&c.operator).await?.rows_affected(),1);
+    let template = Uuid::parse_str(peer.strip_prefix("script.").unwrap())?;
+    let [_, _, next_peer] = ordered_scripts_in(&h, template, next).await?;
+    crate::host_t2_support::run(configuration().await?, async |client, base| {
+        command::wait_relay(async || published(&next_peer).await).await?;
+        assert_eq!(status(&bad).await?, "dead_letter");
+        assert_eq!(status(&successor).await?, "pending");
+        assert_eq!(
+            client.get(format!("{base}/readyz")).send().await?.status(),
+            reqwest::StatusCode::OK
+        );
+        Ok(())
+    })
+    .await?;
     h.close().await
 }
 

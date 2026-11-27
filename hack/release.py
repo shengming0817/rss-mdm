@@ -99,7 +99,7 @@ def deployment_files(product):
 
 def deployment_source(name):
     if name == "deployment/command-lanes.csv":
-        return Path("apps/server/schema/command-lanes.csv")
+        return Path("crates/work-page/src/command-lanes.csv")
     if name == "deployment/body_limits.json":
         return Path("crates/management-http/src/body_limits.json")
     if name == "deployment/device-access-roles.sql":
@@ -224,6 +224,11 @@ def build_staged(out, header, web_image=None, target_platform=None, product="mdm
             if name == "deployment/business-roles.sql":
                 target.write_text(business_role_sql(source/deployment_source(name), source/deployment_source("deployment/command-lanes.csv")))
             else:
+                if name == "mdm-config.example.json":
+                    roles = command_roles(source / deployment_source("deployment/command-lanes.csv"))
+                    example = json.loads((source / deployment_source(name)).read_text())
+                    if set(example['command_projection_password_files']) != set(roles):
+                        raise ValueError("example projection credentials differ from the shipped command lanes")
                 shutil.copy(source / deployment_source(name), target)
             deployment[name] = sha(target)
         exports = [("http-contract", "http-contract.json")]

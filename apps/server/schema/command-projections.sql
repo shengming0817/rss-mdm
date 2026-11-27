@@ -1,3 +1,4 @@
+-- Fixed RSS consumer bindings: {command_bindings}
 CREATE FUNCTION public.mdm_dispatch_native_status(p_device uuid, p_id text, p_message text, p_fingerprint bytea)
 RETURNS text LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
  SELECT c.status FROM rss_device_command.commands c
@@ -52,3 +53,30 @@ CREATE POLICY command_initial_state ON mdm_registration_tasks.operations AS REST
 CREATE POLICY command_initial_state ON mdm_registration_tasks.runs AS RESTRICTIVE FOR INSERT TO mdm_command_runtime,mdm_policy_runtime WITH CHECK (NOT gateway_accepted);
 CREATE POLICY command_initial_state ON mdm_recovery_tasks.runs AS RESTRICTIVE FOR INSERT TO mdm_command_runtime,mdm_policy_runtime WITH CHECK (NOT gateway_accepted);
 CREATE POLICY command_initial_state ON mdm_recovery_tasks.operations AS RESTRICTIVE FOR INSERT TO mdm_command_runtime,mdm_policy_runtime WITH CHECK (NOT gateway_accepted);
+
+
+-- A Collection projection can wake only the already-admitted run in its current binding.
+CREATE FUNCTION public.mdm_dispatch_collection_wake(p_run uuid,p_fingerprint bytea) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+DECLARE tenant uuid := current_setting('rss.tenant_id')::uuid; target text := 'run:'||p_run::text;
+        lane text := rss_transactional_messaging.consumer_scope_domain(); resources text[];
+BEGIN
+ SELECT array_agg(d.resource ORDER BY d.resource) INTO resources
+ FROM mdm_inventory.collection_tasks r
+ JOIN rss_reconcile.targets t ON t.tenant_id=r.tenant_id AND t.reconciler=lane AND t.entity=target
+ JOIN rss_reconcile.target_resources d ON (d.tenant_id,d.reconciler,d.entity)=(t.tenant_id,t.reconciler,t.entity)
+ WHERE r.tenant_id=tenant AND r.id=p_run AND r.gateway_accepted AND r.dispatch_fingerprint=p_fingerprint
+   AND r.expected_epoch=current_setting('rss.execution_epoch')::bigint;
+ IF resources IS NULL THEN RAISE EXCEPTION 'collection dispatch binding unavailable'; END IF;
+ PERFORM rss_reconcile.wake(tenant,lane,target,resources);
+ PERFORM pg_notify('mdm_work','collection_recovery');
+END $$;
+REVOKE ALL ON FUNCTION public.mdm_dispatch_collection_wake(uuid,bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.mdm_dispatch_collection_wake(uuid,bytea) TO mdm_dispatch_inventory;
+
+CREATE FUNCTION public.mdm_command_initial_state_ok(relation oid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT EXISTS(SELECT FROM pg_policy p WHERE p.polrelid=relation AND p.polname='command_initial_state'
+  AND NOT p.polpermissive AND p.polcmd='a' AND p.polroles @> ARRAY['mdm_command_runtime'::regrole::oid,'mdm_policy_runtime'::regrole::oid]
+  AND pg_get_expr(p.polwithcheck,p.polrelid)='(NOT gateway_accepted)')
+$$;

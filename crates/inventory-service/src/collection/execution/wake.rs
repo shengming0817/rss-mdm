@@ -3,7 +3,8 @@ use crate::{Error, transaction::Result};
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 pub fn scope(tenant: rss_request_context::TenantId) -> rss_reconcile::Scope {
-    rss_reconcile::Scope::new(tenant, "mdm.collection.v1").expect("fixed collection scope")
+    rss_reconcile::Scope::new(tenant, rss_mdm_work_page::relay::lanes::INVENTORY.domain)
+        .expect("fixed collection scope")
 }
 pub async fn run_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,

@@ -1,0 +1,12 @@
+symbol,owner,domain,tables
+DEVICE,device,mdm.commands.v1,mdm_devices.control_operations|mdm_devices.unmanage_runs
+POLICY,policy,mdm.policy.configuration.v1,mdm_planning.configuration_operations
+SCRIPT,script,mdm.script.v1,mdm_script.runs
+INVENTORY,inventory,mdm.collection.v1,mdm_inventory.collection_tasks
+SOFTWARE,software,mdm.software.deployment.v1,mdm_software_deployment.operations|mdm_software_deployment.action_runs
+INSTALLATION,installation,mdm.registration.installation.v1,mdm_registration_tasks.operations
+ENROLLMENT,enrollment,mdm.registration.enrollment.v1,mdm_registration_tasks.runs
+ACCESS,device_access,mdm.registration.access.v1,rss_da.access_runs
+CREDENTIALS,mdm_credentials,mdm.recovery.credentials.v1,mdm_recovery_tasks.runs
+DA_CREDENTIALS,da_credentials,da.recovery.credentials.v1,rss_da.credential_runs
+NATIVE_CREDENTIALS,native_credentials,mdm.recovery.native.v1,mdm_recovery_tasks.operations

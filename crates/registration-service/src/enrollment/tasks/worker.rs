@@ -28,7 +28,9 @@ impl Worker {
     ) -> Self {
         let readiness = rss_mdm_recovery_observation::Readiness::new(
             match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
+                rss_mdm_install_support::StorageProfile::Mdm => {
+                    rss_mdm_work_page::relay::lanes::ENROLLMENT.domain
+                }
                 rss_mdm_install_support::StorageProfile::Da => "da.registration.enrollment.v1",
             },
             true,
@@ -150,7 +152,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         control.check()?;
         if claim.target().scope().reconciler()
             != (match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
+                rss_mdm_install_support::StorageProfile::Mdm => {
+                    rss_mdm_work_page::relay::lanes::ENROLLMENT.domain
+                }
                 rss_mdm_install_support::StorageProfile::Da => "da.registration.enrollment.v1",
             })
         {
@@ -187,7 +191,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         let service = &self.service;
         if claim.target().scope().reconciler()
             != (match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
+                rss_mdm_install_support::StorageProfile::Mdm => {
+                    rss_mdm_work_page::relay::lanes::ENROLLMENT.domain
+                }
                 rss_mdm_install_support::StorageProfile::Da => "da.registration.enrollment.v1",
             })
         {

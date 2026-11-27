@@ -395,8 +395,10 @@ pub async fn occurrence_available_in(
             .await?)
 }
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
-    rss_transactional_messaging::message::MessagingDomain::parse("mdm.script.v1")
-        .expect("fixed Script domain")
+    rss_transactional_messaging::message::MessagingDomain::parse(
+        rss_mdm_work_page::relay::lanes::SCRIPT.domain,
+    )
+    .expect("fixed Script domain")
 }
 fn dispatch(
     tenant: rss_request_context::TenantId,

@@ -26,8 +26,11 @@ impl Worker {
         store: rss_mdm_work_page::scheduler::Scheduler,
         budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     ) -> Self {
-        let readiness =
-            rss_mdm_recovery_observation::Readiness::new("mdm.collection.v1", true, false);
+        let readiness = rss_mdm_recovery_observation::Readiness::new(
+            rss_mdm_work_page::relay::lanes::INVENTORY.domain,
+            true,
+            false,
+        );
         Self {
             read_pool,
             storage,
@@ -136,7 +139,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
         let binding = self.execution(claim, control).await?;
         control.check()?;
-        if claim.target().scope().reconciler() != ("mdm.collection.v1") {
+        if claim.target().scope().reconciler()
+            != (rss_mdm_work_page::relay::lanes::INVENTORY.domain)
+        {
             return Err(failure(Error::Unavailable(crate::Failure::PlanningStorage)));
         }
         let service = &self.service;
@@ -167,7 +172,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         let binding = self.execution(claim, control).await?;
         control.check()?;
         let service = &self.service;
-        if claim.target().scope().reconciler() != ("mdm.collection.v1") {
+        if claim.target().scope().reconciler()
+            != (rss_mdm_work_page::relay::lanes::INVENTORY.domain)
+        {
             return Err(failure(Error::Unavailable(crate::Failure::PlanningStorage)));
         }
         let audit = RequestAudit::new(

@@ -24,6 +24,7 @@ SELECT current_setting('transaction_isolation')='read committed'
  OR has_table_privilege(current_user,c.oid,'INSERT')<>r.insertable
  OR has_table_privilege(current_user,c.oid,'DELETE')<>r.deletable
  OR has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
+ OR (EXISTS(SELECT FROM pg_attribute col WHERE col.attrelid=c.oid AND col.attname='gateway_accepted' AND NOT col.attisdropped) AND NOT public.mdm_command_initial_state_ok(c.oid))
  OR (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid AND NOT (polname='command_initial_state' AND NOT polpermissive AND polcmd='a' AND pg_get_expr(polwithcheck,polrelid)='(NOT gateway_accepted)') AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'

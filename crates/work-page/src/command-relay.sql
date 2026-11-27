@@ -1,12 +1,18 @@
 -- Only the product's reference to original Outbox headers is indexed here.
 CREATE INDEX mdm_command_relay_catalog ON rss_transactional_messaging.outbox(domain,tenant_id,status);
-CREATE FUNCTION public.mdm_command_relay_tenants(lane text, after_tenant uuid)
+CREATE FUNCTION public.mdm_command_relay_tenants(consumer text, after_tenant uuid)
 RETURNS TABLE(tenant_id uuid,epoch bigint,claimable boolean,quarantined boolean)
 LANGUAGE plpgsql STABLE SECURITY INVOKER
 SET search_path=pg_catalog,pg_temp
 AS $function$
-DECLARE candidate uuid; previous_tenant text:=current_setting('rss.tenant_id',true);
+DECLARE lane text; candidate uuid; previous_tenant text:=current_setting('rss.tenant_id',true);
 BEGIN
+ SELECT s.domain INTO lane FROM rss_transactional_messaging.consumer_scope s WHERE s.login_role=consumer AND s.consumer_group=consumer;
+ IF NOT FOUND THEN
+   -- Standalone DA Enrollment retains its own domain outside the MDM dispatch catalog.
+   IF consumer <> 'da.registration.enrollment.v1' THEN RETURN; END IF;
+   lane := consumer;
+ END IF;
  candidate := after_tenant;
  FOR position IN 1..32 LOOP
    -- One seek per tenant. Published history does not increase the page size or

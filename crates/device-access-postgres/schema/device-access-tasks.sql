@@ -140,7 +140,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
 $$;
 CREATE FUNCTION rss_da.access_runs_work_relay_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid,expected_epoch bigint,claimable boolean,quarantined boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT * FROM public.mdm_command_relay_tenants('mdm.registration.access.v1',after_tenant)
+ SELECT * FROM public.mdm_command_relay_tenants('mdm_dispatch_device_access',after_tenant)
 $$;
 ALTER FUNCTION rss_da.access_runs_work_scopes(uuid) OWNER TO da_owner;
 ALTER FUNCTION rss_da.access_runs_work_epoch(uuid,text) OWNER TO da_owner;

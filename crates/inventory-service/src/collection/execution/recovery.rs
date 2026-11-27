@@ -80,10 +80,13 @@ impl CollectionService {
         tx: &mut PgTransaction<'_>,
         dispatch: &rss_mdm_work_page::relay::Dispatch<'_>,
         store: &rss_mdm_audit_integration::AuditStore,
-        messaging: &rss_reconcile_postgres::PgMessagingStore,
     ) -> Result<bool> {
         use rss_mdm_audit_integration::operation::OperationOwner;
         let id = dispatch.id;
+        store.bind_in(tx).await?;
+        if !dispatch.accept_in(tx, "UPDATE mdm_inventory.collection_tasks SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted").await? {
+            return Ok(false);
+        }
         let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
             rss_mdm_audit_integration::StorageProfile::Mdm,
             dispatch.binding,
@@ -92,11 +95,6 @@ impl CollectionService {
             "collection-dispatch",
         );
         audit.target(&id.to_string());
-        store.bind_in(tx).await?;
-        if !dispatch.accept_in(tx, "UPDATE mdm_inventory.collection_tasks SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted").await? {
-            audit.finalize(None);
-            return Ok(false);
-        }
         let fact = Fact::business(
             &audit,
             OperationOwner::CollectionExecution,
@@ -106,7 +104,18 @@ impl CollectionService {
             None,
         )?;
         store.append_in(tx, &fact).await?;
-        super::wake::run_in(messaging, tx, id).await?;
+        let fingerprint = dispatch.fingerprint;
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT public.mdm_dispatch_collection_wake($1,$2)")
+                    .bind(id)
+                    .bind(fingerprint.as_bytes().as_slice())
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
         audit.finalize(None);
         Ok(true)
     }

@@ -50,7 +50,7 @@ use rss_transactional_messaging_postgres::{PgError, PgOutboxStore, PgRuntime, Pg
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
-const DOMAIN: &str = "mdm.commands.v1";
+const DOMAIN: &str = rss_mdm_work_page::relay::lanes::DEVICE.domain;
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
     rss_transactional_messaging::message::MessagingDomain::parse(DOMAIN).expect("fixed domain")
 }

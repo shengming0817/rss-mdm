@@ -125,6 +125,7 @@ pub struct AutomationHealth {
     pub blocks_readiness: bool,
     pub discovery: Option<RunObservation>,
     pub recovery: rss_mdm_recovery_observation::Phase,
+    pub relay: Option<rss_mdm_recovery_observation::Phase>,
     pub scan: Option<RunObservation>,
     pub unresolved_attempts: u64,
     pub truncated: bool,
@@ -144,7 +145,14 @@ impl Application {
         AutomationHealth {
             blocks_readiness: snapshot.blocks_readiness,
             discovery: snapshot.discovery.map(scan),
-            recovery: snapshot.recovery,
+            recovery: snapshot.recovery_phase,
+            relay: self.configuration.is_some().then(|| match snapshot.relay {
+                None => rss_mdm_recovery_observation::Phase::Unobserved,
+                Some(value) => value.failure.map_or(
+                    rss_mdm_recovery_observation::Phase::Healthy,
+                    rss_mdm_recovery_observation::Phase::Failed,
+                ),
+            }),
             scan: snapshot.scan.map(scan),
             unresolved_attempts: snapshot.unresolved_attempts,
             truncated: snapshot.truncated,

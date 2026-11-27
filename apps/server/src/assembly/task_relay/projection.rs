@@ -30,7 +30,6 @@ struct Effect {
     audit: AuditStore,
     protection: Arc<Protector>,
     storage: StorageIdentity,
-    collection_wake: Option<rss_reconcile_postgres::PgMessagingStore>,
 }
 struct Validator {
     binding: ExecutionBinding,
@@ -108,7 +107,7 @@ impl PgConsumerEffect<Vec<u8>> for Effect {
                 rss_mdm_script_service::ScriptService::project_action_in(tx,&dispatch,audit).await.map_err(EffectFailure::infrastructure)?
             },
             (INVENTORY,"collection")=> {
-                rss_mdm_inventory_service::collection::execution::CollectionService::project_action_in(tx,&dispatch,audit,self.collection_wake.as_ref().expect("collection wake admitted")).await.map_err(EffectFailure::infrastructure)?
+                rss_mdm_inventory_service::collection::execution::CollectionService::project_action_in(tx,&dispatch,audit).await.map_err(EffectFailure::infrastructure)?
             },
             (ENROLLMENT,"enrollment")=> {
                 rss_mdm_registration_service::enrollment::tasks::Service::project_action_in(tx,&dispatch,audit,StorageProfile::Mdm).await.map_err(EffectFailure::infrastructure)?
@@ -187,6 +186,11 @@ impl Projection {
         lane: Lane,
     ) -> Result<Arc<Self>, Error> {
         let invalid = || Error::Configuration(crate::ConfigIssue::CommandProjection);
+        if business_admitted(&runtime, binding, lane).await != Some(true) {
+            return Err(crate::Error::Configuration(
+                crate::ConfigIssue::CommandProjection,
+            ));
+        }
         let audit_budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
         let audit = audit
@@ -196,25 +200,11 @@ impl Projection {
         let capture = PgRecoveryCapture::new(runtime.clone(), protection.clone(), deadline(6))
             .await
             .map_err(unavailable)?;
-        let collection_wake = if lane == INVENTORY {
-            Some(
-                rss_reconcile_postgres::PgMessagingStore::new(
-                    runtime.clone(),
-                    binding,
-                    deadline(6),
-                )
-                .await
-                .map_err(|_| Error::Unavailable(Failure::Database))?,
-            )
-        } else {
-            None
-        };
         let effect = Effect {
             lane,
             audit,
             protection,
             storage: binding.storage(),
-            collection_wake,
         };
         let ttl = Duration::from_secs(30);
         let io = Duration::from_secs(6);
@@ -385,6 +375,13 @@ impl Projection {
                                 Status::RejectedPermanent => {
                                     Err(("transaction", ErrorKind::Permanent, false))
                                 }
+                                Status::InfrastructureTransient
+                                    if business_admitted(&self.runtime, binding, self.lane)
+                                        .await
+                                        == Some(false) =>
+                                {
+                                    Err(("owner_contract", ErrorKind::StorageContract, false))
+                                }
                                 _ => Err(("transaction", ErrorKind::Transient, false)),
                             }
                         }
@@ -432,6 +429,36 @@ impl Projection {
             serde_json::json!({"event":"mdm_command_relay_failure","owner":self.lane.owner,"domain":self.lane.domain,"tenant":binding.tenant().to_string(),"epoch":binding.epoch().get(),"messageId":message.map(|m|m.id.as_str()),"fingerprintBase64":message.and_then(|m|m.fingerprint).map(|digest|base64::engine::general_purpose::STANDARD.encode(digest.as_bytes())),"phase":stage,"reason":format!("{kind:?}"),"provider":provider.map(|e|e.kind().as_label())})
         );
     }
+}
+/// Only a successfully read negative catalog result proves a lane-wide failure.
+async fn business_admitted(
+    runtime: &PgRuntime,
+    binding: ExecutionBinding,
+    lane: Lane,
+) -> Option<bool> {
+    let native = matches!(
+        lane,
+        DEVICE | SOFTWARE | POLICY | INSTALLATION | NATIVE_CREDENTIALS
+    );
+    runtime
+        .local_tx(binding, deadline(1), move |tx| {
+            Box::pin(async move {
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        sqlx::query_scalar(include_str!("business-admission.sql"))
+                            .bind(lane.tables)
+                            .bind(native)
+                            .bind(lane == INVENTORY)
+                            .bind(lane == DEVICE)
+                            .fetch_one(c)
+                            .await
+                    })
+                })
+                .await
+            })
+        })
+        .await
+        .fold(Some, |_| None, |_| None, |_| None, |_| None, |_| None)
 }
 fn provider_kind(error: &PgError) -> ErrorKind {
     if matches!(error, PgError::IncompatibleStorageContract(_)) {

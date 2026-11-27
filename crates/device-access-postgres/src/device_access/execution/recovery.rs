@@ -61,17 +61,8 @@ impl Service {
     ) -> Result<bool> {
         use rss_mdm_audit_integration::operation::OperationOwner;
         let id = dispatch.id;
-        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
-            rss_mdm_audit_integration::StorageProfile::Da,
-            dispatch.binding,
-            OperationOwner::DeviceAccessTask,
-            id,
-            "command-dispatch",
-        );
-        audit.target(&id.to_string());
         store.bind_in(tx).await?;
         if !dispatch.accept_in(tx, "UPDATE rss_da.access_runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND da_target IS NULL AND NOT gateway_accepted").await? {
-            audit.finalize(None);
             return Ok(false);
         }
         let run = match super::storage::read_run(tx, id).await {
@@ -84,6 +75,14 @@ impl Service {
             &run,
             rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
+        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
+            rss_mdm_audit_integration::StorageProfile::Da,
+            dispatch.binding,
+            OperationOwner::DeviceAccessTask,
+            id,
+            "command-dispatch",
+        );
+        audit.target(&id.to_string());
         let fact = Fact::business(
             &audit,
             OperationOwner::DeviceAccessTask,

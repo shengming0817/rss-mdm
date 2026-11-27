@@ -98,6 +98,7 @@ pub struct Snapshot {
     pub relay: Option<Scan>,
     pub inputs: Option<Scan>,
     pub recovery: Phase,
+    pub recovery_phase: Phase,
     pub blocks_readiness: bool,
     /// Only target execution failures; phase failures are represented by their summaries.
     pub unresolved_attempts: u64,
@@ -118,6 +119,7 @@ impl Snapshot {
 pub struct Observations {
     failures: HashMap<Key, Failure>,
     relay_failures: HashMap<Key, Failure>,
+    relay_summaries: HashMap<Key, Failure>,
     relay_truncated: bool,
     latest: [Option<Scan>; 4],
     sequence: u128,
@@ -159,13 +161,13 @@ impl<'a> RelayPage<'a> {
                 let scope = Scope::new(id, self.domain).expect("registered owner domain");
                 let key = Key::DeadLetters(scope.clone(), epoch);
                 if state
-                    .relay_failures
+                    .relay_summaries
                     .get(&key)
                     .is_none_or(|failure| failure.sequence <= self.sequence)
                 {
                     state.dead_letters(scope.clone(), epoch, quarantine, None);
                 }
-                state.relay_failures.retain(|key, failure| {
+                state.relay_summaries.retain(|key, failure| {
                     let older_binding = matches!(
                         key,
                         Key::DeadLetters(other, old) | Key::RelayClaim(other, old)
@@ -176,11 +178,11 @@ impl<'a> RelayPage<'a> {
                 if !claimable {
                     let claim = Key::RelayClaim(scope.clone(), epoch);
                     if state
-                        .relay_failures
+                        .relay_summaries
                         .get(&claim)
                         .is_some_and(|f| f.sequence <= self.sequence)
                     {
-                        state.relay_failures.remove(&claim);
+                        state.relay_summaries.remove(&claim);
                     }
                 }
                 let work = if claimable {
@@ -288,13 +290,12 @@ impl Observations {
                 observed_at: at,
             });
         }
-        let (failures, truncated) = if matches!(
-            key,
-            Key::DeadLetters(..) | Key::RelayClaim(..) | Key::RelayMessage(..)
-        ) {
-            (&mut self.relay_failures, &mut self.relay_truncated)
-        } else {
-            (&mut self.failures, &mut self.truncated)
+        let (failures, truncated) = match key {
+            Key::RelayMessage(..) => (&mut self.relay_failures, &mut self.relay_truncated),
+            Key::DeadLetters(..) | Key::RelayClaim(..) => {
+                (&mut self.relay_summaries, &mut self.relay_truncated)
+            }
+            _ => (&mut self.failures, &mut self.truncated),
         };
         match outcome {
             Ok(()) => {
@@ -433,6 +434,7 @@ impl Observations {
         self.failures
             .iter()
             .chain(&self.relay_failures)
+            .chain(&self.relay_summaries)
             .filter(|(key, _)| key.phase() == Some(index))
             .max_by_key(|(_, failure)| {
                 (
@@ -472,6 +474,7 @@ impl Observations {
             .failures
             .values()
             .chain(self.relay_failures.values())
+            .chain(self.relay_summaries.values())
             .max_by_key(|failure| failure.sequence)
         {
             Phase::Failed(failure.kind)
@@ -480,7 +483,27 @@ impl Observations {
         } else {
             Phase::Unobserved
         };
+        let recovery_phase = if self.truncated {
+            Phase::Failed(ErrorKind::Invariant)
+        } else if let Some((_, failure)) = self
+            .failures
+            .iter()
+            .filter(|(key, _)| {
+                !matches!(
+                    key,
+                    Key::RelayRound(_) | Key::StoppedRelay(_) | Key::Inputs(_)
+                )
+            })
+            .max_by_key(|(_, f)| f.sequence)
+        {
+            Phase::Failed(failure.kind)
+        } else if self.latest[0].is_some() || self.latest[1].is_some() {
+            Phase::Healthy
+        } else {
+            Phase::Unobserved
+        };
         Snapshot {
+            recovery_phase,
             discovery: self.phase(0),
             scan: self.phase(1),
             relay: self.phase(2),
@@ -507,12 +530,45 @@ mod tests {
                     .unwrap();
             state.dead_letters(Scope::new(tenant, "script").unwrap(), 1, true, None);
         }
+        let tenant = uuid::Uuid::from_u128(100_001);
+        let id = rss_request_context::TenantId::parse(&tenant.to_string()).unwrap();
+        let scope = Scope::new(id, "script").unwrap();
+        let message = RelayMessage {
+            domain: MessagingDomain::parse("dispatch").unwrap(),
+            id: MessageId::parse("original").unwrap(),
+            fingerprint: Some(MessageFingerprint::from_bytes([8; 32])),
+        };
+        state.message_failed(&scope, 1, &message, ErrorKind::RollbackFailed, None);
+        let state = std::sync::Mutex::new(state);
+        let bindings = RelayPage::begin(&state, "script").bindings(vec![(tenant, 1, false, false)]);
+        assert!(matches!(bindings[0].2, RelayWork::Readback));
+        let mut state = state.lock().unwrap();
+        let (_, original, revision) = state.next_relay_check(&scope, 1).unwrap();
+        assert!(original == message);
+        assert!(state.confirm_terminal(scope, 1, original, revision));
+        assert!(state.relay_failures.is_empty());
+        assert!(!state.relay_summaries.is_empty());
         assert!(state.snapshot().truncated);
         assert!(!state.snapshot().blocks_readiness);
         state.relay_round("script", Err(ErrorKind::StorageContract), None);
         assert!(state.snapshot().blocks_readiness);
         state.relay_round("script", Ok(()), None);
         assert!(!state.snapshot().blocks_readiness);
+    }
+
+    #[test]
+    fn policy_relay_and_recovery_keep_their_own_failures() {
+        let mut state = Observations::default();
+        state.relay_round("policy", Err(ErrorKind::StorageContract), None);
+        state.discovery("policy", Err(ErrorKind::Transient), None);
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.recovery_phase, Phase::Failed(ErrorKind::Transient));
+        assert_eq!(
+            snapshot.relay.unwrap().failure,
+            Some(ErrorKind::StorageContract)
+        );
+        state.discovery("policy", Ok(()), None);
+        assert_eq!(state.snapshot().recovery_phase, Phase::Healthy);
     }
 
     #[test]

@@ -29,13 +29,19 @@ pub use service::{AcceptedReceipt, target};
 use std::{sync::Arc, time::Duration};
 pub use transaction::*;
 use uuid::Uuid;
-const DOMAIN: &str = "mdm.recovery.native.v1";
+const DOMAIN: &str = rss_mdm_work_page::relay::lanes::NATIVE_CREDENTIALS.domain;
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
-    rss_transactional_messaging::message::MessagingDomain::parse("mdm.recovery.native.v1")
-        .expect("fixed Recovery domain")
+    rss_transactional_messaging::message::MessagingDomain::parse(
+        rss_mdm_work_page::relay::lanes::NATIVE_CREDENTIALS.domain,
+    )
+    .expect("fixed Recovery domain")
 }
 pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
-    rss_reconcile::Scope::new(tenant, "mdm.recovery.native.v1").expect("fixed Recovery scope")
+    rss_reconcile::Scope::new(
+        tenant,
+        rss_mdm_work_page::relay::lanes::NATIVE_CREDENTIALS.domain,
+    )
+    .expect("fixed Recovery scope")
 }
 pub struct Materials {
     pub supersede_batch: rss_device_command::BatchLimit,

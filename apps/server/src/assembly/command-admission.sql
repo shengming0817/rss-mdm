@@ -127,6 +127,9 @@ SELECT current_setting('server_encoding')='UTF8' AND current_user='mdm_command_r
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
    AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
    AND pg_get_expr(polqual,polrelid)=pg_get_expr(polwithcheck,polrelid)))
+ AND NOT EXISTS(SELECT FROM allowed a JOIN pg_class c ON c.oid=to_regclass(a.relation)
+   JOIN pg_attribute col ON col.attrelid=c.oid AND col.attname='gateway_accepted' AND NOT col.attisdropped
+   WHERE a.ins AND NOT public.mdm_command_initial_state_ok(c.oid))
  AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM tables) AND NOT tgisinternal )
  AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='mdm_software_deployment.action_runs'::regclass AND tgname='software_results' AND tgfoid='mdm_software_deployment.advance_software_results()'::regprocedure AND tgenabled='O')
  AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='mdm_agent.bindings'::regclass AND tgname='software_bindings' AND tgfoid='mdm_software_deployment.advance_software_bindings()'::regprocedure AND tgenabled='O')

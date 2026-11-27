@@ -85,8 +85,10 @@ impl Transactions {
     }
 }
 fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
-    rss_transactional_messaging::message::MessagingDomain::parse("mdm.policy.configuration.v1")
-        .expect("configuration domain")
+    rss_transactional_messaging::message::MessagingDomain::parse(
+        rss_mdm_work_page::relay::lanes::POLICY.domain,
+    )
+    .expect("configuration domain")
 }
 
 pub const INSTALL_SQL: &str = include_str!("../../schema/configuration.sql");

@@ -48,7 +48,8 @@ fn dispatch(
 }
 
 pub fn messaging_domain() -> MessagingDomain {
-    MessagingDomain::parse("mdm.registration.access.v1").expect("fixed access domain")
+    MessagingDomain::parse(rss_mdm_work_page::relay::lanes::ACCESS.domain)
+        .expect("fixed access domain")
 }
 pub(crate) async fn occurrence_available_in(
     service: &super::Transactions,

@@ -102,6 +102,30 @@ async fn device_relay_recovers_its_original() -> Result<()> {
         c.audit_count("mdm.business", &missing.to_string()).await?,
         before
     );
+    sqlx::query("DROP POLICY command_initial_state ON mdm_devices.control_operations")
+        .execute(&c.operator)
+        .await?;
+    assert!(a.resources.projection(&c, DEVICE).await.is_err());
+    sqlx::query("CREATE POLICY command_initial_state ON mdm_devices.control_operations AS RESTRICTIVE FOR INSERT TO mdm_command_runtime,mdm_policy_runtime WITH CHECK(NOT gateway_accepted)").execute(&c.operator).await?;
+    let restored = a.resources.projection(&c, DEVICE).await?;
+    restored.runtime.close().await;
+    let denied = Uuid::new_v4();
+    submit(denied).await?;
+    sqlx::query("REVOKE UPDATE(gateway_accepted) ON mdm_devices.control_operations FROM mdm_dispatch_device").execute(&c.operator).await?;
+    assert!(a.resources.projection(&c, DEVICE).await.is_err());
+    let stack = command::register_relay(&c, Owner::Device(a.service.clone()), lane.clone())?;
+    command::wait_relay(async || {
+        Ok(a.service.health().relay == Some(Phase::Failed(ErrorKind::StorageContract)))
+    })
+    .await?;
+    assert!(stack.shutdown().join().await?.is_clean());
+    let pending: (String, bool, bool) = sqlx::query_as("SELECT o.status,o.retry_after<=o.automatic_retry_deadline,r.gateway_accepted FROM rss_transactional_messaging.outbox o JOIN mdm_devices.control_operations r ON r.tenant_id=o.tenant_id AND r.dispatch_fingerprint=o.fingerprint WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(c.tenant.to_string()).bind(denied).fetch_one(&c.operator).await?;
+    assert_eq!(pending, ("pending".into(), true, false));
+    sqlx::query(
+        "GRANT UPDATE(gateway_accepted) ON mdm_devices.control_operations TO mdm_dispatch_device",
+    )
+    .execute(&c.operator)
+    .await?;
     lane.runtime.close().await;
     a.close().await?;
     c.close().await;

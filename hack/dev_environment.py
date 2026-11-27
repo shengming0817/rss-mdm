@@ -27,7 +27,7 @@ from build_run import lease_fds, require_lease
 from release import business_role_sql, command_roles
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_CATALOG = ROOT/'apps/server/schema/command-lanes.csv'
+COMMAND_CATALOG = ROOT/'crates/work-page/src/command-lanes.csv'
 COMMAND_PROJECTION_ROLES = command_roles(COMMAND_CATALOG)
 PROVIDERS = json.loads((ROOT / 'deployment/providers.lock.json').read_text())
 PKI_CA = {**json.loads((ROOT / 'fixtures/pki-tools.lock.json').read_text())['step-ca'], 'image': PROVIDERS['step-ca']}

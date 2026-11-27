@@ -92,7 +92,7 @@ def wait(check, stage, seconds=45):
         time.sleep(.2)
     raise RuntimeError("candidate deadline: " + stage)
 
-def inputs(root, example, deployment_directory, *, database_host="postgres", hostname="mdm.example.test", body_limits=None):
+def inputs(root, example, deployment_directory, *, database_host="postgres", hostname="mdm.example.test", body_limits=None, command_catalog=None):
     """Runtime and operator get separate mounts; the server never receives maintenance credentials."""
     runtime, operator = root/"container/runtime", root/"container/operator"
     runtime.mkdir(parents=True); operator.mkdir(parents=True)
@@ -135,7 +135,7 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     for owner in ("inventory","scope","policy","resource","software","content","telemetry","scheduler","wns"):
         config["business_databases"][owner]=database(runtime,"mdm_"+owner+"_runtime")
     config["scope_group_database"]=database(runtime,"mdm_scope_group_consumer")
-    config["command_projection_password_files"]={role:database(runtime,role)['password_file'] for role in config["command_projection_password_files"]}
+    config["command_projection_password_files"]={role:database(runtime,role)['password_file'] for role in command_roles(command_catalog or deployment_directory/'command-lanes.csv')}
     config["asset_input_database"]=database(runtime,"mdm_asset_ingress_consumer")
     config["publication"]["database"]=database(runtime,"mdm_software_driver")
     write(operator,"authorization.json",dict(runtime=config["identity"]["runtime"],profile="mdm",audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),expectedEpoch=1,login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))

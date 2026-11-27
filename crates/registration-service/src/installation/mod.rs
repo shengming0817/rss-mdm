@@ -34,13 +34,15 @@ pub use service::{AcceptedReceipt, target};
 use std::{sync::Arc, time::Duration};
 pub use transaction::*;
 use uuid::Uuid;
-pub(super) const DOMAIN: &str = "mdm.registration.installation.v1";
+pub(super) const DOMAIN: &str = rss_mdm_work_page::relay::lanes::INSTALLATION.domain;
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
-    rss_transactional_messaging::message::MessagingDomain::parse("mdm.registration.installation.v1")
-        .expect("fixed Registration domain")
+    rss_transactional_messaging::message::MessagingDomain::parse(
+        rss_mdm_work_page::relay::lanes::INSTALLATION.domain,
+    )
+    .expect("fixed Registration domain")
 }
 pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
-    rss_reconcile::Scope::new(tenant, "mdm.registration.installation.v1")
+    rss_reconcile::Scope::new(tenant, rss_mdm_work_page::relay::lanes::INSTALLATION.domain)
         .expect("fixed Registration scope")
 }
 /// Frozen installation coordinates supplied by Software after current authorization.
