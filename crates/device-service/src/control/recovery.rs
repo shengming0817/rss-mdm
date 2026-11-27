@@ -35,6 +35,14 @@ impl rss_reconcile::Timer for Timer {
         }
     }
 }
+/// Losing the command binding during a read leaves the separate scheduler claim
+/// available for a fenced deferral, so the current generation can use the device.
+pub(super) fn preflight_failure(error: Error) -> rss_reconcile::Error {
+    match error {
+        Error::Conflict => rss_reconcile::Error::new(rss_reconcile::ErrorKind::BindingChanged),
+        other => failure(other),
+    }
+}
 fn failure(error: Error) -> rss_reconcile::Error {
     if matches!(error, Error::Unavailable(Failure::NativeInputIntegrity)) {
         eprintln!(
@@ -650,14 +658,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                     .err()
                     .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
             );
-            // Observation only checks the command binding. The scheduler still owns its
-            // claim and can defer it, releasing the device for the current generation.
-            let active = active.map_err(|error| match error {
-                Error::Conflict => {
-                    rss_reconcile::Error::new(rss_reconcile::ErrorKind::BindingChanged)
-                }
-                other => failure(other),
-            })?;
+            let active = active.map_err(preflight_failure)?;
             Ok(ReconcileStep::Ready(ReconcileDiff::between(
                 DesiredState::present(false),
                 ActualState::present(active),

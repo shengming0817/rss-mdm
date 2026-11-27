@@ -90,7 +90,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 },
             )
             .await
-            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            .map_err(super::recovery::preflight_failure)?;
             if waiting {
                 Completion::Reobserve(std::time::Duration::from_secs(5))
             } else {
@@ -111,7 +111,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 },
             )
             .await
-            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            .map_err(super::recovery::preflight_failure)?;
             Completion::Reobserve(if pending {
                 std::time::Duration::from_millis(20)
             } else {
@@ -131,7 +131,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                         },
                     )
                     .await
-                    .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+                    .map_err(super::recovery::preflight_failure)?;
                     Completion::Reobserve(if pending {
                         std::time::Duration::from_millis(20)
                     } else {
