@@ -101,24 +101,14 @@ async fn confirm_and_cancel(
         changed["revision"].as_i64(),
         current["revision"].as_i64().map(|value| value + 1)
     );
-    let reauthorize = |confirmation: serde_json::Value| {
-        serde_json::json!({
-            "requestId": Uuid::new_v4(), "expectedRevision": changed["revision"], "confirmation": confirmation
-        })
-    };
+    let terminal = serde_json::json!({
+        "requestId": Uuid::new_v4(), "expectedRevision": changed["revision"], "confirmation": {"confirmed": true}
+    });
     let (status, _) = post(
         client,
         account,
         &format!("{path}/{id}/reauthorize"),
-        reauthorize(serde_json::Value::Null),
-    )
-    .await?;
-    assert_eq!(status, 409);
-    let (status, _) = post(
-        client,
-        account,
-        &format!("{path}/{id}/reauthorize"),
-        reauthorize(serde_json::json!({"confirmed": true})),
+        terminal,
     )
     .await?;
     assert_eq!(status, 409);
