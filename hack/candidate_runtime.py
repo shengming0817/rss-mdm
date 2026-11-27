@@ -533,7 +533,7 @@ class Candidate:
             require(self.sql(prefix_sql) == prefix, 'reentry preserved original unit receipts')
             require(self.sql("SELECT obj_description('rss_observation'::regnamespace, 'pg_namespace'), "
                              "obj_description('rss_projection'::regnamespace, 'pg_namespace')") ==
-                    'rss-observation-postgres:4|rss-projection-postgres:4', 'installed component revisions')
+                    'rss-observation-postgres:5|rss-projection-postgres:5', 'installed component revisions')
             self.management_tenant=self.sql('SELECT management_tenant_id FROM public.mdm_installation')
             self.config['identity']['management_tenant']=self.management_tenant
             private(self.runtime/'config.json',self.config)

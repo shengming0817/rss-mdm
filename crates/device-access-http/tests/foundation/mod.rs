@@ -9,6 +9,7 @@ mod enterprise;
 mod exports;
 mod host;
 mod installation;
+mod inventory;
 mod material;
 mod platform;
 mod recovery;
@@ -708,6 +709,9 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await
     .context("standalone Mac account protocol")?;
     c.close().await;
+    Box::pin(inventory::verify(&c))
+        .await
+        .context("DA Inventory page settlement and restart")?;
 
     Box::pin(recovery::verify(
         &c.inputs,

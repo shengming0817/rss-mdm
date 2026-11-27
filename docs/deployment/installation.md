@@ -545,6 +545,8 @@ Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设�
 
 ## 安装遥测存储
 
+PostgreSQL、Timescale shared 和 dedicated 资源的 `backend.prepare` 必填。`max_prepare_batches` 是每个物理 store 的并发批数（至少 1），`max_prepare_bytes` 是准备编码和 SQL 参数的总字节数（至少为所选候选的 `Limits::MIN_PREPARE_BYTES`，本候选 64 位环境为 17,813,504 字节）。标准安装为两个并发批次准备两倍最低字节。查询输出上限由 `limits.max_bytes` 单独控制。
+
 遥测为显式可选配置。先以部署管理员执行 `prepare-telemetry --config /absolute/private-request.json`，再通过 `configure-host` 的 `telemetry` 变更启用。请求结构由 `installation::providers::telemetry::Request` 持有，运行结构由 `telemetry::Config` 持有；安装请求、操作 UUID、私有安装目录与回执一起保管。重复执行使用原请求，变更同一 UUID 的内容会冲突。
 
 遥测数据库与产品主库分开。PostgreSQL 模式在安装请求中显式提供 UTC 微秒分区边界；Timescale 模式先由部署方安装要求的扩展版本。dedicated 模式为每个租户配置独立数据库、运行角色、维护登录与池，维护登录只能切换到该库的 NOLOGIN owner。运行启动只做准入，不创建对象，不自动选择或回退存储模式。支持版本与预算由安装器及固定 RSS adapter 校验，不能用“能连接”替代准入结果。
@@ -602,7 +604,7 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 ### 独立 Device Access 宿主
 
-`rss-da`（Cargo package `rss-da-app`）拥有独立进程和两条直接 TLS listener：浏览器/Identity 与 DA 设备协议。它使用 `rss_da`、Identity、Audit 和消息组件，不需要 MDM/Inventory 数据库对象。MDM 配置的 `device_access` 为 `null` 时不装配 DA 路由、listener 或 Identity 平台 verifier；旧 DA 执行仅允许按原坐标结算，停止新 offer、Start、策略推进和 relay，其他 MDM 工作照常。
+`rss-da`（Cargo package `rss-da-app`）拥有独立进程和两条直接 TLS listener：浏览器/Identity 与 DA 设备协议。独立 DA 在本库安装 Observation 和 Projection，设备状态及配置应用报告由 `da_inventory_runtime` 连接执行有序批投影。安装配置须指定同库的 `inventory_database` 和 `projection_page_bytes`（规范 Observation 正文字节，至少 4 MiB）。`GET /api/v1/tenants/{tenant}/da/admin/devices/{device}/inventory` 以设备级 OperationRead 读取当前注册代际已提交的自报资产。即时报告与配置诊断沿用各自的接收时间。积压达到每设备每种报告的 historyCount 时，精确重试仍能取得原接收回执，新报告待容量恢复后重试。独立维护角色为 `da_observation_maintenance`，主服务对应 `mdm_observation_maintenance`，按已授权的退休历史范围单独使用。MDM 配置的 `device_access` 为 `null` 时不装配 DA 路由、listener 或 Identity 平台 verifier；旧 DA 执行仅允许按原坐标结算，停止新 offer、Start、策略推进和 relay，其他 MDM 工作照常。
 
 当前安装采用全新 V1 基线，不提供历史结构升级或数据迁移。`--describe` 输出该二进制的精确安装单元；独立和嵌入模式共用 DA owner 清单。`prepare-database --config <绝对路径>` 在已由部署方建立的空 PostgreSQL 17 数据库中创建固定角色；输入为 `administrator` 数据库连接、`installation` 绑定和五个 LOGIN 角色到独立密码文件的 `passwords` 映射。已有不同 installation 的角色会被拒绝。`install --config` 输入为 `da_owner` 的 `database`、同一 `installation` 和 `audit`。
 

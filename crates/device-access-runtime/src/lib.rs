@@ -21,6 +21,7 @@ pub enum Error {
 }
 pub struct Resources {
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
+    pub project_reports: bool,
     pub report_limits: pg::reports::Limits,
     pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub installation: Uuid,
@@ -54,6 +55,7 @@ impl Runtime {
         let business = Arc::new(pg::Service::new(pg::Assembly {
             recovery: r.recovery,
             report_limits: r.report_limits,
+            project_reports: r.project_reports,
             cursor: r.cursor.clone(),
             instance: r.installation,
             store: store.clone(),

@@ -182,6 +182,8 @@
       "updates": [
         "document",
         "integrity",
+        "registration_epoch",
+        "stream_revision",
         "receipt"
       ],
       "delete_policy": null

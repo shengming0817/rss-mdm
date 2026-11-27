@@ -23,6 +23,8 @@ def providers(root, installation):
         timescale.up()
         timescale.sql('CREATE DATABASE shared_metrics TEMPLATE template0')
         timescale.sql('CREATE EXTENSION IF NOT EXISTS timescaledb', 'shared_metrics')
+        timescale.sql('CREATE DATABASE dedicated_metrics TEMPLATE template0')
+        timescale.sql('CREATE EXTENSION IF NOT EXISTS timescaledb', 'dedicated_metrics')
         installation.sql('CREATE DATABASE ch_control TEMPLATE template0')
         area = installation.root / 'clickhouse'
         installation.issue_leaf(area, ['localhost'])

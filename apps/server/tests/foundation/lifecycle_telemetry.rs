@@ -50,13 +50,20 @@ async fn resources(
             ch = json!({"installer":{"user":"installer","password_file":area.join("installer-password")},"guard":{"user":"ch_guard","password_file":area.join("guard-password")},"backup_directory":area.join("backup"),"server_configuration_files":[area.join("config.d/telemetry.xml"),area.join("users.xml")]});
         } else {
             config["cursor_key_file"] = json!(key);
-            config["backend"] = json!({"kind":kind,"database":db,"chunk_micros":86400000000u64});
+            config["backend"] = json!({"kind":kind,"database":db,"prepare":crate::telemetry::PrepareCapacity::installation(),"chunk_micros":86400000000u64});
         }
         let request = json!({"operationId":Uuid::new_v4(),"directory":root.join(kind),"configuration":config,
             "administrator":administrator,"owner":format!("metrics_owner_{kind}"),"partitions":[],"clickhouse":ch});
         if kind == "click_house" {
             check_clickhouse_installation(&request, &writer_password, &password).await?;
         } else {
+            let mut too_small = request.clone();
+            let minimum = rss_timeseries_postgres::Limits::MIN_PREPARE_BYTES;
+            too_small["configuration"]["backend"]["prepare"]["max_prepare_bytes"] =
+                json!(minimum - 1);
+            ensure!(
+                matches!(telemetry::prepare(serde_json::from_value(too_small)?).await,Err(crate::installation::Error::MinimumCapacity{field:"telemetry.max_prepare_bytes",minimum:n}) if n==minimum)
+            );
             telemetry::prepare(serde_json::from_value(request.clone())?)
                 .await
                 .context("install shared Timescale")?;
@@ -84,6 +91,19 @@ async fn check_clickhouse_installation(
             .await?
             .admitted
     );
+    let config: crate::telemetry::Config =
+        serde_json::from_value(request["configuration"].clone())?;
+    let pool = config.runtime_pool().await?;
+    let installed: (i32, i32) = sqlx::query_as(
+        "SELECT version,max_pending_batches FROM rss_ts_ch.installation WHERE singleton",
+    )
+    .fetch_one(&pool)
+    .await?;
+    ensure!(
+        installed == (5, 16),
+        "unexpected ClickHouse control installation {installed:?}"
+    );
+    pool.close().await;
     recovery::admin_sql(request, "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision").await?;
     recovery::admin_sql(
         request,
@@ -97,6 +117,19 @@ async fn check_clickhouse_installation(
         ),
         "same-name incorrect index passed admission"
     );
+    let config: crate::telemetry::Config =
+        serde_json::from_value(request["configuration"].clone())?;
+    let pool = config.runtime_pool().await?;
+    let installed: (i32, i32) = sqlx::query_as(
+        "SELECT version,max_pending_batches FROM rss_ts_ch.installation WHERE singleton",
+    )
+    .fetch_one(&pool)
+    .await?;
+    ensure!(
+        installed == (5, 16),
+        "unexpected ClickHouse control installation {installed:?}"
+    );
+    pool.close().await;
     recovery::admin_sql(request, "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision").await?;
     ensure!(
         telemetry::prepare(serde_json::from_value(request.clone())?)
@@ -599,7 +632,70 @@ pub(super) async fn exercise(
     attach(source, &resources[0], a, 1, json!({"kind":"retire"})).await?;
     available(&mut first_browser, a, false).await?;
     recovery::retained(&primary, a, b, expired).await?;
+    platform
+        .login(management, "platform", "Installation-platform-admin!42")
+        .await?;
+    let (plain, mut plain_browser) = provision(&mut platform).await?;
+    available(&mut plain_browser, plain, true).await?;
+    let pg_data = Box::pin(data::Upload::publish(
+        &restarted,
+        &mut plain_browser,
+        plain,
+        &primary,
+        &runtime,
+        inputs,
+        44,
+    ))
+    .await?;
+    pg_data
+        .replay(restarted.telemetry.get().unwrap(), &mut plain_browser)
+        .await?;
+    let (dedicated_tenant, mut dedicated_browser) = provision(&mut platform).await?;
     restarted.close().await?;
+    let mut dedicated = resources[1].clone();
+    dedicated["operationId"] = json!(Uuid::new_v4());
+    dedicated["owner"] = json!("metrics_dedicated_owner");
+    dedicated["directory"] = json!(root.join("dedicated"));
+    let cfg = &mut dedicated["configuration"];
+    cfg["resource_id"] = json!(Uuid::new_v4());
+    let backend = &mut cfg["backend"];
+    backend["kind"] = json!("timescale_dedicated");
+    backend["database"]["name"] = json!("dedicated_metrics");
+    backend["database"]["user"] = json!("metrics_dedicated");
+    backend["maintenance"] = backend["database"].clone();
+    backend["maintenance"]["user"] = json!("metrics_dedicated_maint");
+    backend["maintenance_owner"] = json!("metrics_dedicated_owner");
+    backend["tenant"] = json!(dedicated_tenant);
+    backend["resolutions"] = json!([60000000]);
+    dedicated["administrator"]["name"] = json!("dedicated_metrics");
+    telemetry::prepare(serde_json::from_value(dedicated.clone())?).await?;
+    let config_request = json!({"installation":source,"operation_id":Uuid::new_v4(),"tenant":null,"expected_revision":runtime["runtime_binding"]["revision"],"change":{"kind":"telemetry","settings":dedicated["configuration"]}});
+    configure::run(serde_json::from_value(config_request)?).await?;
+    runtime = maintenance::desired(root, first.host_id)?;
+    let running = Box::pin(maintenance::Running::open(&runtime)).await?;
+    runtime_files::observe_installation(serde_json::from_value(source.clone())?).await?;
+    attach(
+        source,
+        &dedicated,
+        dedicated_tenant,
+        0,
+        json!({"kind":"select"}),
+    )
+    .await?;
+    available(&mut dedicated_browser, dedicated_tenant, true).await?;
+    let data = Box::pin(data::Upload::publish(
+        &running,
+        &mut dedicated_browser,
+        dedicated_tenant,
+        &primary,
+        &runtime,
+        inputs,
+        55,
+    ))
+    .await?;
+    data.replay(running.telemetry.get().unwrap(), &mut dedicated_browser)
+        .await?;
+    running.close().await?;
     Ok(())
 }
 

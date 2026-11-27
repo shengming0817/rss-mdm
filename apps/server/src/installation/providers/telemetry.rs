@@ -63,7 +63,10 @@ fn same_database(a: &Database, b: &Database) -> bool {
 }
 impl Request {
     pub(in crate::installation) fn validate(&self) -> Result<()> {
-        self.configuration.validate().map_err(|_| Error::Input)?;
+        self.configuration.validate().map_err(|error| match error {
+            crate::Error::Configuration(issue) => crate::installation::capacity_error(issue),
+            _ => Error::Input,
+        })?;
         identifier(&self.owner)?;
         identifier(&self.configuration.database().user)?;
         if self.operation_id.is_nil()
@@ -322,7 +325,7 @@ async fn admit_postgres_server(c: &mut PgConnection, input: &Request) -> Result<
                 .fetch_optional(&mut *c)
                 .await
                 .map_err(|_| Error::Storage)?;
-        if version.as_deref() != Some("2.30.2") {
+        if version.as_deref() != Some(rss_timeseries_postgres::timescale::EXTENSION_VERSION) {
             return Err(Error::Input);
         }
     }

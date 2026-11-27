@@ -153,6 +153,7 @@ pub struct Assembly {
     pub browser: axum::Router,
     pub protocol: Arc<http::Services>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
+    inventory_pool: sqlx::PgPool,
 }
 
 #[derive(Clone)]
@@ -563,6 +564,7 @@ pub async fn assemble(
     let runtime = da::Runtime::assemble(
         da::Resources {
             recovery: custody.clone(),
+            project_reports: true,
             report_limits: config.reports.clone(),
             probe: binding,
             installation: config.installation.instance,
@@ -702,7 +704,15 @@ pub async fn assemble(
         compiled.http.requests,
     )));
 
+    let inventory_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(Duration::from_secs(2))
+        .connect_with(config.inventory_database.options()?)
+        .await
+        .map_err(|_| Error::Storage)?;
+    acquire(DynManagedResource::new_box(Pool(inventory_pool.clone())));
     Ok(Assembly {
+        inventory_pool,
         browser,
         protocol,
         pki,
@@ -770,6 +780,11 @@ pub async fn serve(
   startup.stage_task_with_token(http::tls::registration(tcp,chain,key,app.protocol,compiled.http.listener).map_err(|_|Error::Lifecycle)?.critical());
 
   let execution=config.installation.execution(rss_request_context::TenantId::parse(&config.installation.tenant.to_string()).map_err(|_|Error::Configuration)?)?;
+  for (tenant,_) in config.installation.tenants()? {
+      let worker = rss_mdm_device_access_postgres::reports::inventory::Worker::open(app.inventory_pool.clone(),config.installation.instance,config.installation.execution(tenant)?,config.projection_page_bytes,cutoff,Arc::new(Timer))
+          .await.map_err(|_|Error::AdmissionAt("DA Inventory"))?;
+      startup.stage_task_with_token(worker.registration());
+  }
   let (task,_)=rss_runtime::ManagedTask::prepare("da-pki-maintenance",Duration::from_secs(10));
 
   startup.stage_task_with_token(task.into_registration(move|stop|async move{loop{tokio::select!{biased;

@@ -1,7 +1,7 @@
 use rss_mdm_inventory as model;
 use rss_observation::Body;
 use rss_observation_postgres::PgSource;
-use rss_projection::{DefinitionIdentity, Event, Phase, Position, ProjectionScope};
+use rss_projection::{DefinitionIdentity, EventWith, Phase, Position, ProjectionScope};
 use rss_projection_postgres::{PgEffect, PgEffectOutcome, PgOperationError, PgTransaction};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -41,26 +41,31 @@ pub fn definition() -> DefinitionIdentity {
 /// }
 /// ```
 pub struct Inventory<C: rss_observation::Clock> {
-    source: Arc<PgSource<C>>,
+    source: Arc<PgSource<C, rss_observation_postgres::LocalPages>>,
     binding: rss_transactional_messaging::fence::ExecutionBinding,
 }
 impl<C: rss_observation::Clock> Inventory<C> {
     /// Bind the caller-owned Observation source without I/O or spawning tasks.
     /// The host must supply its correctly configured runtime, schema and admission checks.
     pub fn new(
-        source: Arc<PgSource<C>>,
+        source: Arc<PgSource<C, rss_observation_postgres::LocalPages>>,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
     ) -> Self {
         Self { source, binding }
     }
 }
 impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
+    type Item = EventWith<rss_observation_postgres::VerifiedObservation>;
+    const ISOLATION: rss_projection_postgres::EffectIsolation =
+        rss_projection_postgres::EffectIsolation::ReadCommitted;
+
     async fn apply(
         &self,
         tx: &mut PgTransaction<'_>,
         projection: &ProjectionScope,
-        event: &Event,
+        item: &Self::Item,
     ) -> Result<PgEffectOutcome, PgOperationError> {
+        let event = item.as_ref();
         if projection != &projection_scope(self.binding.tenant())
             || tx.tenant() != self.binding.tenant()
         {
@@ -80,7 +85,7 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         })).await?;
         let applicable = self
             .source
-            .resolve_in_transaction(tx, event)
+            .resolve_in_transaction(tx, item)
             .await
             .map_err(|error| source_error(error, event.position()))?;
         let record = applicable.record();

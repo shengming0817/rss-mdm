@@ -7,6 +7,8 @@ pub mod snapshot_tree;
 pub enum Error {
     #[error("invalid capacity for {0}")]
     Capacity(&'static str),
+    #[error("{field} must be at least {minimum}")]
+    MinimumCapacity { field: &'static str, minimum: u32 },
     #[error("installation input rejected")]
     Input,
     #[error("installation journal is busy")]

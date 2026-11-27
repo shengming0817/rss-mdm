@@ -31,6 +31,9 @@ pub use rss_mdm_install_support::maintenance::{Error, Result};
 #[cfg(unix)]
 fn capacity_error(issue: crate::ConfigIssue) -> Error {
     match issue {
+        crate::ConfigIssue::MinimumCapacity { field, minimum } => {
+            Error::MinimumCapacity { field, minimum }
+        }
         crate::ConfigIssue::ExternalCapacity(field) => Error::Capacity(field),
         _ => Error::Input,
     }

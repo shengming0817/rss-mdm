@@ -426,6 +426,7 @@ pub struct InventoryRuntimeConfig {
     pub delivery_batch: u32,
     pub delivery_bytes: u64,
     pub projection_batch: u32,
+    pub projection_page_bytes: u32,
     pub projection_events: u64,
 }
 impl InventoryRuntimeConfig {
@@ -437,6 +438,7 @@ impl InventoryRuntimeConfig {
             delivery_batch: 32,
             delivery_bytes: 64 * 1024 * 1024,
             projection_batch: 64,
+            projection_page_bytes: rss_observation::Batch::MAX_ENCODED_BYTES,
             projection_events: 64,
         }
     }
@@ -450,6 +452,7 @@ impl InventoryRuntimeConfig {
             self.delivery_batch,
             self.delivery_bytes,
             self.projection_batch,
+            self.projection_page_bytes,
             self.projection_events,
         )
         .map_err(Error::from)

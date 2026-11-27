@@ -50,6 +50,9 @@ workspace = true
 name = "foundation"
 path = "tests/foundation.rs"
 [dev-dependencies]
+rss-projection.workspace = true
+rss-observation.workspace = true
+tokio-util.workspace = true
 rss-da-app.workspace = true
 plist.workspace = true
 openssl.workspace = true

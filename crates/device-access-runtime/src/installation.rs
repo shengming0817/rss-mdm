@@ -163,7 +163,15 @@ impl Host for Composition {
     }
 }
 pub async fn verify_catalog(c: &mut PgConnection) -> Result<(), sqlx::Error> {
-    rss_mdm_install_support::catalog::verify_schema(c, DA, &manifests()).await?;
+    verify_catalog_with(c, manifests()).await
+}
+pub async fn verify_standalone_catalog(c: &mut PgConnection) -> Result<(), sqlx::Error> {
+    let mut objects = manifests();
+    objects.push(r#"{"tables":["rss_da.inventory_assets"],"functions":[]}"#);
+    verify_catalog_with(c, objects).await
+}
+async fn verify_catalog_with(c: &mut PgConnection, objects: Vec<&str>) -> Result<(), sqlx::Error> {
+    rss_mdm_install_support::catalog::verify_schema(c, DA, &objects).await?;
     rss_mdm_vault_sync::verify_catalog(c).await?;
     rss_mdm_device_access_postgres::admission::verify_authority(c).await
 }
@@ -198,6 +206,10 @@ pub fn standalone_units(ledger: bool) -> Vec<Unit> {
         ("identity-v1", rss_identity_postgres::MIGRATION_SQL),
     ]);
     result.extend(units());
+    result.push((
+        "report-inventory-v1",
+        rss_mdm_device_access_postgres::reports::inventory::INSTALL_SQL,
+    ));
     result.push((
         "standalone-grants-v1",
         include_str!("../schema/standalone-grants.sql"),
@@ -314,7 +326,9 @@ impl Host for Standalone {
             rss_mdm_install_support::verify_manifest(c, DA, &standalone_units(self.ledger))
                 .await
                 .map_err(|_| Error::at("da", "complete standalone manifest"))?;
-            self.product.verify(c).await
+            verify_standalone_catalog(c)
+                .await
+                .map_err(|_| Error::at("da", "standalone owner catalog"))
         })
     }
 }
@@ -323,7 +337,7 @@ pub async fn verify_standalone_access(
     ledger: bool,
 ) -> Result<(), sqlx::Error> {
     rss_mdm_install_support::verify_manifest(c, DA, &standalone_units(ledger)).await?;
-    verify_catalog(c).await?;
+    verify_standalone_catalog(c).await?;
     let mut contracts = access_contracts();
     contracts.push(r#"{"tables":[],"functions":[],"external_relations":["public.da_restore_operation"],"verified_schemas":[]}"#);
     if ledger {

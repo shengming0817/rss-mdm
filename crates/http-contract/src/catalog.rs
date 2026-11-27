@@ -1095,6 +1095,15 @@ pub static DA_CONFIGURATION_CHANGE: Resource = Resource {
     collection: None,
 };
 
+pub static DA_INVENTORY: Resource = Resource {
+    id: "da_inventory",
+    category: Category::ReadModel,
+    owner: "device-access-http",
+    proof: "device_access.foundation",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
+
 pub static DA_STATUS: Resource = Resource {
     id: "da_status",
     category: Category::ReadModel,

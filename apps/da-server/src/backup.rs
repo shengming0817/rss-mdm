@@ -130,7 +130,7 @@ async fn heads(
     .map_err(storage)
 }
 async fn verify_owner(c: &mut sqlx::PgConnection, config: &Config) -> Result<()> {
-    rss_mdm_device_access_runtime::installation::verify_catalog(c)
+    rss_mdm_device_access_runtime::installation::verify_standalone_catalog(c)
         .await
         .map_err(|_| Error::Admission)?;
 

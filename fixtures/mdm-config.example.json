@@ -407,6 +407,7 @@
     "drain_seconds": 5,
     "delivery_batch": 32,
     "projection_batch": 64,
+    "projection_page_bytes": 4194304,
     "projection_events": 64,
     "delivery_bytes": 67108864
   },

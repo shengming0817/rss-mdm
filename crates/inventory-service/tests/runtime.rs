@@ -57,6 +57,7 @@ fn startup_and_pass_budgets_have_independent_cutoffs() {
         64,
         64 * 1024 * 1024,
         64,
+        rss_observation::Batch::MAX_ENCODED_BYTES,
         64,
     )
     .unwrap();

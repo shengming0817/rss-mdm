@@ -12,7 +12,7 @@ use rss_observation::{
 };
 use rss_observation_postgres::PgSource;
 use rss_projection::{
-    BatchLimit, Control, GenerationStart, ProjectionScope, ReplayBound, RunLimit, Source,
+    Control, GenerationStart, PageBudget, ProjectionScope, ReplayBound, RunLimit, Source,
     SourceScope, Stop,
 };
 use rss_projection_postgres::CloseOutcome;
@@ -127,12 +127,16 @@ impl App {
     fn projection_scope(&self) -> ProjectionScope {
         rss_mdm_inventory_postgres::projection_scope(self.authority.scope().tenant())
     }
-    fn source(&self) -> Result<Arc<PgSource<Clock>>> {
-        Ok(Arc::new(PgSource::new(
-            self.observation.clone(),
-            JournalReadGrant::verify(&self.authority, self.authority.scope().tenant())?,
-            self.source_scope(),
-        )?))
+    fn source(&self) -> Result<Arc<PgSource<Clock, rss_observation_postgres::LocalPages>>> {
+        Ok(Arc::new(
+            PgSource::new(
+                self.observation.clone(),
+                JournalReadGrant::verify(&self.authority, self.authority.scope().tenant())?,
+                self.source_scope(),
+                rss_observation::Batch::MAX_ENCODED_BYTES,
+            )?
+            .into_local(),
+        ))
     }
     // Trusted fixture input is converted by the collection owner before journal admission.
     async fn prepare_fixture(&self, batch: &Batch) -> Result<Batch> {
@@ -227,7 +231,10 @@ impl App {
                 &window,
                 &execution,
                 &control,
-                RunLimit::new(BatchLimit::new(64)?, 256)?,
+                RunLimit::new(
+                    PageBudget::new(64, rss_projection::Event::MAX_PAYLOAD_BYTES)?,
+                    256,
+                )?,
             )
             .await
             .into_result()?;

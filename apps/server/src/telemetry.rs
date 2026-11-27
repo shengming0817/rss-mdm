@@ -46,13 +46,16 @@ pub struct Limits {
 pub enum Storage {
     Postgres {
         database: Database,
+        prepare: PrepareCapacity,
     },
     TimescaleShared {
         database: Database,
+        prepare: PrepareCapacity,
         chunk_micros: NonZeroU64,
     },
     TimescaleDedicated {
         database: Database,
+        prepare: PrepareCapacity,
         maintenance: Database,
         maintenance_owner: String,
         tenant: String,
@@ -72,6 +75,40 @@ pub enum Storage {
         max_memory_bytes: NonZeroU64,
     },
 }
+/// Per store, across all tenants. These process budgets do not identify the database.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrepareCapacity {
+    pub max_prepare_batches: u32,
+    pub max_prepare_bytes: u32,
+}
+impl PrepareCapacity {
+    pub(crate) fn installation() -> Self {
+        let batches = rss_mdm_telemetry_service::RELAY_CONCURRENCY;
+        Self {
+            max_prepare_batches: batches,
+            max_prepare_bytes: batches
+                .checked_mul(rss_timeseries_postgres::Limits::MIN_PREPARE_BYTES)
+                .expect("standard relay memory budget"),
+        }
+    }
+    fn limits(self) -> Result<(NonZeroU32, NonZeroU32), Error> {
+        let batches = NonZeroU32::new(self.max_prepare_batches).ok_or(Error::Configuration(
+            crate::ConfigIssue::MinimumCapacity {
+                field: "telemetry.max_prepare_batches",
+                minimum: 1,
+            },
+        ))?;
+        let bytes = NonZeroU32::new(self.max_prepare_bytes)
+            .filter(|bytes| bytes.get() >= rss_timeseries_postgres::Limits::MIN_PREPARE_BYTES)
+            .ok_or(Error::Configuration(crate::ConfigIssue::MinimumCapacity {
+                field: "telemetry.max_prepare_bytes",
+                minimum: rss_timeseries_postgres::Limits::MIN_PREPARE_BYTES,
+            }))?;
+        Ok((batches, bytes))
+    }
+}
+
 fn default_max_fences() -> NonZeroU32 {
     NonZeroU32::new(100).expect("positive default namespace fence budget")
 }
@@ -114,6 +151,12 @@ impl Config {
         self.ingress.validate().map_err(|_| invalid())?;
         self.maintenance.validate().map_err(|_| invalid())?;
         self.profile()?;
+        if let Storage::Postgres { prepare, .. }
+        | Storage::TimescaleShared { prepare, .. }
+        | Storage::TimescaleDedicated { prepare, .. } = &self.backend
+        {
+            prepare.limits()?;
+        }
         if self.connections.get() as usize > tokio::sync::Semaphore::MAX_PERMITS
             || self.limits.max_points.get() > 4096
             || self.limits.max_series.get() > 4096
@@ -177,10 +220,13 @@ impl Config {
             )
         };
         let backend = match &self.backend {
-            Storage::Postgres { database } => serde_json::json!(["postgres", coordinate(database)]),
+            Storage::Postgres { database, .. } => {
+                serde_json::json!(["postgres", coordinate(database)])
+            }
             Storage::TimescaleShared {
                 database,
                 chunk_micros,
+                ..
             } => serde_json::json!(["timescale_shared", coordinate(database), chunk_micros]),
             Storage::TimescaleDedicated {
                 database,
@@ -243,7 +289,7 @@ impl Config {
     }
     pub(crate) fn database(&self) -> &Database {
         match &self.backend {
-            Storage::Postgres { database }
+            Storage::Postgres { database, .. }
             | Storage::TimescaleShared { database, .. }
             | Storage::TimescaleDedicated { database, .. } => database,
             Storage::ClickHouse { control, .. } => control,
@@ -258,17 +304,21 @@ impl Config {
         let profile = self.profile()?;
         let deadline =
             Deadline::from_timeout(&SystemClock, Duration::from_secs(30)).map_err(|_| invalid())?;
-        let limits = rss_timeseries_postgres::Limits {
-            max_points: self.limits.max_points,
-            max_series: self.limits.max_series,
-            max_bytes: self.limits.max_bytes,
-            replay_micros: self.limits.replay_micros,
-            cursor_micros: self.limits.cursor_micros,
-        };
+        let limits = &self.limits;
         let backend = match &self.backend {
-            Storage::Postgres { .. }
-            | Storage::TimescaleShared { .. }
-            | Storage::TimescaleDedicated { .. } => {
+            Storage::Postgres { prepare, .. }
+            | Storage::TimescaleShared { prepare, .. }
+            | Storage::TimescaleDedicated { prepare, .. } => {
+                let (max_prepare_batches, max_prepare_bytes) = prepare.limits()?;
+                let limits = rss_timeseries_postgres::Limits {
+                    max_prepare_batches,
+                    max_prepare_bytes,
+                    max_points: limits.max_points,
+                    max_series: limits.max_series,
+                    max_bytes: limits.max_bytes,
+                    replay_micros: limits.replay_micros,
+                    cursor_micros: limits.cursor_micros,
+                };
                 let key = read(
                     self.cursor_key_file.as_deref().ok_or_else(invalid)?,
                     32,

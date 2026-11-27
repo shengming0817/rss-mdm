@@ -38,9 +38,11 @@ pub struct Policy {
     delivery: BatchLimit,
     delivery_bytes: i64,
     max_page: BatchLimit,
+    page_bytes: u32,
     max_events: std::num::NonZeroU64,
 }
 impl Policy {
+    #[allow(clippy::too_many_arguments, reason = "independent host budgets")]
     pub fn new(
         startup: Duration,
         pass: Duration,
@@ -48,6 +50,7 @@ impl Policy {
         delivery: u32,
         delivery_bytes: u64,
         batch: u32,
+        page_bytes: u32,
         events: u64,
     ) -> Result<Self, Error> {
         if pass > drain
@@ -58,7 +61,7 @@ impl Policy {
             return Err(Error::Malformed);
         }
         let delivery_bytes = i64::try_from(delivery_bytes).map_err(|_| Error::Malformed)?;
-        if delivery_bytes == 0 {
+        if delivery_bytes == 0 || page_bytes < rss_observation::Batch::MAX_ENCODED_BYTES {
             return Err(Error::Malformed);
         }
         Ok(Self {
@@ -67,6 +70,7 @@ impl Policy {
             drain,
             delivery_bytes,
             delivery: BatchLimit::new(delivery).map_err(|_| Error::Malformed)?,
+            page_bytes,
             max_page: BatchLimit::new(batch).map_err(|_| Error::Malformed)?,
             max_events: std::num::NonZeroU64::new(events).ok_or(Error::Malformed)?,
         })
@@ -402,14 +406,17 @@ pub enum WorkerFailure {
 }
 
 struct ProjectionHandles {
-    source: Arc<PgSource<Clock>>,
+    source: Arc<PgSource<Clock, rss_observation_postgres::LocalPages>>,
     execution: rss_projection_postgres::PgProjection<rss_mdm_inventory_postgres::Inventory<Clock>>,
     page_size: AtomicU32,
 }
 impl ProjectionHandles {
     fn limit(&self, policy: Policy) -> RunLimit {
-        let batch = BatchLimit::new(self.page_size.load(Ordering::Relaxed))
-            .expect("bounded projection page");
+        let batch = rss_projection::PageBudget::new(
+            self.page_size.load(Ordering::Relaxed),
+            rss_projection::Event::MAX_PAYLOAD_BYTES,
+        )
+        .expect("bounded projection page");
         RunLimit::new(batch, policy.max_events.get()).expect("nonzero run budget")
     }
     fn next_page(&self, report: &rss_projection::Report, policy: Policy, elapsed: bool) {
@@ -830,12 +837,14 @@ impl InventoryRuntime {
                 )
                 .map_err(|_| WorkerFailure::JournalAuthority)?,
                 scope.source().clone(),
+                self.clock.policy.page_bytes,
             )
+            .map(PgSource::into_local)
             .map_err(|_| WorkerFailure::JournalAuthority)?,
         );
         let control = Control::new(&self.clock, self.clock.startup_cutoff(), token);
         let definition = rss_mdm_inventory_postgres::definition();
-        // Revision 4 exposes the durable generation through receipt_status. Both pending
+        // The durable generation is available through receipt_status. Both pending
         // and settled carry the same checkpoint, independent of the queried event ID.
         let probe =
             rss_projection::ReceiptQuery::new(scope.clone(), definition, scope.generation())

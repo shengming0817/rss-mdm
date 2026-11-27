@@ -31,6 +31,8 @@ CREATE POLICY tenant ON mdm.inventory
 REVOKE ALL ON SCHEMA mdm FROM PUBLIC;
 REVOKE ALL ON mdm.inventory FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm,rss_observation,rss_projection TO mdm_runtime;
+GRANT USAGE ON SCHEMA rss_observation TO mdm_observation_maintenance;
+GRANT EXECUTE ON FUNCTION rss_observation.reclaim(text,bigint,bigint,numeric,integer) TO mdm_observation_maintenance;
 GRANT SELECT,INSERT,UPDATE,DELETE ON mdm.inventory TO mdm_runtime;
 CREATE VIEW mdm.inventory_presence WITH (security_barrier=true) AS
 SELECT DISTINCT tenant_id,journal,generation,scope FROM mdm.inventory
@@ -47,7 +49,9 @@ GRANT EXECUTE ON FUNCTION
  rss_projection.initialize(uuid,text,text,text,bigint,boolean,bigint,text[],bytea[],bytea),
  rss_projection.takeover(uuid,text,text,text,uuid,bytea),
  rss_projection.lock_event(uuid,text,text,text,bigint,uuid,bigint,bigint,text,bytea,bytea),
- rss_projection.finish_event(uuid,text,text,text,bigint,uuid,bigint,bigint,text,bytea,bytea)
+ rss_projection.finish_event(uuid,text,text,text,bigint,uuid,bigint,bigint,text,bytea,bytea),
+ rss_projection.lock_batch(uuid,text,text,text,bigint,uuid,bigint,bigint[],text[],bytea[],bytea),
+ rss_projection.finish_batch(uuid,text,text,text,bigint,uuid,bigint,bigint[],text[],bytea[],bytea)
  TO mdm_runtime;
 
 CREATE INDEX inventory_source ON mdm.inventory(tenant_id,registration,source,epoch);

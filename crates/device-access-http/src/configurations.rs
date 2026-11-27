@@ -139,7 +139,7 @@ fn device_transport(_: &str, path: &str) -> rss_mdm_http_contract::authenticatio
 pub(crate) fn management()
 -> Router<Arc<crate::management::Services>, impl rss_mdm_http_contract::module::Declaration + use<>>
 {
-    rss_mdm_http_contract::route_module! {struct ConfigurationQueries for [Browser] {list, detail, versions, publication_operation, diagnostics, latest, history}}
+    rss_mdm_http_contract::route_module! {struct ConfigurationQueries for [Browser] {list, detail, versions, publication_operation, diagnostics, latest, history, inventory}}
     ConfigurationQueries {
         list: Route::new(
             "/api/v1/tenants/{tenant}/da/admin/configurations",
@@ -172,6 +172,10 @@ pub(crate) fn management()
                 &catalog::DA_CONFIGURATION_DIAGNOSTICS,
                 &[Operation::Get],
             ),
+        ),
+        inventory: Route::new(
+            "/api/v1/tenants/{tenant}/da/admin/devices/{device}/inventory",
+            get(inventory, &catalog::DA_INVENTORY, &[Operation::Get]),
         ),
         latest: Route::new(
             "/api/v1/tenants/{tenant}/da/admin/devices/{device}/status",
@@ -296,6 +300,16 @@ async fn versions(
             .await?,
     )))
 }
+async fn inventory(
+    State(s): State<Arc<crate::management::Services>>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
+    Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
+) -> Result<Json<Vec<reports::Asset>>, BusinessError> {
+    Ok(Json(
+        s.business.inventory_assets(&auth.proof, &device).await?,
+    ))
+}
+
 async fn latest(
     State(s): State<Arc<crate::management::Services>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,

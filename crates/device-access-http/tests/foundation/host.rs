@@ -24,9 +24,9 @@ pub async fn verify(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<rss_da_app::Result<()>>,
 )> {
-    // The standalone host has no Inventory worker. Verify its real logins through
+    // Verify worker and ingress credentials through
     // pg_catalog OIDs so resolving a qualified function name needs no schema grant.
-    for role in ["da_access", "da_identity_runtime"] {
+    for role in ["da_access", "da_identity_runtime", "da_inventory_runtime"] {
         let login = c.inputs.database(role).pool().await?;
         let permitted: bool = sqlx::query_scalar(
             "SELECT has_function_privilege(current_user,p.oid,'EXECUTE') FROM pg_proc p
@@ -80,7 +80,7 @@ pub async fn verify(
         "http":http,
         "installation":{"instance":c.inputs.installation.instance_id,"tenant":c.tenant.to_string(),
           "management_tenant":management,"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1},
-        "database":c.inputs.database("da_access"),"identity_database":c.inputs.database("da_identity_runtime"),
+        "database":c.inputs.database("da_access"),"identity_database":c.inputs.database("da_identity_runtime"),"inventory_database":c.inputs.database("da_inventory_runtime"),"projection_page_bytes":rss_mdm_device_access_postgres::reports::inventory::MIN_PAGE_BYTES,
         "audit":{"mode":"plain"},"browser":listener(browser_address,&origin),
         "registration":{"listener":listener(protocol_address,&trust.origin),"trust_file":trust_file,
           "providers":[{"purpose":"da_device","issuer":trust.issuers[0].digest,

@@ -212,6 +212,8 @@ pub struct Config {
     pub installation: Installation,
     pub database: Database,
     pub identity_database: Database,
+    pub inventory_database: Database,
+    pub projection_page_bytes: u32,
     pub audit: Audit,
     pub browser: Listener,
     pub registration: Registration,
@@ -245,7 +247,11 @@ impl Config {
 
         self.registration.listener.host()?;
 
-        if self.database.user != "da_access"
+        if self.projection_page_bytes
+            < rss_mdm_device_access_postgres::reports::inventory::MIN_PAGE_BYTES
+            || self.inventory_database.user != "da_inventory_runtime"
+            || !self.database.same_database(&self.inventory_database)
+            || self.database.user != "da_access"
             || self.identity_database.user != "da_identity_runtime"
             || !self.database.same_database(&self.identity_database)
             || self.browser.listen == self.registration.listener.listen
