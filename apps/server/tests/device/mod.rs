@@ -14,7 +14,8 @@ use uuid::Uuid;
 async fn current_confirmation_is_atomic() -> Result<()> {
     use rss_mdm_authorization_service::Permission;
     use rss_mdm_device_service::control::device_control::{Action, Input};
-    let c = Context::open("shared", &[]).await?;
+    // Audit schema admission in other tests must see the unmodified schema.
+    let c = Context::open("device_command_settlement", &[]).await?;
     let identity = native::seed(&c, "windows").await?;
     let account = c.account(&[Permission::DeviceWipe]).await?;
     let proof = c.authenticate(&account).await?;

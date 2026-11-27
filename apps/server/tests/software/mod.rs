@@ -198,7 +198,8 @@ async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result
 #[tokio::test]
 #[ignore = "T2: original durable Unknown blocks new Software identity/channel/revision after service reconstruction"]
 async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    // Audit schema admission in other tests must see the unmodified schema.
+    let c = Context::open("software_command_settlement", &[]).await?;
     let execution_binding = c.execution();
     let (agent, native, agent_scope, native_scope, principal) = endpoints(&c).await?;
     let original = software(&c, "editor").await?;
