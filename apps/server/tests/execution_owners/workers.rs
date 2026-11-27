@@ -995,20 +995,32 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
         h.admit(drain_policy, draining).await?,
         w::PolicyEventDecision::Accepted { .. }
     ));
-    let mut lock = command::seed_transaction(c).await?;
-    sqlx::query("SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
-        .bind(c.tenant.to_string())
-        .bind(draining)
-        .fetch_one(&mut *lock)
-        .await?;
     let drained = format!("script.{draining}");
+    let due = async |message: &str, now: bool| -> Result<()> {
+        let changed = sqlx::query("UPDATE rss_transactional_messaging.outbox SET retry_after=clock_timestamp()+CASE WHEN $3 THEN interval '0' ELSE interval '5 minutes' END WHERE tenant_id=$1::uuid AND message_id=$2 AND status='pending'")
+            .bind(c.tenant.to_string()).bind(message).bind(now).execute(&c.operator).await?;
+        assert_eq!(changed.rows_affected(), 1);
+        Ok(())
+    };
+    due(&peer, false).await?;
+    due(&drained, false).await?;
+    let (in_flight, drain) =
+        tokio::sync::oneshot::channel::<sqlx::Transaction<'static, sqlx::Postgres>>();
     crate::host_t2_support::run_with_drain(configuration().await?, async |client,base| {
         command::wait_relay(async || Ok(sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_reconcile.targets t JOIN rss_transactional_messaging.outbox o ON o.tenant_id=t.tenant_id WHERE o.tenant_id=$1::uuid AND t.reconciler='mdm.script.v1' AND t.entity=$2 AND o.domain=t.reconciler AND o.message_id=$3 AND o.status='dead_letter' AND t.result='converged' AND t.next_run IS NULL)").bind(c.tenant.to_string()).bind(format!("run:{id}")).bind(format!("script.{id}")).fetch_one(&c.operator).await?)).await?;
-        command::wait_relay(async || Ok(status(&bad).await? == "dead_letter" && published(&peer).await? && status(&drained).await? == "publishing")).await?;
+        command::wait_relay(async || Ok(status(&bad).await? == "dead_letter")).await?;
+        assert_eq!(status(&peer).await?, "pending");
+        due(&peer,true).await?;
+        command::wait_relay(async || published(&peer).await).await?;
         assert_eq!(status(&successor).await?, "pending");
-        assert_eq!(client.get(format!("{base}/readyz")).send().await?.status(), reqwest::StatusCode::OK);
+        command::wait_relay(async || Ok(client.get(format!("{base}/readyz")).send().await?.status().is_success())).await?;
+        let mut lock = command::seed_transaction(c).await?;
+        sqlx::query("SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(c.tenant.to_string()).bind(draining).fetch_one(&mut *lock).await?;
+        due(&drained,true).await?;
+        command::wait_relay(async || Ok(status(&drained).await? == "publishing")).await?;
+        in_flight.send(lock).map_err(|_| anyhow::anyhow!("drain receiver closed"))?;
         Ok(())
-    }, || async {lock.rollback().await?; Ok(())}).await?;
+    }, || async {if let Ok(lock)=drain.await {lock.rollback().await?;} Ok(())}).await?;
     assert!(published(&drained).await?);
     let previous = c.execution();
     let next = rss_transactional_messaging::fence::ExecutionBinding::new(
