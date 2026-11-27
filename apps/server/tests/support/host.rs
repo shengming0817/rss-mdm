@@ -155,6 +155,14 @@ pub(crate) async fn wait_listener_closed(address: &str) -> Result<()> {
                 Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
                     return Ok::<_, std::io::Error>(());
                 }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
                 Err(e) => return Err(e),
             }
         }
