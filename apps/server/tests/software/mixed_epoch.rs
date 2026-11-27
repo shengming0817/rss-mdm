@@ -119,7 +119,7 @@ async fn assign(
 #[tokio::test]
 #[ignore = "T2: a failed run keeps its original generation while a new assignment schedules the same device and policy version"]
 async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("software_mixed_epoch", &[]).await?;
     let (target, _, scope, _, _) = endpoints(&c).await?;
     let resource = software(&c, "mixed-generation").await?;
     let mut trigger = schedule();

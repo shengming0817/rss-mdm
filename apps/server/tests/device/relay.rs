@@ -81,18 +81,18 @@ async fn device_relay_recovers_its_original() -> Result<()> {
     let expired = Uuid::new_v4();
     submit(expired).await?;
     failed_expiry_keeps_original(&c, &a, &lane, expired).await?;
-    // A valid original source without its native command cannot produce a dispatch audit.
+    // A valid original source with a mismatched native fingerprint cannot produce a dispatch audit.
     let missing = Uuid::new_v4();
     submit(missing).await?;
     let mut tx = command::seed_transaction(&c).await?;
-    let removed = sqlx::query(
-        "DELETE FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2",
+    let changed = sqlx::query(
+        "UPDATE rss_device_command.commands SET outbox_fingerprint=decode(repeat('00',32),'hex') WHERE tenant_id=$1::uuid AND command_id=$2",
     )
     .bind(c.tenant.to_string())
     .bind(missing.to_string())
     .execute(&mut *tx)
     .await?;
-    assert_eq!(removed.rows_affected(), 1);
+    assert_eq!(changed.rows_affected(), 1);
     tx.commit().await?;
     let before = c.audit_count("mdm.business", &missing.to_string()).await?;
     let stack = command::register_relay(&c, Owner::Device(a.service.clone()), lane.clone())?;

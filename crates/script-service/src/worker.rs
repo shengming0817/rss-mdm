@@ -392,10 +392,23 @@ async fn pending_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        return Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_script.runs t WHERE tenant_id=$1::uuid AND id=$2 AND (state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed'))")
-                .bind(tenant).bind(id).fetch_one(c).await
-        })).await?);
+        let row: Option<(bool,bool)> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_as("SELECT state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed', NOT t.gateway_accepted AND EXISTS(SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=t.tenant_id AND o.domain='mdm.script.v1' AND o.message_id='script.'||t.id::text AND o.fingerprint=t.dispatch_fingerprint AND o.status='dead_letter') FROM mdm_script.runs t WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant).bind(id).fetch_optional(c).await
+        })).await?;
+        let Some((pending, isolated)) = row else {
+            return Ok(false);
+        };
+        if pending && isolated {
+            // Only a matching terminal quarantine takes over an unreadable business run.
+            // A readable run still processes its ordinary cancellation and deadline.
+            match crate::storage::read_run(tx, id).await {
+                Err(crate::transaction::Fault::Request(Error::Invariant)) => return Ok(false),
+                Err(error) => return Err(error),
+                Ok(_) => {}
+            }
+        }
+        return Ok(pending);
     }
 
     Err(Error::Invariant.into())
