@@ -18,6 +18,16 @@ pub struct Expected {
     pub management_origin: String,
 }
 
+async fn inventory_snapshot(c: &mut sqlx::PgConnection, tenant: Uuid) -> Result<serde_json::Value> {
+    let result:serde_json::Value=sqlx::query_scalar("SELECT jsonb_build_object('assets',(SELECT jsonb_agg(to_jsonb(a) ORDER BY device,registration_epoch,kind) FROM rss_da.inventory_assets a WHERE tenant_id=$1),'receipts',(SELECT jsonb_agg(to_jsonb(r) ORDER BY event_id) FROM rss_projection.receipts r WHERE tenant_id=$1 AND projection_id='da-inventory'),'position',(SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1 AND projection_id='da-inventory'))").bind(tenant).fetch_one(c).await?;
+    anyhow::ensure!(
+        result["assets"].as_array().is_some_and(|s| !s.is_empty())
+            && result["receipts"].as_array().is_some_and(|s| !s.is_empty())
+            && result["position"].as_i64().is_some_and(|p| p > 0)
+    );
+    Ok(result)
+}
+
 pub async fn verify(
     inputs: &Inputs,
     material: &material::Material,
@@ -70,6 +80,7 @@ pub async fn verify(
         }],
     })?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
+    let snapshot = inventory_snapshot(&mut connection, runtime.installation.tenant).await?;
     let history = credential_history(&mut connection, &expected).await?;
     assert!(history.iter().any(
         |(d, k, state, _, _)| *d == expected.active.device.into_uuid()
@@ -180,6 +191,10 @@ pub async fn verify(
         .await
         .context("reenter completed restore")?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
+    assert_eq!(
+        inventory_snapshot(&mut connection, runtime.installation.tenant).await?,
+        snapshot
+    );
     let new_epoch: Uuid =
         sqlx::query_scalar("SELECT incarnation FROM rss_da.vault_epochs WHERE tenant_id=$1")
             .bind(runtime.installation.tenant)

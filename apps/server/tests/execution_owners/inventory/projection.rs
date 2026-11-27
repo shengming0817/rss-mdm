@@ -245,12 +245,28 @@ async fn report_page_settlement_and_cost() -> Result<()> {
             .worker(&h, &store, GenerationStart::beginning(), &control)
             .await?;
         let before = counters(&pool).await?;
-        let run = if batched {
-            rss_projection::run_batched(&*page.source, &worker, &control, limit()?).await
-        } else {
-            rss_projection::run(&*page.source, &worker, &control, limit()?).await
-        };
-        assert_eq!(run.into_result()?.applied, 3);
+        let profile = Arc::new(rss_observation_postgres::read_profile::ReadProfile::default());
+        let budget = limit()?;
+        let result = profile
+            .run(async {
+                if batched {
+                    rss_projection::run_batched(&*page.source, &worker, &control, budget).await
+                } else {
+                    rss_projection::run(&*page.source, &worker, &control, budget).await
+                }
+            })
+            .await
+            .into_result()?;
+        assert_eq!(result.applied, 3);
+        let order = std::sync::atomic::Ordering::Relaxed;
+        assert_eq!(profile.source.decodes.load(order), 3);
+        assert_eq!(profile.resolver.raw_bytes.load(order), 0);
+        assert_eq!(profile.resolver.database_fingerprints.load(order), 3);
+        eprintln!(
+            "mdm_observation_bytes={} resolver_decodes={}",
+            profile.source.raw_bytes.load(order),
+            profile.resolver.decodes.load(order)
+        );
         let mut counts = counters(&pool).await?;
         for (group, count) in &mut counts {
             *count -= before.get(group).copied().unwrap_or(0);

@@ -62,7 +62,7 @@ async fn resources(
             too_small["configuration"]["backend"]["prepare"]["max_prepare_bytes"] =
                 json!(minimum - 1);
             ensure!(
-                matches!(telemetry::prepare(serde_json::from_value(too_small)?).await,Err(crate::installation::Error::MinimumCapacity{field:"telemetry.max_prepare_bytes",minimum:n}) if n==minimum)
+                matches!(telemetry::prepare(serde_json::from_value(too_small)?).await,Err(crate::installation::Error::MinimumCapacity{field:"backend.prepare.max_prepare_bytes",minimum:n}) if n==minimum)
             );
             telemetry::prepare(serde_json::from_value(request.clone())?)
                 .await

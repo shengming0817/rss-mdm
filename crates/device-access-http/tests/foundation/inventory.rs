@@ -1,7 +1,7 @@
 //! Replay the production DA host's accepted reports in a disposable copy of its database.
 use super::*;
 use anyhow::{Context as _, ensure};
-use rss_mdm_device_access_postgres::reports::inventory::{MIN_PAGE_BYTES, Worker};
+use rss_mdm_device_access_postgres::reports::inventory::{Admission, MIN_PAGE_BYTES};
 use rss_observation::{
     Access, Authority, LifecycleGrant, LookupOutcome, ObservationStore as _, ReadGrant,
 };
@@ -112,7 +112,7 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
         .max_connections(1)
         .connect_with(
             c.inputs
-                .database("da_inventory_runtime")
+                .database("da_report_projection")
                 .options()?
                 .database(name),
         )
@@ -123,8 +123,8 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
             rss_observation::Clock::now(&clock) + Duration::from_secs(30),
         )
     };
-    let open = || {
-        Worker::open(
+    let open = || async {
+        Admission::check(
             db.clone(),
             install,
             c.execution(),
@@ -132,19 +132,45 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
             deadline(),
             Arc::new(context::Timer),
         )
+        .await?
+        .start(deadline())
+        .await
     };
     let stop = CancellationToken::new();
     let limit = RunLimit::new(
         rss_projection::PageBudget::new(3, rss_projection::Event::MAX_PAYLOAD_BYTES)?,
         3,
     )?;
+    let snapshot = || {
+        sqlx::query_scalar::<_,serde_json::Value>("SELECT jsonb_agg(to_jsonb(a) ORDER BY device,registration_epoch,kind) FROM rss_da.inventory_assets a WHERE tenant_id=$1").bind(tenant).fetch_one(&admin)
+    };
+    let expected_assets = snapshot().await?;
     let expected:i64=sqlx::query_scalar("SELECT max(position) FROM rss_projection.checkpoints WHERE tenant_id=$1 AND projection_id='da-inventory'").bind(tenant).fetch_one(&admin).await?;
     ensure!(expected > 3);
     reset(&admin, tenant).await?;
     sqlx::raw_sql("CREATE TABLE public.observed_asset_writes(pos bigint, writer xid8); CREATE FUNCTION public.observe_asset() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN INSERT INTO public.observed_asset_writes VALUES(NEW.position,pg_current_xact_id()); RETURN NEW; END $$; CREATE TRIGGER observe_asset AFTER INSERT OR UPDATE ON rss_da.inventory_assets FOR EACH ROW EXECUTE FUNCTION public.observe_asset()").execute(&admin).await?;
     let worker = open().await?;
     let before = counts(&db).await?;
-    ensure!(worker.project(&stop, limit).await.into_result()?.applied == 3);
+    let profile = Arc::new(rss_observation_postgres::read_profile::ReadProfile::default());
+    ensure!(
+        profile
+            .run(worker.project(&stop, limit))
+            .await
+            .into_result()?
+            .applied
+            == 3
+    );
+    let order = std::sync::atomic::Ordering::Relaxed;
+    ensure!(
+        profile.source.decodes.load(order) == 3
+            && profile.resolver.raw_bytes.load(order) == 0
+            && profile.resolver.database_fingerprints.load(order) == 3
+    );
+    eprintln!(
+        "da_observation_bytes={} resolver_decodes={}",
+        profile.source.raw_bytes.load(order),
+        profile.resolver.decodes.load(order)
+    );
     let mut cost = counts(&db).await?;
     for (g, n) in &mut cost {
         *n -= before.get(g).copied().unwrap_or_default();
@@ -185,7 +211,7 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
     let (report, expired) = tokio::join!(worker.project(&stop, limit), async {
         tokio::time::timeout(Duration::from_secs(6),async{
             loop{
-                let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_stat_activity WHERE usename='da_inventory_runtime' AND $1=ANY(pg_blocking_pids(pid)))").bind(pid).fetch_one(&admin).await?;
+                let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_stat_activity WHERE usename='da_report_projection' AND $1=ANY(pg_blocking_pids(pid)))").bind(pid).fetch_one(&admin).await?;
                 if blocked{return Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -204,7 +230,7 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
             .max_connections(1)
             .connect_with(
                 c.inputs
-                    .database("da_inventory_runtime")
+                    .database("da_report_projection")
                     .options()?
                     .database(name),
             )
@@ -225,7 +251,7 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
             .max_connections(1)
             .connect_with(
                 c.inputs
-                    .database("da_inventory_runtime")
+                    .database("da_report_projection")
                     .options()?
                     .username("da_observation_maintenance")
                     .database(name),
@@ -255,7 +281,10 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
         Ok::<_, anyhow::Error>(())
     });
     expired?;
-    let err = report.into_result().expect_err("released row");
+    let err = report
+        .into_result()
+        .err()
+        .context("released page committed")?;
     ensure!(
         err.kind() == rss_projection::ErrorKind::HistoryExpired
             && err.diagnostic().and_then(|d| d.position()) == Some(Position::new(2)?)
@@ -263,16 +292,10 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
     let empty:(Option<i64>,i64,i64)=sqlx::query_as("SELECT position,(SELECT count(*) FROM rss_da.inventory_assets WHERE tenant_id=$1),(SELECT count(*) FROM rss_projection.receipts WHERE tenant_id=$1 AND projection_id='da-inventory') FROM rss_projection.checkpoints WHERE tenant_id=$1 AND projection_id='da-inventory'").bind(tenant).fetch_one(&admin).await?;
     ensure!(empty == (None, 0, 0));
     drop(worker);
-    ensure!(
-        open()
-            .await?
-            .project(&stop, limit)
-            .await
-            .into_result()
-            .unwrap_err()
-            .kind()
-            == rss_projection::ErrorKind::HistoryExpired
-    );
+    ensure!(matches!(
+        open().await,
+        Err(rss_mdm_device_access_postgres::Error::Conflict)
+    ));
     reset(&admin, tenant).await?;
     sqlx::raw_sql("DROP TRIGGER gate_asset ON rss_da.inventory_assets; INSERT INTO rss_da.inventory_assets SELECT * FROM public.asset_baseline").execute(&admin).await?;
     let control = Control::new(
@@ -307,6 +330,16 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
     ensure!(
         result.position == Some(Position::new(expected as u64)?)
             && result.applied == expected as u64 - 3
+    );
+    ensure!(snapshot().await? == expected_assets);
+    ensure!(
+        open()
+            .await?
+            .project(&stop, limit)
+            .await
+            .into_result()?
+            .applied
+            == 0
     );
     db.close().await;
     admin.close().await;

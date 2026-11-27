@@ -38,8 +38,10 @@ pub fn router(state: Option<&Arc<Services>>) -> Router<(), impl Declaration + us
         pki: crate::pki::routes().bind_with(state.map(|s| &s.pki), Arc::clone),
     }
     .assemble();
-    rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1/tenants/{tenant}",registration,vault,platform}}
+    rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1/tenants/{tenant}",registration,inventory,vault,platform}}
     let mut protected = Protected {
+        inventory: crate::configurations::standalone_inventory()
+            .bind_with(state.map(|s| &s.management), Arc::clone),
         registration: crate::management::routes()
             .bind_with(state.map(|s| &s.management), Arc::clone),
         vault: crate::vault::routes(state.map(|s| s.vault.clone())),

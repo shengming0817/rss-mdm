@@ -298,7 +298,39 @@ def report_history(deployed, browser, binding, call):
     return ['report_not_found', 'report_projection_confirmed', 'report_probe_budget', 'report_authority_rechecked', 'original_receipt_independent', 'expired_report_preserves_ack',
             'expired_report_pending_delivery_settled']
 
-def native_pki_journey(deployed,browser):
+def installed_capacity_report(deployed, path, call):
+    import base64
+    payload = json.loads(path.read_bytes())
+    def encoded(value):
+        return base64.b64encode(json.dumps(value, separators=(',', ':')).encode()).decode('ascii')
+    fields = encoded(payload['fields'])
+    definition = encoded(payload['definition'])
+    tenant = uuid.UUID(deployed.tenant)
+    # Only the field catalog is a fixture; authentication, receipt and projection use the deployed service.
+    deployed.sql(f"""BEGIN;
+        SELECT set_config('rss.tenant_id','{tenant}',true),
+               set_config('rss.storage_target',encode(s.target,'hex'),true),
+               set_config('rss.storage_lineage',encode(s.lineage,'hex'),true),
+               set_config('rss.execution_epoch',e.epoch::text,true)
+        FROM rss_transactional_messaging.storage_lineage s JOIN rss_transactional_messaging.tenant_epoch e ON e.tenant_id='{tenant}';
+        SELECT count(mdm.append_field_version('{tenant}',f->>'key',1,f))
+          FROM jsonb_array_elements(convert_from(decode('{fields}','base64'),'UTF8')::jsonb) f;
+        INSERT INTO mdm.collection_definitions
+          SELECT (jsonb_populate_record(NULL::mdm.collection_definitions,
+             convert_from(decode('{definition}','base64'),'UTF8')::jsonb || jsonb_build_object('tenant_id','{tenant}'))).*;
+        COMMIT;""")
+    request=payload['report']
+    request.update(reportId=str(uuid.uuid4()),observedAt=int(time.time()))
+    size=len(json.dumps(request,separators=(',',':')).encode())
+    require(4*1024*1024-150*1024<=size<=4*1024*1024,'candidate report fixture size')
+    route='/api/v1/agent/runtime/reports'
+    status,ack=call('POST',route,request)
+    require(status==202 and ack['reportId']==request['reportId'],'installed large report intake')
+    wait(lambda:call('GET',route+'/'+request['reportId'])==(200,dict(ack=ack,observation='snapshot',projection='applied')),
+         'installed large report projection',seconds=120)
+    return 'installed_near_limit_inventory_report'
+
+def native_pki_journey(deployed,browser,inventory_report=None):
     root=deployed.root;fixture=root/'pki/agent'
     csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
     secret=secrets.token_urlsafe(32);deployed.private_values.append(secret)
@@ -314,7 +346,7 @@ def native_pki_journey(deployed,browser):
     def call(client,method,path,body=None):
         deadline=time.monotonic()+5
         while True:
-            client.request(method,path,body=json.dumps(body) if body is not None else None,
+            client.request(method,path,body=json.dumps(body,separators=(',',':')) if body is not None else None,
                            headers={'Content-Type':'application/json','Host':deployed.agent_origin.removeprefix('https://')})
             response=client.getresponse();data=response.read(8*1024*1024+1)
             require(len(data)<=8*1024*1024,'candidate native response limit')
@@ -355,6 +387,8 @@ def native_pki_journey(deployed,browser):
         require(status==200,'candidate actual mTLS activation failed')
         require(call(client,'POST','/api/v1/agent/enroll/activate',activation)==(status,active),'candidate activation replay changed registration')
         report_checks = report_history(deployed, browser, active['runtime'], lambda *args: call(client, *args))
+        if inventory_report is not None:
+            report_checks.append(installed_capacity_report(deployed,inventory_report,lambda *args:call(client,*args)))
     finally:client.close()
     deployed.restore_pki_bundle()
     client=connection()
@@ -376,7 +410,7 @@ def native_pki_journey(deployed,browser):
     return report_checks + ['native_public_packages','native_public_trust','real_ca_signing','original_signing_replay','candidate_identity_denial','actual_mtls_activation',
             'activation_replay','joint_ca_mdm_audit_restore','same_registration_after_restore','retained_tls_revocation','signed_crl_serial_publication','new_tls_revocation']
 
-def run_smoke(directory):
+def run_smoke(directory,inventory_report=None):
     def capacity_config(candidate):
         candidate.config['http']['request_slots'] = 5
     with Candidate(directory, prepare=capacity_config, diagnostic_filename="smoke-failure.json") as deployed:
@@ -429,7 +463,7 @@ def run_smoke(directory):
         # The independent native journey shares the real gateway's 10r/s, burst-20 API quota.
         # Let the browser checks' burst drain before testing mutation replay without retries.
         time.sleep(2.2)
-        pki_checks=native_pki_journey(deployed,administrator)
+        pki_checks=native_pki_journey(deployed,administrator,inventory_report)
         old_cookie=browser.cookie
         require(browser.call("POST",tenant+"/session/refresh")[0]==200 and browser.cookie!=old_cookie,"candidate refresh failed")
         stale=Browser(deployed.port,deployed.root/"ca.crt");stale.cookie=old_cookie
@@ -448,12 +482,12 @@ def run_smoke(directory):
             result["ui"] = deployed.web
     return result,logs+"\n"
 
-def smoke(directory):
+def smoke(directory,inventory_report=None):
     marker, log = directory / "smoke.json", directory / "smoke.log"
     for path in (marker, log, directory / "smoke-failure.json"):
         path.unlink(missing_ok=True)
     try:
-        result, output = run_smoke(directory)
+        result, output = run_smoke(directory) if inventory_report is None else run_smoke(directory,inventory_report)
         # Publish only after both fixture owners have finished cleanup. The marker
         # is last and binds the log, so readers never accept a partial evidence pair.
         with tempfile.TemporaryDirectory(prefix=".smoke-", dir=directory) as temporary:
@@ -474,5 +508,6 @@ def smoke(directory):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument('--inventory-report',type=Path,help='Capacity fixture exported by inventory.collection')
     args=parser.parse_args()
-    smoke(args.candidate.resolve())
+    smoke(args.candidate.resolve(),args.inventory_report)

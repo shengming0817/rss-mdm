@@ -249,7 +249,7 @@ impl Config {
 
         if self.projection_page_bytes
             < rss_mdm_device_access_postgres::reports::inventory::MIN_PAGE_BYTES
-            || self.inventory_database.user != "da_inventory_runtime"
+            || self.inventory_database.user != "da_report_projection"
             || !self.database.same_database(&self.inventory_database)
             || self.database.user != "da_access"
             || self.identity_database.user != "da_identity_runtime"

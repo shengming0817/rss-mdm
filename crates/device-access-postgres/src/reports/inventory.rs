@@ -73,8 +73,21 @@ pub struct Worker {
     installation: Uuid,
     binding: ExecutionBinding,
 }
-impl Worker {
-    pub async fn open(
+/// Read-only startup qualification; acquiring a worker claim is a separate operation.
+pub struct Admission {
+    pool: PgPool,
+    observation: Arc<PgStore<Clock>>,
+    source: Arc<Source>,
+    store: Projection,
+    clock: Clock,
+    installation: Uuid,
+    binding: ExecutionBinding,
+    scope: ProjectionScope,
+    definition: DefinitionIdentity,
+    initialized: bool,
+}
+impl Admission {
+    pub async fn check(
         pool: PgPool,
         installation: Uuid,
         binding: ExecutionBinding,
@@ -82,6 +95,18 @@ impl Worker {
         deadline: Deadline,
         timer: Arc<dyn rss_request_context::Clock>,
     ) -> Result<Self, Error> {
+        let mut probe = pool.begin().await.map_err(crate::database::db)?;
+        fence(&mut probe, binding)
+            .await
+            .map_err(crate::database::db)?;
+        let allowed: bool = sqlx::query_scalar(include_str!("inventory/admission.sql"))
+            .fetch_one(&mut *probe)
+            .await
+            .map_err(crate::database::db)?;
+        probe.rollback().await.map_err(crate::database::db)?;
+        if !allowed {
+            return Err(Error::Forbidden);
+        }
         let clock = Clock {
             origin: timer.now(),
             source: timer,
@@ -123,35 +148,67 @@ impl Worker {
         let definition = DefinitionIdentity::new(Sha256::digest(INSTALL_SQL).into());
         let query = ReceiptQuery::new(scope.clone(), definition, GENERATION)
             .map_err(|_| Error::Configuration)?;
-        match store
+        let (initialized, position) = match store
             .receipt_status(&query, &control)
             .await
             .map_err(|_| Error::Storage)?
         {
-            ReceiptStatus::Uninitialized => {
-                if source
-                    .bounds(&control)
-                    .await
-                    .map_err(|_| Error::Storage)?
-                    .expired_through
-                    .is_some()
-                {
-                    return Err(Error::Conflict);
-                }
-                store
-                    .initialize(
-                        &scope,
-                        &definition,
-                        GenerationStart::beginning(),
-                        ReplayBound::Live,
-                        &control,
-                    )
-                    .await
-                    .map_err(|_| Error::Storage)?;
-            }
+            ReceiptStatus::Uninitialized => (false, None),
             ReceiptStatus::Pending(c) | ReceiptStatus::Settled(c)
-                if c.bound == ReplayBound::Live => {}
+                if c.bound == ReplayBound::Live =>
+            {
+                (true, c.position)
+            }
             _ => return Err(Error::Conflict),
+        };
+        let bounds = source.bounds(&control).await.map_err(|_| Error::Storage)?;
+        if position < bounds.expired_through || position > bounds.high_water {
+            return Err(Error::Conflict);
+        }
+        Ok(Self {
+            pool,
+            observation,
+            source,
+            store,
+            clock,
+            installation,
+            binding,
+            scope,
+            definition,
+            initialized,
+        })
+    }
+
+    pub async fn start(self, deadline: Deadline) -> Result<Worker, Error> {
+        let Self {
+            pool,
+            observation,
+            source,
+            store,
+            clock,
+            installation,
+            binding,
+            scope,
+            definition,
+            initialized,
+        } = self;
+        let stop = CancellationToken::new();
+        let control = Control::new(
+            &clock,
+            deadline.instant().saturating_duration_since(clock.origin),
+            &stop,
+        );
+        if !initialized {
+            store
+                .initialize(
+                    &scope,
+                    &definition,
+                    GenerationStart::beginning(),
+                    ReplayBound::Live,
+                    &control,
+                )
+                .await
+                .map_err(|_| Error::Storage)?;
         }
         let claim = store
             .takeover(&scope, &definition, &control)
@@ -167,7 +224,7 @@ impl Worker {
                 },
             )
             .map_err(|_| Error::Storage)?;
-        Ok(Self {
+        Ok(Worker {
             pool,
             observation,
             source,
@@ -177,6 +234,8 @@ impl Worker {
             binding,
         })
     }
+}
+impl Worker {
     /// Execute a bounded projection pass on this tenant's durable generation.
     pub async fn project(
         &self,
@@ -189,9 +248,7 @@ impl Worker {
     }
 
     async fn run(self, stop: CancellationToken) -> Result<(), rss_runtime::ShutdownError> {
-        let page = rss_projection::PageBudget::new(64, rss_projection::Event::MAX_PAYLOAD_BYTES)
-            .expect("fixed reference budget");
-        let limit = rss_projection::RunLimit::new(page, 64).expect("positive pass");
+        let mut rows = 64;
         loop {
             let deadline = Deadline::at(rss_observation::Clock::now(&self.clock) + PASS);
             for _ in 0..64 {
@@ -209,14 +266,36 @@ impl Worker {
                     }
                 }
             }
+            let page =
+                rss_projection::PageBudget::new(rows, rss_projection::Event::MAX_PAYLOAD_BYTES)
+                    .expect("positive reference budget");
+            let limit = rss_projection::RunLimit::new(page, 64).expect("positive pass");
+            let started = rss_projection::Timer::now(&self.clock);
             let report = self.project(&stop, limit).await;
-            if let rss_projection::Stop::Failed(e) = report.stop {
-                eprintln!(
-                    "da_report_projection tenant={} kind={:?} position={:?}",
-                    self.binding.tenant(),
-                    e.kind(),
-                    e.diagnostic().and_then(|d| d.position())
-                );
+            match report.stop {
+                rss_projection::Stop::Failed(e) => {
+                    let timed_out = e.kind() == rss_projection::ErrorKind::Deadline
+                        || e.diagnostic().and_then(|d| d.sqlstate()) == Some("57014")
+                        || (rss_projection::Timer::now(&self.clock).saturating_sub(started)
+                            >= PASS
+                            && matches!(
+                                e.kind(),
+                                rss_projection::ErrorKind::Unavailable
+                                    | rss_projection::ErrorKind::CommitUnknown
+                                    | rss_projection::ErrorKind::RollbackFailed
+                            ));
+                    if timed_out {
+                        rows = rows.div_ceil(2);
+                    }
+                    eprintln!(
+                        "da_report_projection tenant={} kind={:?} position={:?}",
+                        self.binding.tenant(),
+                        e.kind(),
+                        e.diagnostic().and_then(|d| d.position())
+                    );
+                }
+                rss_projection::Stop::CaughtUp => rows = 64,
+                _ => {}
             }
             tokio::select! {biased; ()=stop.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_millis(200))=>{}}
         }

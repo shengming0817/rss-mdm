@@ -95,14 +95,14 @@ impl PrepareCapacity {
     fn limits(self) -> Result<(NonZeroU32, NonZeroU32), Error> {
         let batches = NonZeroU32::new(self.max_prepare_batches).ok_or(Error::Configuration(
             crate::ConfigIssue::MinimumCapacity {
-                field: "telemetry.max_prepare_batches",
+                field: "backend.prepare.max_prepare_batches",
                 minimum: 1,
             },
         ))?;
         let bytes = NonZeroU32::new(self.max_prepare_bytes)
             .filter(|bytes| bytes.get() >= rss_timeseries_postgres::Limits::MIN_PREPARE_BYTES)
             .ok_or(Error::Configuration(crate::ConfigIssue::MinimumCapacity {
-                field: "telemetry.max_prepare_bytes",
+                field: "backend.prepare.max_prepare_bytes",
                 minimum: rss_timeseries_postgres::Limits::MIN_PREPARE_BYTES,
             }))?;
         Ok((batches, bytes))

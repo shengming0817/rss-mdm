@@ -43,7 +43,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
                     nullable: false,
                     manual: false,
                     sources: [(Source::AgentBuiltin, 0)].into(),
-                    platforms: [Platform::Windows].into(),
+                    platforms: [Platform::Windows, Platform::Macos].into(),
                     sensitivity: Sensitivity::Standard,
                     unit: None,
                     searchable: false,
@@ -112,6 +112,12 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     sqlx::query("SELECT mdm.append_field_version($1::uuid,f->>'key',1,f) FROM jsonb_array_elements($2::jsonb) f")
         .bind(h.c.tenant.to_string()).bind(serde_json::to_value(others)?).execute(&mut *tx).await?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, h.c.tenant, &definition).await?;
+    if let Some(path) = std::env::var_os("RSS_MDM_CAPACITY_FIXTURE") {
+        let registered:serde_json::Value=sqlx::query_scalar("SELECT to_jsonb(d)-'tenant_id' FROM mdm.collection_definitions d WHERE tenant_id=$1::uuid AND dataset=$2 AND version=$3")
+            .bind(h.c.tenant.to_string()).bind(definition.dataset()).bind(definition.version()).fetch_one(&mut *tx).await?;
+        let fixture = serde_json::json!({"fields":fields,"definition":registered,"report":report});
+        std::fs::write(path, serde_json::to_vec(&fixture)?)?;
+    }
     tx.commit().await?;
     let batch = agent::report_batch(&report)?;
     assert!(batch.encode().len() <= 4 * 1024 * 1024);

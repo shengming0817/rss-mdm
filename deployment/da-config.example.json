@@ -54,7 +54,7 @@
     "host": "postgres.example.com",
     "port": 5432,
     "name": "da",
-    "user": "da_inventory_runtime",
+    "user": "da_report_projection",
     "password_file": "/srv/rss-da/runtime/inventory-password",
     "ca_file": "/srv/rss-da/runtime/postgres-ca.pem"
   },

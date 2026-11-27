@@ -281,7 +281,7 @@ class Environment:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
         for role, password in [('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_tenant_registry','tenant-registry-fixture'),('mdm_identity_provisioning','identity-provisioning-fixture')]:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD '{password}';"
-        for role in ['da_owner', 'da_access', 'da_command_runtime', 'da_policy_runtime', 'da_inventory_runtime', 'da_observation_maintenance', 'da_scope_runtime', 'da_telemetry_runtime', 'da_identity_runtime', 'da_identity_maintenance', 'da_identity_provisioning', 'da_resource_runtime', 'da_software_runtime', 'da_content_runtime', 'da_software_driver', 'da_runtime', 'da_api']:
+        for role in ['da_owner', 'da_access', 'da_command_runtime', 'da_policy_runtime', 'da_inventory_runtime', 'da_report_projection', 'da_observation_maintenance', 'da_scope_runtime', 'da_telemetry_runtime', 'da_identity_runtime', 'da_identity_maintenance', 'da_identity_provisioning', 'da_resource_runtime', 'da_software_runtime', 'da_content_runtime', 'da_software_driver', 'da_runtime', 'da_api']:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
         sql += 'CREATE ROLE mdm_group_owner NOLOGIN NOSUPERUSER NOBYPASSRLS; GRANT rss_tmsg_relay TO mdm_group_owner;'
         self.sql('BEGIN;'+sql+' COMMIT;')

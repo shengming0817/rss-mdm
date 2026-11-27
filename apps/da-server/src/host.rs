@@ -153,7 +153,7 @@ pub struct Assembly {
     pub browser: axum::Router,
     pub protocol: Arc<http::Services>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
-    inventory_pool: sqlx::PgPool,
+    inventory: Vec<rss_mdm_device_access_postgres::reports::inventory::Admission>,
 }
 
 #[derive(Clone)]
@@ -704,19 +704,58 @@ pub async fn assemble(
         compiled.http.requests,
     )));
 
-    let inventory_pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(4)
-        .acquire_timeout(Duration::from_secs(2))
-        .connect_with(config.inventory_database.options()?)
-        .await
-        .map_err(|_| Error::Storage)?;
-    acquire(DynManagedResource::new_box(Pool(inventory_pool.clone())));
+    let (inventory_pool, inventory) = inventory_admission(config, cutoff).await?;
+    acquire(DynManagedResource::new_box(Pool(inventory_pool)));
     Ok(Assembly {
-        inventory_pool,
+        inventory,
         browser,
         protocol,
         pki,
     })
+}
+pub(crate) async fn inventory_admission(
+    config: &Config,
+    cutoff: rss_request_context::Deadline,
+) -> Result<(
+    sqlx::PgPool,
+    Vec<rss_mdm_device_access_postgres::reports::inventory::Admission>,
+)> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(Duration::from_secs(2))
+        .connect_with(config.inventory_database.options()?)
+        .await
+        .map_err(|_| Error::AdmissionAt("DA Inventory login"))?;
+    let mut admissions = Vec::new();
+    for (tenant, _) in config.installation.tenants()? {
+        let binding = config.installation.execution(tenant)?;
+        let admission = rss_mdm_device_access_postgres::reports::inventory::Admission::check(
+            pool.clone(),
+            config.installation.instance,
+            binding,
+            config.projection_page_bytes,
+            cutoff,
+            Arc::new(Timer),
+        )
+        .await
+        .map_err(|e| match e {
+            rss_mdm_device_access_postgres::Error::Conflict => {
+                Error::AdmissionAt("DA Inventory checkpoint requires a verified recovery baseline")
+            }
+            rss_mdm_device_access_postgres::Error::Forbidden => {
+                Error::AdmissionAt("DA Inventory role or row-policy contract")
+            }
+            _ => Error::AdmissionAt("DA Inventory provider or execution fence"),
+        });
+        match admission {
+            Ok(value) => admissions.push(value),
+            Err(e) => {
+                pool.close().await;
+                return Err(e);
+            }
+        }
+    }
+    Ok((pool, admissions))
 }
 fn certificates(
     input: &Listener,
@@ -780,9 +819,8 @@ pub async fn serve(
   startup.stage_task_with_token(http::tls::registration(tcp,chain,key,app.protocol,compiled.http.listener).map_err(|_|Error::Lifecycle)?.critical());
 
   let execution=config.installation.execution(rss_request_context::TenantId::parse(&config.installation.tenant.to_string()).map_err(|_|Error::Configuration)?)?;
-  for (tenant,_) in config.installation.tenants()? {
-      let worker = rss_mdm_device_access_postgres::reports::inventory::Worker::open(app.inventory_pool.clone(),config.installation.instance,config.installation.execution(tenant)?,config.projection_page_bytes,cutoff,Arc::new(Timer))
-          .await.map_err(|_|Error::AdmissionAt("DA Inventory"))?;
+  for admission in app.inventory {
+      let worker=admission.start(cutoff).await.map_err(|_|Error::AdmissionAt("DA inventory claim"))?;
       startup.stage_task_with_token(worker.registration());
   }
   let (task,_)=rss_runtime::ManagedTask::prepare("da-pki-maintenance",Duration::from_secs(10));

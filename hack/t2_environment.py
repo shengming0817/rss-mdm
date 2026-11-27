@@ -126,7 +126,7 @@ def prepared(root, modules, binary, command, resources):
                 if profile in ('agent_foundation','da_foundation'):
                     environment.sql('ALTER DATABASE ' + name + ' OWNER TO da_owner; GRANT CREATE ON DATABASE ' + name + ' TO mdm_owner; GRANT CREATE ON SCHEMA public TO da_owner;', name)
                     values[profile].update({role: database(name, role) for role in ('da_owner','da_access',
-                        'da_command_runtime','da_policy_runtime','da_scope_runtime','da_inventory_runtime',
+                        'da_command_runtime','da_policy_runtime','da_scope_runtime','da_inventory_runtime','da_report_projection',
                         'da_identity_runtime','da_identity_maintenance','da_identity_provisioning','da_runtime')})
                 if profile not in ('recovery', 'agent_foundation', 'da_foundation'):
                     config = directory / (name + '-migrate.json')

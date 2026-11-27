@@ -63,7 +63,7 @@ pub async fn prepare_database(input: DatabaseInput) -> Result<()> {
     const LOGINS: [&str; 6] = [
         "da_owner",
         "da_access",
-        "da_inventory_runtime",
+        "da_report_projection",
         "da_identity_runtime",
         "da_identity_maintenance",
         "da_identity_provisioning",
