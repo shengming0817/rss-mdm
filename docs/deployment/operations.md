@@ -93,11 +93,25 @@ Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID �
 
 | 条件 | 阈值与处置 |
 |---|---|
-| relay `transient` 或 recovery `Transient` / `Deadline` | 同一 messageId/target 持续 5 分钟告警；检查 PostgreSQL 可达性、Retry 时间和租约持有者，保持原消息与幂等键 |
-| `commit_unknown` / `CommitUnknown` | 首次出现即告警；按原 operationId 查询并精确重放，不能换 ID、清 Outbox 或当作回滚 |
-| `invariant` / `Invariant`、`StorageContract`、`Permanent`，尤其 `phase=runner` | 立即告警；关键 worker 退出由统一运行时关闭服务。核对候选、迁移账本、角色/ACL/RLS、可信函数与实际 SQL 失败，修复根因后重启同一身份的服务 |
+| relay `Transient` / `Deadline` | 同一租户、owner 与 messageId 持续 5 分钟告警。检查 PostgreSQL 可达性、租约及投递期限。 |
+| `CommitUnknown` / `RollbackFailed` | 首次出现即核查原操作及持久回执。按同一 tenant、domain、messageId 与指纹核对原 Outbox 和消费组的 Inbox 回执。投影从已领取的原信封取得指纹。若到期结算先于信封校验，先按原租户、消息域和 ID 记录故障；读取恢复后补全原指纹，再核对持久终态。同一租户、owner、原 epoch、消息域和 ID 只有一条未决记录。重复故障保留已知指纹并更新观测序号，旧回读无法清除新故障。两个已知指纹冲突时保留局部告警，核对日志中的原指纹和 Outbox 记录。 |
+| `Permanent` / `Invariant` | 检查故障阶段、原消息与 owner 业务行。确认隔离的有序队首持续阻挡本分区，其他队首继续投递。 |
+| `command_relay_owner_stopped` | 核对该 owner 的发现函数、运行角色与存储契约，修复后重启。进程故障沿宿主关闭流程处理。 |
 
-relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 的 operation，`action.<UUID>` 关联企业任务 run；recovery 的 `target` 是设备文本 ID 的 SHA-256 scope，结合 `mdm_devices.control_operations` 的 device 字段 定位。使用有设备读取权限的管理查询查看 command、最新 attempt 和 CollectionRun。`phase` 区分 claim、accept、settle 与 runner/scan；日志不携带预期值、原生正文或浏览器凭据。恢复后确认告警停止、同一 command 可继续收敛；终态任务不得因重启复活。启动核对当前候选安装账本与各能力的必要权限、租户隔离和可信函数，不比较全库结构快照；恢复验证见当前安装联合冷备。
+`mdm_command_relay_failure` 记录 owner、tenant、epoch、phase、reason 和可用的原消息坐标。本地投影在一笔事务中写入业务接纳、审计、Inbox 回执及原 Outbox 终态。发布意味着服务端已接纳。事务确认丢失时，按原租户、消费组、消息 ID 与指纹核对持久回执；未确认的租约继续遵守原期限。业务效果和迟到回执按原操作与 Attempt 核查。每次发现从租户登记读取当前 epoch；历史领取 epoch 仅用于排查。局部死信使组件健康降级，健康分区仍可经就绪实例提供服务。超出原自动投递窗口的队首先隔离，保留未知业务结果。信号、到期扫描和服务重启均不会解锁死信。
+
+重启后，具备该租户 Outbox 诊断读取资格的运维人员可在其已绑定租户的只读事务内分页核查持久事实。参数依次为租户 UUID、业务 domain 和前页最后一条 seq（首页为 0）。
+
+```sql
+SELECT seq, message_id, partition_key, partition_seq, claim_epoch, recovery_version,
+       encode(fingerprint, 'base64') AS fingerprint_base64, automatic_retry_deadline
+FROM rss_transactional_messaging.outbox
+WHERE tenant_id = $1 AND domain = $2 AND status = 'dead_letter' AND seq > $3
+ORDER BY seq LIMIT 32;
+```
+
+领取返回永久存储错误且没有消息身份时，暂停该租户、domain 与 epoch 的新领取。确认工作已经排空、代际更新或修复根因后重启，可重新准入。保留原消息、指纹、期限和回执。修复根因后，原身份重投需要当前授权及有效投递窗口；过期或效果未知交业务 owner 根据证据结案。当前命令运维只提供诊断，禁止通过删除队首或修改状态放行后继。
+
 
 安装失败保持服务停止并保留证据。回退指停止新部署后恢复原有独立部署及其一致数据库/密钥备份；新代码没有中央认证回退路径。仅在新候选和 smoke 通过后，按精确镜像身份、归档目录和专属缓存记录清理本任务废弃产物，不进行全局 prune。
 

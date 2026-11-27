@@ -204,13 +204,13 @@ pub async fn serve(
 let application_clock:Arc<dyn crate::clock::Clock>=Arc::new(crate::clock::SystemClock);
 let cursor_key=crate::cursor_keys::load(&source_runtime,probe).await.map_err(assembly_error)?;
 let wns_receipts = if compiled.config.native_protocols.windows.is_some() {
-    Some(crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.wns),probe,crate::background::WNS_RECEIPT_CONNECTIONS,audit_store.clone(),"wns-receipts-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?.audit)
+    Some(crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.wns,probe,crate::background::WNS_RECEIPT_CONNECTIONS,audit_store.clone(),"wns-receipts-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?.audit)
 } else { None };
-let inventory_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.inventory),probe,compiled.background.inventory_connections,audit_store.clone(),"inventory-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let scope_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.scope),probe,compiled.background.scope_connections,audit_store.clone(),"scope-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let policy_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Runtime(&compiled.config.business_databases.policy),probe,compiled.background.policy_connections,audit_store.clone(),"policy-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let resource_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.resource),probe,2,audit_store.clone(),"resource-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let software_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.software),probe,2,audit_store.clone(),"software-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let inventory_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.inventory,probe,compiled.background.inventory_connections,audit_store.clone(),"inventory-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let scope_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.scope,probe,compiled.background.scope_connections,audit_store.clone(),"scope-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let policy_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.policy,probe,compiled.background.policy_connections,audit_store.clone(),"policy-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let resource_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.resource,probe,2,audit_store.clone(),"resource-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let software_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.software,probe,2,audit_store.clone(),"software-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let policy_application=crate::assembly::policy::application(&compiled.background,&policy_owner,probe,&cursor_key,application_clock.clone(),protection.clone(),content.clone()).await.map_err(assembly_error)?;
 let publications=crate::assembly::publication::open(access.archive_pool(),&compiled.config.publication,&compiled.config.storage_binding,&software_owner,probe,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let resource_catalog=crate::assembly::resource::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),probe,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
@@ -246,7 +246,7 @@ let inventory_services=crate::assembly::inventory::Services::new(runtime.clone()
                         audit_store.validate_tenant(probe.tenant(), &audit_control).await.map_err(|error|ProcessError::at("startup.audit",error.into()))?;
 
 let content_access=if let Some(content)=&content {
-let content_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.content),probe,2,audit_store.clone(),"content-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let content_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.content,probe,2,audit_store.clone(),"content-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 Some(crate::assembly::content::access(&content_owner,&identity,access.authorization_store(),content.clone(),application_clock.clone()).await.map_err(assembly_error)?)
 }else{None};
                         let config = &compiled.config;
@@ -481,7 +481,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         .await
                         .map_err(assembly_error)?;
                         let telemetry = if !compiled.config.telemetry.is_empty() {
-let telemetry_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.telemetry),probe,compiled.background.telemetry_control_connections,audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let telemetry_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.telemetry,probe,compiled.background.telemetry_control_connections,audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
  protection: protection.clone(),
  agent_facts: Arc::new(crate::assembly::agent_facts::AgentFacts),
@@ -654,6 +654,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                     .critical(),
                             ]);
                             let relay = crate::assembly::task_relay::registration(
+                                &compiled.config, &audit_store,protection.clone(),|r|startup.stage_resource(DynManagedResource::new_box(r)),
                                 automation.work.clone(),
                                 control.clone(),
                                 script_work.clone(),
@@ -665,9 +666,9 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 credential_execution.as_ref().map(|v| v.worker.clone()).unwrap_or_default(),
                                 credential_execution.as_ref().map(|v| v.native.clone()),
                                 background.commands.concurrency(),
-                                probe.storage(),
+                                probe,
                                 signals.handle(Work::CommandRelay),
-                            ).critical();
+                            ).await.map_err(assembly_error)?.critical();
                             (tasks, relay)
                         };
                         let windows_business = Arc::new(crate::assembly::windows_business::WindowsBusiness(

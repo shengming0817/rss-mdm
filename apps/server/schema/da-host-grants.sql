@@ -103,4 +103,9 @@ COMMIT;
 GRANT SELECT ON rss_da.recovery_recipient_selection TO mdm_command_runtime;
 
 -- The MDM host consumes the original DA work coordinates through its existing read pool.
-GRANT EXECUTE ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid,bigint),rss_da.credential_runs_work_scopes(uuid),rss_da.credential_runs_work_epoch(uuid,text),rss_da.credential_runs_work_relay_scopes(uuid,bigint),rss_da.recovery_versions_maintenance_scopes(uuid) TO mdm_access;
+GRANT EXECUTE ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid),rss_da.credential_runs_work_scopes(uuid),rss_da.credential_runs_work_epoch(uuid,text),rss_da.credential_runs_work_relay_scopes(uuid),rss_da.recovery_versions_maintenance_scopes(uuid) TO mdm_access;
+
+GRANT USAGE ON SCHEMA rss_da TO mdm_dispatch_device_access;
+GRANT SELECT,UPDATE(gateway_accepted) ON rss_da.access_runs TO mdm_dispatch_device_access;
+GRANT USAGE ON SCHEMA rss_da TO mdm_dispatch_da_credentials;
+GRANT SELECT,UPDATE(gateway_accepted) ON rss_da.credential_runs TO mdm_dispatch_da_credentials;

@@ -63,28 +63,19 @@ impl Databases {
         Ok(())
     }
 }
-/// Match the capability exercised by this business owner, at connection admission.
-#[derive(Clone, Copy)]
-pub(crate) enum Messaging<'a> {
-    Producer(&'a crate::config::Database),
-    Runtime(&'a crate::config::Database),
-}
 pub(crate) struct OwnerRuntime {
     pub runtime: Arc<PgRuntime>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 impl OwnerRuntime {
     pub(crate) async fn open(
-        messaging: Messaging<'_>,
+        database: &crate::config::Database,
         binding: ExecutionBinding,
         connections: u32,
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
         name: &'static str,
         mut acquire: impl FnMut(Resource),
     ) -> Result<Self, Error> {
-        let database = match messaging {
-            Messaging::Producer(database) | Messaging::Runtime(database) => database,
-        };
         let invalid = || Error::Configuration(ConfigIssue::BusinessDatabase);
         let pg = PgConfig::new(
             &database.host,
@@ -99,19 +90,7 @@ impl OwnerRuntime {
         )
         .with_pool_limits(0, connections);
         let runtime = Arc::new(
-            match messaging {
-                Messaging::Producer(_) => {
-                    PgRuntime::connect_producer(
-                        pg,
-                        crate::lifecycle::RuntimeTimer,
-                        binding.storage(),
-                    )
-                    .await
-                }
-                Messaging::Runtime(_) => {
-                    PgRuntime::connect(pg, crate::lifecycle::RuntimeTimer, binding.storage()).await
-                }
-            }
+            PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding.storage()).await
             .map_err(|_| Error::Unavailable(Failure::Database))?,
         );
         acquire(Resource::new(runtime.clone(), name));

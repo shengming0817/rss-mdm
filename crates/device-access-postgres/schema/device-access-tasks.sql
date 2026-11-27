@@ -138,12 +138,12 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
  SELECT expected_epoch FROM rss_da.access_runs WHERE tenant_id=t AND da_target IS NULL AND 'run:'||id::text=entity
  UNION ALL SELECT expected_epoch FROM rss_da.access_policy_recovery WHERE tenant_id=t AND 'policy:'||policy::text=entity
 $$;
-CREATE FUNCTION rss_da.access_runs_work_relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+CREATE FUNCTION rss_da.access_runs_work_relay_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid,expected_epoch bigint,claimable boolean,quarantined boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT DISTINCT r.tenant_id,r.expected_epoch FROM rss_da.access_runs r WHERE r.da_target IS NULL AND (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.registration.access.v1' AND o.message_id='access.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT * FROM public.mdm_command_relay_tenants('mdm.registration.access.v1',after_tenant)
 $$;
 ALTER FUNCTION rss_da.access_runs_work_scopes(uuid) OWNER TO da_owner;
 ALTER FUNCTION rss_da.access_runs_work_epoch(uuid,text) OWNER TO da_owner;
-ALTER FUNCTION rss_da.access_runs_work_relay_scopes(uuid,bigint) OWNER TO da_owner;
-REVOKE ALL ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid,bigint) TO da_access;
+ALTER FUNCTION rss_da.access_runs_work_relay_scopes(uuid) OWNER TO da_owner;
+REVOKE ALL ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid) TO da_access;

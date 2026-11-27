@@ -246,6 +246,10 @@ impl BackgroundConfig {
             config.content.is_some(),
             !config.publication.sources.is_empty(),
             config.tenant_administration.is_some(),
+            crate::assembly::task_relay::lanes::enabled(
+                config.device_access.is_some(),
+                config.recovery_credentials.is_some(),
+            ),
             telemetry,
         )
     }
@@ -255,6 +259,7 @@ impl BackgroundConfig {
         content: bool,
         publication: bool,
         administration: bool,
+        command_projections: impl IntoIterator<Item = crate::assembly::task_relay::lanes::Lane>,
         telemetry: impl IntoIterator<Item = u32>,
     ) -> Result<Compiled, Error> {
         let bad = || Error::Configuration(ConfigIssue::Budget);
@@ -360,6 +365,11 @@ impl BackgroundConfig {
             // Direct startup/maintenance probes do not borrow a long-lived pool.
             ("direct-probes", 2),
         ];
+        pools.extend(
+            command_projections
+                .into_iter()
+                .map(|lane| (lane.role, crate::local_delivery::CONNECTIONS)),
+        );
         if windows {
             pools.push(("wns-receipts", WNS_RECEIPT_CONNECTIONS));
         }

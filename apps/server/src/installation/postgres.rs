@@ -2,7 +2,7 @@
 //! ref: PostgreSQL CREATE ROLE/CREATE DATABASE; sqlx 0.9.0 src/sql_str.rs.
 use super::{
     Error, Result,
-    install::{Input, ROLES},
+    install::{Input, roles},
 };
 use sqlx::Connection;
 use std::collections::BTreeMap;
@@ -47,9 +47,9 @@ async fn prepare_inner(input: &Input, instance: uuid::Uuid) -> Result<()> {
     let admin = &input.database.administrator;
     let tag = format!("rss-mdm-installation:{instance}");
     let mut passwords = BTreeMap::new();
-    for role in ROLES {
+    for role in roles() {
         passwords.insert(
-            *role,
+            role,
             crate::config::secret(&input.database(role)?.password_file)
                 .map_err(|_| Error::Corrupt)?,
         );

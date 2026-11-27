@@ -9,6 +9,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "transactional-messaging-v1",
             rss_transactional_messaging_postgres::MIGRATION_SQL,
         ),
+        (
+            "command-relay-catalog-v1",
+            rss_mdm_work_page::relay::DISCOVERY_SQL,
+        ),
         ("inventory-v1", rss_mdm_inventory_postgres::MIGRATION_SQL),
         (
             "inventory-api-reader-v1",
@@ -539,6 +543,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "da-shared-owner-grants-v1",
             include_str!("../../schema/da-shared-grants.sql"),
+        ),
+        (
+            "command-projections-v1",
+            include_str!("../../schema/command-projections.sql"),
         ),
     ]
 }

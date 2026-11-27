@@ -111,13 +111,13 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
  SELECT expected_epoch FROM mdm_script.runs WHERE tenant_id=t AND 'run:'||id::text=entity
  UNION ALL SELECT expected_epoch FROM mdm_script.policy_recovery WHERE tenant_id=t AND 'policy:'||policy::text=entity
 $$;
-CREATE FUNCTION mdm_script.relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+CREATE FUNCTION mdm_script.relay_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid,expected_epoch bigint,claimable boolean,quarantined boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_script.runs r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.script.v1' AND o.message_id='script.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT * FROM public.mdm_command_relay_tenants('mdm.script.v1',after_tenant)
 $$;
 ALTER FUNCTION mdm_script.work_scopes(uuid) OWNER TO mdm_owner;
 ALTER FUNCTION mdm_script.work_epoch(uuid,text) OWNER TO mdm_owner;
-ALTER FUNCTION mdm_script.relay_scopes(uuid,bigint) OWNER TO mdm_owner;
-REVOKE ALL ON FUNCTION mdm_script.work_scopes(uuid),mdm_script.work_epoch(uuid,text),mdm_script.relay_scopes(uuid,bigint) FROM PUBLIC;
+ALTER FUNCTION mdm_script.relay_scopes(uuid) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_script.work_scopes(uuid),mdm_script.work_epoch(uuid,text),mdm_script.relay_scopes(uuid) FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_script TO mdm_access;
-GRANT EXECUTE ON FUNCTION mdm_script.work_scopes(uuid),mdm_script.work_epoch(uuid,text),mdm_script.relay_scopes(uuid,bigint) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_script.work_scopes(uuid),mdm_script.work_epoch(uuid,text),mdm_script.relay_scopes(uuid) TO mdm_access;

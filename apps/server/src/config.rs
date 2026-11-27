@@ -183,6 +183,7 @@ pub struct Config {
     pub scope_group_database: Database,
     pub asset_input_database: Database,
     pub command_database: Database,
+    pub command_projection_password_files: std::collections::BTreeMap<String, PathBuf>,
     pub(crate) content: Option<rss_mdm_content_service::Config>,
     pub(crate) storage_binding: crate::owner_storage::StorageBinding,
     pub(crate) business_databases: crate::owner_storage::Databases,

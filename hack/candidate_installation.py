@@ -53,7 +53,7 @@ def qualify_candidate(candidate):
         allocation=network.allocate()
         values=dict(MDM_POSTGRES_IMAGE=manifest['providers']['postgres'],MDM_GATEWAY_IMAGE=manifest['providers']['nginx'],
             MDM_SERVER_IMAGE=image_identity(manifest['image'])['id'],MDM_INSTALLER_IMAGE=image_identity(manifest['installer']['image'])['id'],
-            MDM_WEB_IMAGE=ui['id'],MDM_INPUT_DIRECTORY=str(inputs),MDM_PRODUCT_ORIGIN=origin,MDM_PG_MAX_CONNECTIONS=200,
+            MDM_WEB_IMAGE=ui['id'],MDM_INPUT_DIRECTORY=str(inputs),MDM_PRODUCT_ORIGIN=origin,MDM_PG_MAX_CONNECTIONS=240,
             **allocation,MDM_GATEWAY_BIND_IP='127.0.0.1')
         def env(path,values):path.write_text(''.join(key+'='+str(value)+'\n' for key,value in values.items()));path.chmod(0o600)
         env(root/'.env',values)

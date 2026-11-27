@@ -1,4 +1,3 @@
-
 -- Explicit integration privileges owned by this capability.
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO rss_tmsg_relay;
 
@@ -66,10 +65,6 @@ GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_comma
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_scan_budget integer, p_ttl_ms bigint) FROM PUBLIC;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_scan_budget integer, p_ttl_ms bigint) TO mdm_command_runtime,mdm_policy_runtime;
-
-GRANT EXECUTE ON FUNCTION rss_transactional_messaging.next_outbox_wakeup(uuid,text) TO mdm_command_runtime,mdm_policy_runtime;
-
 REVOKE ALL ON FUNCTION rss_transactional_messaging.decode_outbox_message(data bytea) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.guard_archive_generation() FROM PUBLIC;
@@ -79,8 +74,6 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.guard_dr_consumer() FROM PUBL
 REVOKE ALL ON FUNCTION rss_transactional_messaging.guard_execution() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.outbox_lease(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_extend_ms bigint, p_dr uuid) FROM PUBLIC;
-
-GRANT ALL ON FUNCTION rss_transactional_messaging.outbox_lease(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_extend_ms bigint, p_dr uuid) TO mdm_command_runtime,mdm_policy_runtime;
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.prepare_outbox_partitions(p_partitions jsonb) FROM PUBLIC;
 
@@ -104,15 +97,11 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.read_outbox_frame(data bytea,
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) FROM PUBLIC;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) TO mdm_command_runtime,mdm_policy_runtime;
-
 GRANT SELECT,INSERT,UPDATE ON TABLE rss_transactional_messaging.dr_members TO rss_tmsg_relay;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE rss_transactional_messaging.dr_plans TO rss_tmsg_relay;
 
 GRANT SELECT ON TABLE rss_transactional_messaging.inbox TO rss_tmsg_relay;
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE rss_transactional_messaging.inbox TO mdm_command_runtime,mdm_policy_runtime;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE rss_transactional_messaging.outbox TO rss_tmsg_relay;
 

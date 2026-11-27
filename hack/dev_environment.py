@@ -24,6 +24,8 @@ import ipaddress
 from urllib.parse import urlsplit
 from build_run import lease_fds, require_lease
 
+COMMAND_PROJECTION_ROLES = ('mdm_dispatch_device', 'mdm_dispatch_policy', 'mdm_dispatch_script', 'mdm_dispatch_inventory', 'mdm_dispatch_software', 'mdm_dispatch_installation', 'mdm_dispatch_enrollment', 'mdm_dispatch_device_access', 'mdm_dispatch_mdm_credentials', 'mdm_dispatch_da_credentials', 'mdm_dispatch_native_credentials')
+
 ROOT = Path(__file__).resolve().parents[1]
 PROVIDERS = json.loads((ROOT / 'deployment/providers.lock.json').read_text())
 PKI_CA = {**json.loads((ROOT / 'fixtures/pki-tools.lock.json').read_text())['step-ca'], 'image': PROVIDERS['step-ca']}
@@ -277,7 +279,7 @@ class Environment:
             sql += source.read_text()
         sql += "GRANT rss_tmsg_relay TO da_owner;"
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
-                     'mdm_observation_maintenance','mdm_inventory_runtime','mdm_scope_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_wns_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator','mdm_scope_group_consumer','mdm_asset_ingress_consumer'):
+                     'mdm_observation_maintenance','mdm_inventory_runtime','mdm_scope_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_wns_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator','mdm_scope_group_consumer','mdm_asset_ingress_consumer',*COMMAND_PROJECTION_ROLES):
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
         for role, password in [('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_tenant_registry','tenant-registry-fixture'),('mdm_identity_provisioning','identity-provisioning-fixture')]:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD '{password}';"
@@ -400,6 +402,7 @@ class Environment:
             config['business_databases'][owner]=database(runtime,'mdm_'+owner+'_runtime')
         config['publication']['database']=database(runtime,'mdm_software_driver')
         config['scope_group_database']=database(runtime,'mdm_scope_group_consumer')
+        config['command_projection_password_files']={role:database(runtime,role)['password_file'] for role in COMMAND_PROJECTION_ROLES}
         config['asset_input_database']=database(runtime,'mdm_asset_ingress_consumer')
         private(runtime/'runtime.json',config)
         password=self.root/'account-password'

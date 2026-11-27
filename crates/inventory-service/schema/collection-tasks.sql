@@ -108,15 +108,15 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
  UNION ALL SELECT coalesce(active_epoch,pending_epoch) FROM mdm_inventory.collection_native_checkins WHERE tenant_id=t AND 'checkin:'||device::text=entity
  UNION ALL SELECT DISTINCT expected_epoch FROM mdm_policy.assignments WHERE tenant_id=t AND channel='mdm' AND 'scheduled:'||version::text||':'||(target->>'device')=entity
 $$;
-CREATE FUNCTION mdm_inventory.collection_work_relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+CREATE FUNCTION mdm_inventory.collection_work_relay_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid,expected_epoch bigint,claimable boolean,quarantined boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_inventory.collection_tasks r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.collection.v1' AND o.message_id='collection.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT * FROM public.mdm_command_relay_tenants('mdm.collection.v1',after_tenant)
 $$;
 ALTER FUNCTION mdm_inventory.collection_work_scopes(uuid) OWNER TO mdm_owner;
 ALTER FUNCTION mdm_inventory.collection_work_epoch(uuid,text) OWNER TO mdm_owner;
-ALTER FUNCTION mdm_inventory.collection_work_relay_scopes(uuid,bigint) OWNER TO mdm_owner;
-REVOKE ALL ON FUNCTION mdm_inventory.collection_work_scopes(uuid),mdm_inventory.collection_work_epoch(uuid,text),mdm_inventory.collection_work_relay_scopes(uuid,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_inventory.collection_work_scopes(uuid),mdm_inventory.collection_work_epoch(uuid,text),mdm_inventory.collection_work_relay_scopes(uuid,bigint) TO mdm_access;
+ALTER FUNCTION mdm_inventory.collection_work_relay_scopes(uuid) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_inventory.collection_work_scopes(uuid),mdm_inventory.collection_work_epoch(uuid,text),mdm_inventory.collection_work_relay_scopes(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_inventory.collection_work_scopes(uuid),mdm_inventory.collection_work_epoch(uuid,text),mdm_inventory.collection_work_relay_scopes(uuid) TO mdm_access;
 
 CREATE FUNCTION mdm_inventory.windows_wake_inputs() RETURNS TABLE(tenant_id uuid,device uuid)
 LANGUAGE sql STABLE AS $$

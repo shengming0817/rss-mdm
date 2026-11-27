@@ -72,7 +72,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
-8 核部署的 Compose 默认值为 `MDM_PLANNING_CONCURRENCY=8`、`MDM_DEVICE_CONCURRENCY=8`、`MDM_PG_MAX_CONNECTIONS=200`。PostgreSQL 按最后一个变量设置 `max_connections`。默认卷存储、租户管理和 PostgreSQL 遥测组合的各连接池上限合计 190。保留 3 个超级用户连接和 1 个维护连接时，应用可用 196 个连接。首装在保存操作身份前读实际容量；并发或容量校验失败时，可修正这三个变量后重新运行。已受理的安装重放沿用原并发输入。安装器扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。同一执行预算可由一个就绪租户用满；出现竞争后，已发现且在途较少的就绪租户优先取得释放的名额。容量 1 时串行。两个 PostgreSQL 调度池的连接上限各为 2；每池对同一租户同时接纳一个数据库调度操作。一项结算等待业务行锁时，其他租户可通过该池领取并结算。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
+8 核部署的 Compose 默认值为 `MDM_PLANNING_CONCURRENCY=8`、`MDM_DEVICE_CONCURRENCY=8`、`MDM_PG_MAX_CONNECTIONS=240`。PostgreSQL 按最后一个变量设置 `max_connections`。默认卷存储、租户管理和 PostgreSQL 遥测组合的各连接池上限合计 222。保留 3 个超级用户连接和 1 个维护连接时，应用可用 236 个连接。首装在保存操作身份前读实际容量；并发或容量校验失败时，可修正这三个变量后重新运行。已受理的安装重放沿用原并发输入。安装器扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。同一执行预算可由一个就绪租户用满；出现竞争后，已发现且在途较少的就绪租户优先取得释放的名额。容量 1 时串行。两个 PostgreSQL 调度池的连接上限各为 2；每池对同一租户同时接纳一个数据库调度操作。一项结算等待业务行锁时，其他租户可通过该池领取并结算。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
 
 外部调用按宿主独立配置。首装的 `MDM_APNS_CONCURRENCY`、`MDM_WNS_CONCURRENCY`、`MDM_ADE_CONCURRENCY`、`MDM_PUBLICATION_CONCURRENCY` 默认各为 8。`MDM_APNS_PER_CREDENTIAL`、`MDM_WNS_PER_CREDENTIAL`、`MDM_PUBLICATION_PER_SOURCE` 首装省略时取对应宿主总额，显式值允许从 1 到总额（含）。单租户可用满共享凭据；凭据内出现多个就绪租户或软件来源间出现竞争时，释放的名额按当前在途工作分配。后续使用 `configure-host` 提交宿主级 `change.kind=external_calls`，`settings` 为运行配置 `background.external_calls` 的完整对象。导出并部署该 revision 后生效。启用 Windows 通道时，宿主为 WNS 回执另计一个最多 2 条连接的池。安装器为 `business_databases.wns` 配置独立登录角色 `mdm_wns_runtime`，仅该角色可以把有效租约上的 406 回执结算为共享 Package SID 的退避期限。
 
@@ -370,6 +370,9 @@ docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 启用新入口后，租户管理员新建的安装文件包含当前地址；原文件及已接纳任务保留原 URL。更换域名时，运维根据仍有效的安装材料、离线设备和未完成任务安排旧入口的可达窗口。所有已知入口失联时，管理员可从管理端下载该租户最近签发的连接配置。文件包含可达入口时，可在设备通过受保护的离线导入恢复；不得重建注册、密钥、缓存或未决操作。程序更新保留这些状态。Windows/Apple 原生注册 URL 继续由各自原生配置持有，Agent 连接配置不改变其换址机制。
 
 Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，Group→Scope 和资产事实投影各使用独立的 4 连接池。每条投影通道支持最多 3 个并发队首，同租户最多 2 个，预留 1 条连接续租。App 负责关闭这些池。运行配置必须提供 `scope_group_database`，登录角色为 `mdm_scope_group_consumer`，指向同一产品数据库。部署时为该实际连接角色启用 LOGIN 并设置独立秘密，再执行迁移；安装只授予固定 Group domain / Scope consumer group 的 RSS 消费能力和 Scope 接收状态写权限，不授予 Group 生产者权限。资产/对象事实投影配置 `asset_input_database` 与独立登录角色 `mdm_asset_ingress_consumer`。
+
+命令投影使用 command_database 的主机、库与 CA。command_projection_password_files 按固定的投递登录名指定密码文件，安装器为每个消息域创建对应登录并绑定一个 Inbox 消费组。启用的通道共享进程及租户的领取配额，每个消费连接池另为在途投影保留续租容量。具体登录名见配置示例。
+
 该角色仅具备固定 `mdm-assets` domain / `mdm-asset-inputs` consumer 的 RSS 消费权限与 Reconcile runtime 权限，
 不具备资产或各业务 owner 表写权限，也不具备消息生产权限；原子登记的固定输入目标由产品代码绑定。
 投影池的租户绑定跟随当前 host，恢复使用既有 native protector。Scope 的 `mdm.scopes` worker 独立注册、监视和关闭，复用原业务 runtime 与共享调度池，不另建数据库连接池。

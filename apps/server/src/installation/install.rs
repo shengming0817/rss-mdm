@@ -14,7 +14,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub(super) const ROLES: &[&str] = &[
+const BASE_ROLES: &[&str] = &[
     "da_owner",
     "da_access",
     "mdm_owner",
@@ -38,7 +38,11 @@ pub(super) const ROLES: &[&str] = &[
     "mdm_asset_ingress_consumer",
     "mdm_tenant_registry",
     "mdm_identity_provisioning",
-];
+ ];
+
+pub(super) fn roles() -> impl Iterator<Item = &'static str> {
+    BASE_ROLES.iter().copied().chain(crate::assembly::task_relay::lanes::LANES.iter().map(|lane| lane.role))
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseInput {
@@ -247,7 +251,7 @@ impl Input {
         Ok(())
     }
     pub(super) fn database(&self, role: &str) -> Result<crate::config::Database> {
-        if !ROLES.contains(&role) {
+        if !roles().any(|known| known == role) {
             return Err(Error::Input);
         }
         Ok(crate::config::Database {
@@ -365,6 +369,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
                 matches!(input.content_storage, ContentStorage::Volume),
                 false,
                 true,
+                crate::assembly::task_relay::lanes::enabled(true, false),
                 [super::default_telemetry::CONNECTIONS],
             )
             .map_err(|_| {
@@ -391,7 +396,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
         first,
     )?;
     let mut database_passwords = Vec::new();
-    for role in ROLES {
+    for role in roles() {
         database_passwords.push(password(
             &journal,
             &format!("database-{role}.password"),
@@ -669,6 +674,7 @@ fn runtime(
         "business_databases":{"inventory":input.database("mdm_inventory_runtime")?,"scope":input.database("mdm_scope_runtime")?,"policy":input.database("mdm_policy_runtime")?,"resource":input.database("mdm_resource_runtime")?,"software":input.database("mdm_software_runtime")?,"content":input.database("mdm_content_runtime")?,"telemetry":input.database("mdm_telemetry_runtime")?,"scheduler":input.database("mdm_scheduler_runtime")?,"wns":input.database("mdm_wns_runtime")?},
         "publication":{"database":input.database("mdm_software_driver")?,"sources":[]},
         "tenant_administration":{"registry_database":input.database("mdm_tenant_registry")?,"provisioning_database":input.database("mdm_identity_provisioning")?,"fingerprint_key_file":journal.path("operation.key")?},
+        "command_projection_password_files":crate::assembly::task_relay::lanes::LANES.iter().map(|lane|Ok((lane.role,input.database(lane.role)?.password_file))).collect::<Result<std::collections::BTreeMap<_,_>>>()?,
         "scope_group_database":input.database("mdm_scope_group_consumer")?,"asset_input_database":input.database("mdm_asset_ingress_consumer")?,"webhooks":{"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"recovery_credentials":null
     }))
 }

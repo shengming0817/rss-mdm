@@ -196,12 +196,12 @@ CREATE FUNCTION mdm_registration_tasks.native_work_epoch(t uuid,entity text) RET
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
  SELECT min(expected_epoch) FROM (SELECT expected_epoch FROM mdm_registration_tasks.device_recovery WHERE tenant_id=t AND entity=mdm_registration_tasks.recovery_key(device)) original WHERE expected_epoch IS NOT NULL HAVING count(DISTINCT expected_epoch)=1
 $$;
-CREATE FUNCTION mdm_registration_tasks.native_work_relay_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+CREATE FUNCTION mdm_registration_tasks.native_work_relay_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid,expected_epoch bigint,claimable boolean,quarantined boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_registration_tasks.operations r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.registration.installation.v1' AND o.message_id='dispatch.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT * FROM public.mdm_command_relay_tenants('mdm.registration.installation.v1',after_tenant)
 $$;
 ALTER FUNCTION mdm_registration_tasks.native_work_scopes(uuid) OWNER TO mdm_owner;
 ALTER FUNCTION mdm_registration_tasks.native_work_epoch(uuid,text) OWNER TO mdm_owner;
-ALTER FUNCTION mdm_registration_tasks.native_work_relay_scopes(uuid,bigint) OWNER TO mdm_owner;
-REVOKE ALL ON FUNCTION mdm_registration_tasks.native_work_scopes(uuid),mdm_registration_tasks.native_work_epoch(uuid,text),mdm_registration_tasks.native_work_relay_scopes(uuid,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_registration_tasks.native_work_scopes(uuid),mdm_registration_tasks.native_work_epoch(uuid,text),mdm_registration_tasks.native_work_relay_scopes(uuid,bigint) TO mdm_access;
+ALTER FUNCTION mdm_registration_tasks.native_work_relay_scopes(uuid) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_registration_tasks.native_work_scopes(uuid),mdm_registration_tasks.native_work_epoch(uuid,text),mdm_registration_tasks.native_work_relay_scopes(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_registration_tasks.native_work_scopes(uuid),mdm_registration_tasks.native_work_epoch(uuid,text),mdm_registration_tasks.native_work_relay_scopes(uuid) TO mdm_access;

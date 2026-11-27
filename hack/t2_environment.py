@@ -12,7 +12,7 @@ from pathlib import Path
 import uuid
 
 from build_run import lock_file
-from dev_environment import Environment, private
+from dev_environment import COMMAND_PROJECTION_ROLES, Environment, private
 from verification_result import require
 
 
@@ -122,7 +122,7 @@ def prepared(root, modules, binary, command, resources):
                     'mdm_identity_provisioning', 'mdm_inventory_runtime', 'mdm_scope_runtime',
                     'mdm_policy_runtime', 'mdm_resource_runtime', 'mdm_software_runtime',
                     'mdm_content_runtime', 'mdm_telemetry_runtime', 'mdm_scheduler_runtime','mdm_wns_runtime',
-                    'mdm_scope_group_consumer', 'mdm_asset_ingress_consumer', 'mdm_webhook_operator', 'mdm_software_driver')}
+                    'mdm_scope_group_consumer', 'mdm_asset_ingress_consumer', *COMMAND_PROJECTION_ROLES, 'mdm_webhook_operator', 'mdm_software_driver')}
                 if profile in ('agent_foundation','da_foundation'):
                     environment.sql('ALTER DATABASE ' + name + ' OWNER TO da_owner; GRANT CREATE ON DATABASE ' + name + ' TO mdm_owner; GRANT CREATE ON SCHEMA public TO da_owner;', name)
                     values[profile].update({role: database(name, role) for role in ('da_owner','da_access',

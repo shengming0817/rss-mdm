@@ -146,6 +146,12 @@ async fn grant_local_consumer(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     name: &'static str,
 ) -> Result<()> {
+    if name == "command-projections-v1" {
+        for lane in crate::assembly::task_relay::lanes::LANES {
+            grant_projection(tx, name, lane.role, lane.domain, lane.role).await?;
+        }
+        return Ok(());
+    }
     let (role, domain, consumer) = match name {
         "scope-group-changes-v1" => (
             "mdm_scope_group_consumer",
@@ -159,6 +165,15 @@ async fn grant_local_consumer(
         ),
         _ => return Ok(()),
     };
+    grant_projection(tx, name, role, domain, consumer).await
+}
+async fn grant_projection(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    name: &'static str,
+    role: &str,
+    domain: &str,
+    consumer: &str,
+) -> Result<()> {
     rss_transactional_messaging_postgres::grant_local_projection(
         tx,
         role,

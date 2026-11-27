@@ -3,7 +3,7 @@
     "external_calls": {"apns": {"total": 8, "per_credential": 8}, "wns": {"total": 8, "per_credential": 8}, "ade": 8, "publication": {"total": 8, "per_source": 8}},
     "device_concurrency": 8,
     "planning_concurrency": 8,
-    "database_connection_budget": 196,
+    "database_connection_budget": 236,
     "scheduling": {
       "device": {
         "claim_batch_size": 64,
@@ -172,6 +172,19 @@
   },
   "audit": {
     "mode": "plain"
+  },
+  "command_projection_password_files": {
+    "mdm_dispatch_device": "/run/secrets/mdm_dispatch_device_password",
+    "mdm_dispatch_policy": "/run/secrets/mdm_dispatch_policy_password",
+    "mdm_dispatch_script": "/run/secrets/mdm_dispatch_script_password",
+    "mdm_dispatch_inventory": "/run/secrets/mdm_dispatch_inventory_password",
+    "mdm_dispatch_software": "/run/secrets/mdm_dispatch_software_password",
+    "mdm_dispatch_installation": "/run/secrets/mdm_dispatch_installation_password",
+    "mdm_dispatch_enrollment": "/run/secrets/mdm_dispatch_enrollment_password",
+    "mdm_dispatch_device_access": "/run/secrets/mdm_dispatch_device_access_password",
+    "mdm_dispatch_mdm_credentials": "/run/secrets/mdm_dispatch_mdm_credentials_password",
+    "mdm_dispatch_da_credentials": "/run/secrets/mdm_dispatch_da_credentials_password",
+    "mdm_dispatch_native_credentials": "/run/secrets/mdm_dispatch_native_credentials_password"
   },
   "command_database": {
     "host": "postgres.example.test",

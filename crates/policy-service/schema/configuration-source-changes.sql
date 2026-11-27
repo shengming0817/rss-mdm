@@ -33,13 +33,13 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
  SELECT expected_epoch FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=t AND entity='configuration-inputs'
  UNION ALL SELECT expected_epoch FROM mdm_planning.configuration_devices WHERE tenant_id=t AND entity='configuration:'||mdm_planning.configuration_device_key(device)
 $$;
-CREATE FUNCTION mdm_planning.configuration_relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid, expected_epoch bigint)
+CREATE FUNCTION mdm_planning.configuration_relay_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid, expected_epoch bigint,claimable boolean,quarantined boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_planning.configuration_operations r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.policy.configuration.v1' AND o.message_id='dispatch.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT * FROM public.mdm_command_relay_tenants('mdm.policy.configuration.v1',after_tenant)
 $$;
 ALTER FUNCTION mdm_planning.configuration_work_scopes(uuid) OWNER TO mdm_owner;
 ALTER FUNCTION mdm_planning.configuration_work_epoch(uuid,text) OWNER TO mdm_owner;
-ALTER FUNCTION mdm_planning.configuration_relay_scopes(uuid,bigint) OWNER TO mdm_owner;
-REVOKE ALL ON FUNCTION mdm_planning.configuration_work_scopes(uuid),mdm_planning.configuration_work_epoch(uuid,text),mdm_planning.configuration_relay_scopes(uuid,bigint) FROM PUBLIC;
+ALTER FUNCTION mdm_planning.configuration_relay_scopes(uuid) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_planning.configuration_work_scopes(uuid),mdm_planning.configuration_work_epoch(uuid,text),mdm_planning.configuration_relay_scopes(uuid) FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_planning TO mdm_access;
-GRANT EXECUTE ON FUNCTION mdm_planning.configuration_work_scopes(uuid),mdm_planning.configuration_work_epoch(uuid,text),mdm_planning.configuration_relay_scopes(uuid,bigint) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_planning.configuration_work_scopes(uuid),mdm_planning.configuration_work_epoch(uuid,text),mdm_planning.configuration_relay_scopes(uuid) TO mdm_access;
