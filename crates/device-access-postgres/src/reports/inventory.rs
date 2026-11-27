@@ -24,6 +24,33 @@ pub const INSTALL_SQL: &str = include_str!("../../schema/report-inventory.sql");
 pub const MIN_PAGE_BYTES: u32 = Batch::MAX_ENCODED_BYTES;
 pub(super) const GENERATION: &str = "da-report-assets-v1";
 const PASS: Duration = Duration::from_secs(10);
+#[derive(Clone, Copy, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum ProjectionStatus {
+    Running,
+    HistoryExpired { confirmed: Option<u64> },
+    Fenced { confirmed: Option<u64> },
+}
+
+/// Reasons why a tenant's worker stopped delivering. Each host builds a new status after admission.
+#[derive(Default)]
+pub struct Health(std::sync::Mutex<std::collections::HashMap<TenantId, ProjectionStatus>>);
+impl Health {
+    pub(super) fn status(&self, tenant: TenantId) -> ProjectionStatus {
+        self.0
+            .lock()
+            .expect("inventory status")
+            .get(&tenant)
+            .copied()
+            .unwrap_or(ProjectionStatus::Running)
+    }
+    fn blocked(&self, tenant: TenantId, status: ProjectionStatus) {
+        self.0
+            .lock()
+            .expect("inventory status")
+            .insert(tenant, status);
+    }
+}
 type Source = PgSource<Clock, LocalPages>;
 
 #[derive(Clone)]
@@ -96,6 +123,15 @@ impl Admission {
         timer: Arc<dyn rss_request_context::Clock>,
     ) -> Result<Self, Error> {
         let mut probe = pool.begin().await.map_err(crate::database::db)?;
+        let remaining = deadline.remaining(timer.now()).ok_or(Error::Deadline)?;
+        let millis = remaining.as_millis().clamp(1, i32::MAX as u128).to_string();
+        sqlx::query(
+            "SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout',$1,true)",
+        )
+        .bind(millis)
+        .execute(&mut *probe)
+        .await
+        .map_err(crate::database::db)?;
         fence(&mut probe, binding)
             .await
             .map_err(crate::database::db)?;
@@ -247,32 +283,44 @@ impl Worker {
         rss_projection::run_batched(&*self.source, &self.effect, &control, limit).await
     }
 
-    async fn run(self, stop: CancellationToken) -> Result<(), rss_runtime::ShutdownError> {
-        let mut rows = 64;
+    async fn run(
+        self,
+        stop: CancellationToken,
+        health: Arc<Health>,
+        max_rows: rss_projection::BatchLimit,
+    ) -> Result<(), rss_runtime::ShutdownError> {
+        let mut rows = max_rows.get();
         loop {
-            let deadline = Deadline::at(rss_observation::Clock::now(&self.clock) + PASS);
-            for _ in 0..64 {
-                let delivery = tokio::select! {
-                    biased;
-                    ()=stop.cancelled()=>return Ok(()),
-                    result=tokio::time::timeout_at(deadline.instant().into(),self.deliver(deadline))=>result,
-                };
-                match delivery {
-                    Ok(Ok(true)) => {}
-                    Ok(Ok(false)) => break,
-                    _ => {
-                        eprintln!("da_report_delivery_deferred");
-                        break;
-                    }
-                }
-            }
             let page =
                 rss_projection::PageBudget::new(rows, rss_projection::Event::MAX_PAYLOAD_BYTES)
                     .expect("positive reference budget");
             let limit = rss_projection::RunLimit::new(page, 64).expect("positive pass");
             let started = rss_projection::Timer::now(&self.clock);
             let report = self.project(&stop, limit).await;
+            let healthy = !matches!(&report.stop, rss_projection::Stop::Failed(_));
             match report.stop {
+                rss_projection::Stop::Failed(e)
+                    if matches!(
+                        e.kind(),
+                        rss_projection::ErrorKind::HistoryExpired
+                            | rss_projection::ErrorKind::Fenced
+                    ) =>
+                {
+                    let confirmed = report.position.map(|p| p.get());
+                    let status = if e.kind() == rss_projection::ErrorKind::Fenced {
+                        ProjectionStatus::Fenced { confirmed }
+                    } else {
+                        ProjectionStatus::HistoryExpired { confirmed }
+                    };
+                    health.blocked(self.binding.tenant(), status);
+                    eprintln!(
+                        "da_report_inventory_blocked tenant={} kind={:?} confirmed={confirmed:?}",
+                        self.binding.tenant(),
+                        e.kind()
+                    );
+                    stop.cancelled().await;
+                    return Ok(());
+                }
                 rss_projection::Stop::Failed(e) => {
                     let timed_out = e.kind() == rss_projection::ErrorKind::Deadline
                         || e.diagnostic().and_then(|d| d.sqlstate()) == Some("57014")
@@ -294,14 +342,36 @@ impl Worker {
                         e.diagnostic().and_then(|d| d.position())
                     );
                 }
-                rss_projection::Stop::CaughtUp => rows = 64,
+                rss_projection::Stop::CaughtUp => rows = max_rows.get(),
                 _ => {}
+            }
+            if healthy {
+                let deadline = Deadline::at(rss_observation::Clock::now(&self.clock) + PASS);
+                for _ in 0..64 {
+                    let delivery = tokio::select! {
+                        biased;
+                        ()=stop.cancelled()=>return Ok(()),
+                        result=tokio::time::timeout_at(deadline.instant().into(),self.deliver(deadline))=>result,
+                    };
+                    match delivery {
+                        Ok(Ok(true)) => {}
+                        Ok(Ok(false)) => break,
+                        _ => {
+                            eprintln!("da_report_delivery_deferred");
+                            break;
+                        }
+                    }
+                }
             }
             tokio::select! {biased; ()=stop.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_millis(200))=>{}}
         }
     }
-    pub fn registration(self) -> rss_runtime::ManagedTaskRegistration {
+    pub fn registration(
+        self,
+        health: Arc<Health>,
+        max_rows: rss_projection::BatchLimit,
+    ) -> rss_runtime::ManagedTaskRegistration {
         let (task, _) = rss_runtime::ManagedTask::prepare("da-report-inventory", PASS);
-        task.into_registration(move |stop| self.run(stop))
+        task.into_registration(move |stop| self.run(stop, health, max_rows))
     }
 }

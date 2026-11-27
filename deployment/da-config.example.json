@@ -49,6 +49,7 @@
     "password_file": "/srv/rss-da/runtime/da-access-password",
     "ca_file": "/srv/rss-da/runtime/postgres-ca.pem"
   },
+  "projection_batch": 64,
   "projection_page_bytes": 4194304,
   "inventory_database": {
     "host": "postgres.example.com",

@@ -86,7 +86,7 @@ pub(super) async fn receive(
     if !decision.outcome().is_applicable() {
         return Err(Error::Conflict);
     }
-    if service.project_reports {
+    if service.report_projection.is_some() {
         let pending:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1::uuid AND device=$2 AND kind=$3 AND delivery_pending")
             .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).fetch_one(&mut *c).await.map_err(db)?;
         if pending >= i64::from(service.report_limits.history_count) {
@@ -106,7 +106,7 @@ pub(super) async fn receive(
     };
     let receipt = serde_json::to_value(&value).map_err(|_| Error::Corrupt)?;
     sqlx::query("INSERT INTO rss_da.report_history (tenant_id, device, kind, sequence, operation, received_at, document, receipt,registration_epoch,stream_revision,delivery_pending,storage_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8,$9,$10,$11,$12)")
-        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).bind(sequence).bind(operation).bind(now).bind(document).bind(&receipt).bind(p.epoch()).bind(revision).bind(service.project_reports).bind(p.binding().epoch().get()).execute(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).bind(sequence).bind(operation).bind(now).bind(document).bind(&receipt).bind(p.epoch()).bind(revision).bind(service.report_projection.is_some()).bind(p.binding().epoch().get()).execute(&mut *c).await.map_err(db)?;
     sqlx::query("INSERT INTO rss_da.report_heads (tenant_id, device, kind, integrity, document, receipt,registration_epoch,stream_revision) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6,$7,$8) ON CONFLICT (tenant_id, device, kind) DO UPDATE SET integrity = excluded.integrity, document = excluded.document, receipt = excluded.receipt,registration_epoch=excluded.registration_epoch,stream_revision=excluded.stream_revision")
         .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).bind(decision.state().encode().map_err(|_|Error::Corrupt)?).bind(document).bind(receipt).bind(p.epoch()).bind(revision).execute(&mut *c).await.map_err(db)?;
     sqlx::query("DELETE FROM rss_da.report_history WHERE ctid IN (SELECT ctid FROM rss_da.report_history WHERE tenant_id=$1::uuid AND NOT delivery_pending AND received_at<=$2 ORDER BY received_at LIMIT 1000)").bind(p.tenant().to_string()).bind(now-i64::from(service.report_limits.history_seconds)).execute(&mut *c).await.map_err(db)?;

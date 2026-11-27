@@ -184,6 +184,28 @@ pub async fn verify(
             .is_err()
     );
     host::private(&verification_password, &password)?;
+    let mut operator = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
+    sqlx::query(
+        "REVOKE UPDATE(delivery_pending) ON rss_da.report_history FROM da_report_projection",
+    )
+    .execute(&mut operator)
+    .await?;
+    operator.close().await?;
+    assert!(
+        Box::pin(backup::restore(serde_json::from_value(restore.clone())?))
+            .await
+            .is_err()
+    );
+    let mut operator = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
+    let fenced:bool=sqlx::query_scalar("SELECT NOT has_database_privilege('da_report_projection',current_database(),'CONNECT') AND NOT has_database_privilege('da_access',current_database(),'CONNECT')").fetch_one(&mut operator).await?;
+    assert!(
+        fenced,
+        "restore must reapply CONNECT fencing after Inventory fails admission"
+    );
+    sqlx::query("GRANT UPDATE(delivery_pending) ON rss_da.report_history TO da_report_projection")
+        .execute(&mut operator)
+        .await?;
+    operator.close().await?;
     Box::pin(backup::restore(serde_json::from_value(restore.clone())?))
         .await
         .context("resume verified restore")?;

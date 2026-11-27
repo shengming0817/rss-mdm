@@ -122,6 +122,23 @@ pub async fn verify(
     assert_eq!(retry, second);
     report.sequence = 3;
     assert_eq!(peer.post(&url).json(&report).send().await?.status(), 429);
+    let mut intake = c.access.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(c.tenant.to_string())
+        .execute(&mut *intake)
+        .await?;
+    let deleted = sqlx::query(
+        "DELETE FROM rss_da.report_history WHERE tenant_id=$1::uuid AND delivery_pending",
+    )
+    .bind(c.tenant.to_string())
+    .execute(&mut *intake)
+    .await?;
+    assert_eq!(
+        deleted.rows_affected(),
+        0,
+        "intake login must preserve unacknowledged reports"
+    );
+    intake.rollback().await?;
     gate.rollback().await?;
     tokio::time::timeout(Duration::from_secs(20),async{
         loop{
@@ -245,6 +262,18 @@ pub async fn verify(
         403,
         "configuration write does not grant report read"
     );
+    for suffix in ["status", "reports"] {
+        let missing = format!("{management}/admin/devices/{}/{suffix}", Uuid::new_v4());
+        assert_eq!(
+            client
+                .get(missing)
+                .bearer_auth(token)
+                .send()
+                .await?
+                .status(),
+            404
+        );
+    }
     let current: serde_json::Value =
         material::success(peer.get(format!("{base}/configuration")).send().await?).await?;
     assert_eq!(current["state"], "present");
@@ -254,8 +283,10 @@ pub async fn verify(
     );
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let facts: Vec<serde_json::Value> =
+            let view: serde_json::Value =
                 material::success(client.get(&assets_url).bearer_auth(token).send().await?).await?;
+            anyhow::ensure!(view["projection"]["state"] == "running");
+            let facts = view["assets"].as_array().unwrap();
             if facts.len() == 2
                 && facts
                     .iter()
@@ -287,7 +318,7 @@ pub async fn verify(
         .await?;
         let response = peer.post(&url).json(&report).send().await?;
         if response.status() == 429 && accepted["receivedAt"].as_i64().unwrap() / 60 == minute {
-            return Ok(());
+            return mixed_page(c, peer, base, report, application).await;
         }
         let current: i64 =
             sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint/60")
@@ -305,4 +336,174 @@ pub async fn verify(
         }
     }
     unreachable!("bounded quota proof exits with a result")
+}
+
+/// Queue both kinds behind the real projection checkpoint before releasing the worker.
+async fn mixed_page(
+    c: &Context,
+    peer: &reqwest::Client,
+    base: &str,
+    mut status: da::StatusReport,
+    mut application: da::ApplicationReport,
+) -> Result<()> {
+    use anyhow::{Context as _, ensure};
+    let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+    let checkpoint = || {
+        sqlx::query_scalar::<_,i64>("SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1 AND projection_id='da-inventory'").bind(tenant).fetch_one(&c.operator)
+    };
+    tokio::time::timeout(Duration::from_secs(20),async{
+        loop{
+            let caught:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM rss_da.report_history WHERE tenant_id=$1 AND delivery_pending) AND (SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1 AND projection_id='da-inventory')=(SELECT last_position FROM rss_observation.journals WHERE tenant_id=$1)").bind(tenant).fetch_one(&c.operator).await?;
+            if caught{return Ok::<_,anyhow::Error>(());}
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await??;
+    let before = checkpoint().await?;
+    sqlx::raw_sql(include_str!(
+        "../../../../hack/test-support/inventory-pages.sql"
+    ))
+    .execute(&c.operator)
+    .await?;
+    let mut gate = c.operator.begin().await?;
+    sqlx::query("LOCK TABLE rss_projection.checkpoints IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *gate)
+        .await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *gate)
+        .await?;
+    tokio::time::timeout(Duration::from_secs(4),async{
+        loop{
+            let waiting:bool=sqlx::query_scalar("SELECT count(*)>=2 FROM pg_stat_activity WHERE usename='da_report_projection' AND $1=ANY(pg_blocking_pids(pid))").bind(pid).fetch_one(&c.operator).await?;
+            if waiting{return Ok::<_,anyhow::Error>(());}
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    }).await.context("both installed tenant workers at checkpoint")??;
+    sqlx::query("DELETE FROM rss_da.report_budget WHERE tenant_id=$1")
+        .bind(tenant)
+        .execute(&c.operator)
+        .await?;
+    status.sequence += 10;
+    let large = status.clone();
+    let mut small = status;
+    small.sequence -= 1;
+    small.client_version = "v".into();
+    small.errors.clear();
+    application.sequence += 10;
+    application.operation_id = Uuid::new_v4();
+    for (route, wire) in [
+        ("status-reports", serde_json::to_value(&small)?),
+        ("configuration-reports", serde_json::to_value(&application)?),
+        ("status-reports", serde_json::to_value(&large)?),
+    ] {
+        material::success::<serde_json::Value>(
+            peer.post(format!("{base}/{route}"))
+                .json(&wire)
+                .send()
+                .await?,
+        )
+        .await?;
+    }
+    gate.commit().await?;
+    tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            if checkpoint().await? == before + 3 {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await??;
+    let rows:Vec<(i64,i64,String,i32,i64)>=sqlx::query_as("SELECT b.log_position,p.position,b.scope::jsonb->>'dataset',octet_length(b.raw),b.sequence::bigint FROM rss_observation.batches b JOIN rss_projection.receipts r ON r.tenant_id=b.tenant_id AND r.event_id=encode(b.fingerprint,'hex') JOIN public.t2_inventory_pages p ON p.tenant=r.tenant_id AND p.projection=r.projection_id AND p.writer::text=r.xmin::text WHERE b.tenant_id=$1 AND b.log_position>$2 ORDER BY b.log_position").bind(tenant).bind(before).fetch_all(&c.operator).await?;
+    ensure!(
+        rows.iter()
+            .map(|r| (r.0 - before, r.1 - before))
+            .eq([(1, 2), (2, 2), (3, 3)]),
+        "DA mixed page checkpoints {rows:?}"
+    );
+    let statuses: Vec<_> = rows.iter().filter(|r| r.2 == "status").collect();
+    ensure!(
+        statuses.len() == 2
+            && statuses[0].4 == small.sequence
+            && statuses[1].4 == large.sequence
+            && statuses[0].3 < statuses[1].3
+    );
+    eprintln!("da_formal_mixed_pages coordinates={rows:?}, checkpoint_base={before}");
+    sqlx::raw_sql("DROP TRIGGER t2_inventory_page ON rss_projection.checkpoints; DROP FUNCTION public.t2_inventory_page(); DROP TABLE public.t2_inventory_pages").execute(&c.operator).await?;
+    Ok(())
+}
+
+/// A second owner fences this tenant. The original serving process must stop clearing its pins.
+pub(super) async fn fenced_backpressure(
+    c: &Context,
+    client: &reqwest::Client,
+    peer: &reqwest::Client,
+    base: &str,
+    token: &str,
+    device: &da::Registration,
+) -> Result<()> {
+    use rss_mdm_device_access_postgres::reports::inventory::{Admission, MIN_PAGE_BYTES};
+    let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+    let pool = c.inputs.database("da_report_projection").pool().await?;
+    let cutoff =
+        rss_request_context::Deadline::from_timeout(&context::Timer, Duration::from_secs(10))?;
+    let admission = Admission::check(
+        pool.clone(),
+        device.service_id,
+        c.execution(),
+        MIN_PAGE_BYTES,
+        cutoff,
+        Arc::new(context::Timer),
+    )
+    .await?;
+    drop(admission.start(cutoff).await?);
+    let url = format!(
+        "{}/admin/devices/{}/inventory",
+        c.management_base(),
+        device.device
+    );
+    tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            let data: serde_json::Value =
+                material::success(client.get(&url).bearer_auth(token).send().await?).await?;
+            if data["projection"]["state"] == "fenced" {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
+    sqlx::query("DELETE FROM rss_da.report_budget WHERE tenant_id=$1")
+        .bind(tenant)
+        .execute(&c.operator)
+        .await?;
+    let mut report = da::StatusReport {
+        identity: da::ReportIdentity {
+            service_id: device.service_id,
+            tenant,
+            device_id: device.device,
+        },
+        sequence: 100,
+        observed_at: None,
+        client_version: "sample".into(),
+        modules: Default::default(),
+        contract_version: 1,
+        binding: da::Health::Unknown,
+        factor: da::Health::Unknown,
+        health: da::Health::Unknown,
+        configuration_digest: None,
+        errors: vec![],
+    };
+    for (sequence, expected) in [(100, 200), (101, 200), (102, 429)] {
+        report.sequence = sequence;
+        let response = peer
+            .post(format!("{base}/status-reports"))
+            .json(&report)
+            .send()
+            .await?;
+        assert_eq!(response.status().as_u16(), expected);
+    }
+    let pending:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1 AND device=$2 AND delivery_pending").bind(tenant).bind(device.device.into_uuid()).fetch_one(&c.operator).await?;
+    assert_eq!(pending, 2);
+    pool.close().await;
+    Ok(())
 }

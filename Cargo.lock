@@ -3147,6 +3147,7 @@ dependencies = [
  "rss-mdm-task-trust",
  "rss-mdm-vault-sync",
  "rss-observation-postgres",
+ "rss-projection",
  "rss-projection-postgres",
  "rss-request-context",
  "rss-runtime",

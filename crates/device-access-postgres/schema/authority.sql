@@ -94,4 +94,5 @@ CREATE POLICY tenant ON rss_da.report_budget USING(tenant_id=nullif(current_sett
 REVOKE ALL ON rss_da.report_budget FROM PUBLIC;
 GRANT SELECT,INSERT ON rss_da.report_budget TO da_access;
 GRANT UPDATE(minute,reports,bytes) ON rss_da.report_budget TO da_access;
+CREATE POLICY expired_only ON rss_da.report_history AS RESTRICTIVE FOR DELETE USING (NOT delivery_pending);
 GRANT DELETE ON rss_da.report_history TO da_access;

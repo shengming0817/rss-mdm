@@ -696,6 +696,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "revoked DA registration cannot access the PSSO channel"
     );
 
+    reports::fenced_backpressure(&c, &client, &current_peer, base, &token, &current_survivor)
+        .await?;
     stop.send(())
         .map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
     tokio::time::timeout(Duration::from_secs(50), running).await???;

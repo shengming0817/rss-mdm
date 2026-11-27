@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 pub struct Assembly {
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
-    pub project_reports: bool,
+    pub report_projection: Option<Arc<crate::reports::inventory::Health>>,
     pub report_limits: crate::reports::Limits,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub instance: Uuid,
@@ -19,7 +19,7 @@ pub struct Assembly {
 }
 pub struct Service {
     pub(crate) recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
-    pub(crate) project_reports: bool,
+    pub(crate) report_projection: Option<Arc<crate::reports::inventory::Health>>,
     pub(crate) report_limits: crate::reports::Limits,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     instance: Uuid,
@@ -41,7 +41,7 @@ impl Service {
         Ok(Self {
             recovery: a.recovery,
             report_limits: a.report_limits,
-            project_reports: a.project_reports,
+            report_projection: a.report_projection,
             cursor: a.cursor,
             instance: a.instance,
             store: a.store,

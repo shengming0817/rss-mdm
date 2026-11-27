@@ -71,6 +71,11 @@ pub struct Asset {
     pub evidence: da::EvidenceLevel,
     pub facts: AssetFacts,
 }
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct Assets {
+    pub projection: inventory::ProjectionStatus,
+    pub assets: Vec<Asset>,
+}
 fn query_error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
@@ -104,19 +109,21 @@ impl Service {
         &self,
         p: &AuthorizedPrincipal,
         device: &rss_mdm_agent_wire::DeviceId,
-    ) -> Result<Vec<Asset>, Error> {
-        if !self.project_reports {
-            return Err(Error::Unsupported);
-        }
-        self.read_with_session(p,(self,p,device),|ctx,c|Box::pin(async move{
+    ) -> Result<Assets, Error> {
+        let health = self.report_projection.as_ref().ok_or(Error::Unsupported)?;
+        let assets=self.read_with_session(p,(self,p,device),|ctx,c|Box::pin(async move{
             let (service,p,device)=*ctx;
             authorize(c,p,device).await?;
-            let epoch=endpoints::current_da_epoch_in(c,p.tenant_id(),device).await?;
+            let epoch=endpoints::find_da_epoch_in(c,p.tenant_id(),device).await?.ok_or(Error::NotFound)?;
             let rows=sqlx::query("SELECT kind,sequence,position,received_at,facts FROM rss_da.inventory_assets WHERE tenant_id=$1::uuid AND installation=$2 AND device=$3 AND registration_epoch=$4 AND generation=$5 ORDER BY kind")
                 .bind(p.tenant_id()).bind(service.service_id()?).bind(device.into_uuid()).bind(epoch).bind(inventory::GENERATION).fetch_all(c).await.map_err(db)?;
             rows.into_iter().map(|r|Ok(Asset{kind:match r.try_get::<&str,_>("kind").map_err(db)?{"status"=>Kind::Status,"application"=>Kind::Application,_=>return Err(Error::Corrupt)},
                registration_epoch:epoch,sequence:r.try_get("sequence").map_err(db)?,position:r.try_get("position").map_err(db)?,received_at:r.try_get("received_at").map_err(db)?,evidence:da::EvidenceLevel::Reported,facts:r.try_get::<sqlx::types::Json<AssetFacts>,_>("facts").map_err(db)?.0})).collect()
-        })).await
+        })).await?;
+        Ok(Assets {
+            assets,
+            projection: health.status(p.binding().tenant()),
+        })
     }
     pub async fn latest_report(
         &self,
@@ -126,8 +133,7 @@ impl Service {
     ) -> Result<Option<View>, Error> {
         self.read_with_session(p,(self,p,device,kind),|ctx,c|Box::pin(async move{
             let(service,p,device,kind)=*ctx;authorize(c,p,device).await?;
-            endpoints::lock_da_in(c,p.tenant_id(),device).await?;
-            let epoch=endpoints::current_da_epoch_in(c,p.tenant_id(),device).await?;
+            let epoch=endpoints::find_da_epoch_in(c,p.tenant_id(),device).await?.ok_or(Error::NotFound)?;
             let row=sqlx::query("SELECT document, receipt FROM rss_da.report_heads WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = $3 AND registration_epoch=$4")
                 .bind(p.tenant_id()).bind(device.into_uuid()).bind(kind.name()).bind(epoch).fetch_optional(&mut *c).await.map_err(db)?;
             let now=crate::platform_sso::store::now(c).await?;
@@ -145,8 +151,7 @@ impl Service {
             .map_err(query_error)?;
         self.read_with_session(p,(self,p,device,input,&q),|ctx,c|Box::pin(async move{
             let(service,p,device,input,q)=*ctx;let grants=authorize(c,p,device).await?;
-            endpoints::lock_da_in(c,p.tenant_id(),device).await?;
-            let epoch=endpoints::current_da_epoch_in(c,p.tenant_id(),device).await?;
+            let epoch=endpoints::find_da_epoch_in(c,p.tenant_id(),device).await?.ok_or(Error::NotFound)?;
             let binding=rss_mdm_query::cursor::fingerprint(&("da.reports.v1",p.tenant_id(),p.instance_id(),p.principal_id(),grants,device,epoch,input.kind,q.limit())).map_err(query_error)?;
             let after:Option<i64>=input.cursor.as_ref().map(|v|service.cursor.decode_bounded(v,&binding,4096)).transpose().map_err(query_error)?;
             let now=crate::platform_sso::store::now(c).await?;

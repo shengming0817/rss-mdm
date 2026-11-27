@@ -128,7 +128,7 @@ pub(super) async fn authorize(
     );
     let service = pg::Service::new(pg::Assembly {
         recovery: None,
-        project_reports: false,
+        report_projection: None,
         report_limits: Default::default(),
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
 

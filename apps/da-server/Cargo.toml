@@ -37,6 +37,7 @@ rss-audit-postgres.workspace = true
 rss-ledger.workspace = true
 rss-ledger-postgres.workspace = true
 rss-observation-postgres.workspace = true
+rss-projection.workspace = true
 rss-projection-postgres.workspace = true
 rss-request-context.workspace = true
 rss-runtime.workspace = true

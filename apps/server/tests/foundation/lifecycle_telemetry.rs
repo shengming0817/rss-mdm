@@ -258,6 +258,25 @@ pub(super) async fn exercise(
             .is_err(),
         "physical credentials must qualify before acceptance"
     );
+    for (field, invalid, minimum) in [
+        ("max_prepare_batches", 0, 1),
+        (
+            "max_prepare_bytes",
+            1,
+            rss_timeseries_postgres::Limits::MIN_PREPARE_BYTES,
+        ),
+    ] {
+        let mut wrong = resources[1]["configuration"].clone();
+        wrong["backend"]["prepare"][field] = json!(invalid);
+        let request = json!({"installation":source,"operation_id":Uuid::new_v4(),"tenant":null,"expected_revision":runtime["runtime_binding"]["revision"],"change":{"kind":"telemetry","settings":wrong}});
+        let error = configure::run(serde_json::from_value(request)?)
+            .await
+            .err()
+            .context("invalid prepare capacity accepted")?;
+        ensure!(
+            matches!(error,crate::installation::Error::MinimumCapacity{field:key,minimum:n} if key==format!("backend.prepare.{field}") && n==minimum)
+        );
+    }
     for resource in &resources {
         let request = json!({"installation":source,"operation_id":Uuid::new_v4(),"tenant":null,"expected_revision":runtime["runtime_binding"]["revision"],"change":{"kind":"telemetry","settings":resource["configuration"]}});
         let receipt = configure::run(serde_json::from_value(request)?).await?;

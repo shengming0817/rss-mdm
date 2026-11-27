@@ -61,12 +61,15 @@ async fn sql(c: &mut PgConnection, text: &str) -> Result<()> {
 fn same_database(a: &Database, b: &Database) -> bool {
     a.host == b.host && a.port == b.port && a.name == b.name
 }
+pub(in crate::installation) fn validate_config(config: &Config) -> Result<()> {
+    config.validate().map_err(|error| match error {
+        crate::Error::Configuration(issue) => crate::installation::capacity_error(issue),
+        _ => Error::Input,
+    })
+}
 impl Request {
     pub(in crate::installation) fn validate(&self) -> Result<()> {
-        self.configuration.validate().map_err(|error| match error {
-            crate::Error::Configuration(issue) => crate::installation::capacity_error(issue),
-            _ => Error::Input,
-        })?;
+        validate_config(&self.configuration)?;
         identifier(&self.owner)?;
         identifier(&self.configuration.database().user)?;
         if self.operation_id.is_nil()

@@ -149,6 +149,29 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
     ensure!(expected > 3);
     reset(&admin, tenant).await?;
     sqlx::raw_sql("CREATE TABLE public.observed_asset_writes(pos bigint, writer xid8); CREATE FUNCTION public.observe_asset() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN INSERT INTO public.observed_asset_writes VALUES(NEW.position,pg_current_xact_id()); RETURN NEW; END $$; CREATE TRIGGER observe_asset AFTER INSERT OR UPDATE ON rss_da.inventory_assets FOR EACH ROW EXECUTE FUNCTION public.observe_asset()").execute(&admin).await?;
+    let mut blocked = admin.begin().await?;
+    sqlx::query(
+        "SELECT epoch FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1 FOR UPDATE",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *blocked)
+    .await?;
+    let short =
+        rss_request_context::Deadline::from_timeout(&context::Timer, Duration::from_millis(250))?;
+    let denied = tokio::time::timeout(
+        Duration::from_secs(2),
+        Admission::check(
+            db.clone(),
+            install,
+            c.execution(),
+            MIN_PAGE_BYTES,
+            short,
+            Arc::new(context::Timer),
+        ),
+    )
+    .await?;
+    ensure!(denied.is_err(), "locked admission outlived cutoff");
+    blocked.rollback().await?;
     let worker = open().await?;
     let before = counts(&db).await?;
     ensure!(worker.project(&stop, limit).await.into_result()?.applied == 3);

@@ -80,7 +80,7 @@ pub async fn verify(
         "http":http,
         "installation":{"instance":c.inputs.installation.instance_id,"tenant":c.tenant.to_string(),
           "management_tenant":management,"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1},
-        "database":c.inputs.database("da_access"),"identity_database":c.inputs.database("da_identity_runtime"),"inventory_database":c.inputs.database("da_report_projection"),"projection_page_bytes":rss_mdm_device_access_postgres::reports::inventory::MIN_PAGE_BYTES,
+        "database":c.inputs.database("da_access"),"identity_database":c.inputs.database("da_identity_runtime"),"inventory_database":c.inputs.database("da_report_projection"),"projection_batch":2,"projection_page_bytes":rss_mdm_device_access_postgres::reports::inventory::MIN_PAGE_BYTES,
         "audit":{"mode":"plain"},"browser":listener(browser_address,&origin),
         "registration":{"listener":listener(protocol_address,&trust.origin),"trust_file":trust_file,
           "providers":[{"purpose":"da_device","issuer":trust.issuers[0].digest,

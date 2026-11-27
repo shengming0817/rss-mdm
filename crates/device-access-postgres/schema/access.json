@@ -194,7 +194,7 @@
       "read_write": true,
       "read_only": false,
       "updates": [],
-      "delete_policy": "tenant"
+      "delete_policy": "notdelivery_pending"
     },
     {
       "schema": "rss_da",

@@ -312,7 +312,7 @@ async fn inventory(
     State(s): State<Arc<crate::management::Services>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
-) -> Result<Json<Vec<reports::Asset>>, BusinessError> {
+) -> Result<Json<reports::Assets>, BusinessError> {
     Ok(Json(
         s.business.inventory_assets(&auth.proof, &device).await?,
     ))
