@@ -149,6 +149,14 @@ pub async fn session_lifecycle(
     let logout = request("logout", &rotated, fresh["csrfToken"].as_str().unwrap())
         .send()
         .await?;
+    check_logout(logout, client, base, &rotated).await
+}
+async fn check_logout(
+    logout: reqwest::Response,
+    client: &reqwest::Client,
+    base: &str,
+    rotated: &str,
+) -> anyhow::Result<()> {
     assert_eq!(logout.status(), 204);
     assert!(
         logout.headers()["set-cookie"]

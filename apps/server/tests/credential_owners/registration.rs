@@ -268,6 +268,34 @@ async fn embedded_status(
     .await
 }
 
+async fn employee_device(
+    c: &Context,
+    da: &rss_mdm_registration_service::device::endpoints::DaRegistration,
+    principal: Uuid,
+) -> Result<rss_mdm_device_access_postgres::device_access::Binding> {
+    let tenant = c.tenant.to_string();
+    let mut tx = seed(c).await?;
+    let epoch = rss_mdm_registration_service::device::endpoints::current_da_epoch_in(
+        &mut tx, &tenant, &da.device,
+    )
+    .await?;
+    let installation = Uuid::parse_str(&c.inputs.installation.instance_id)?;
+    let binding = super::da_materials::seed_windows_binding(
+        &mut tx,
+        Uuid::parse_str(&tenant)?,
+        installation,
+        da,
+        principal,
+        rss_mdm_device_access_postgres::device_access::account_delivery::Target::Da {
+            installation,
+            epoch,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(binding)
+}
+
 async fn embedded_step_up(
     c: &Context,
     client: &reqwest::Client,
@@ -292,25 +320,7 @@ async fn embedded_step_up(
     let session = employee.cookie_session()?;
     let principal = Uuid::parse_str(&employee.user.principal_id)?;
     oidc.link_employee(&c.operator, &tenant, principal).await?;
-    let mut tx = seed(c).await?;
-    let epoch = rss_mdm_registration_service::device::endpoints::current_da_epoch_in(
-        &mut tx, &tenant, &da.device,
-    )
-    .await?;
-    let installation = Uuid::parse_str(&c.inputs.installation.instance_id)?;
-    let binding = super::da_materials::seed_windows_binding(
-        &mut tx,
-        Uuid::parse_str(&tenant)?,
-        installation,
-        da,
-        principal,
-        rss_mdm_device_access_postgres::device_access::account_delivery::Target::Da {
-            installation,
-            epoch,
-        },
-    )
-    .await?;
-    tx.commit().await?;
+    let binding = employee_device(c, da, principal).await?;
     let resource = format!(
         "{base}/api/v1/tenants/{tenant}/devices/{}/device-access/bindings/{}",
         da.device, binding.id
