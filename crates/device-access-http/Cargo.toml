@@ -72,7 +72,7 @@ rss-mdm-native-protection.workspace = true
 rss-mdm-query.workspace = true
 rss-audit-postgres.workspace = true
 rss-identity-postgres.workspace = true
-rss-observation-postgres = {workspace = true,features=["integration"]}
+rss-observation-postgres.workspace = true
 rss-projection-postgres.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }

@@ -72,6 +72,22 @@ async fn resources(
     }
     Ok(requests)
 }
+async fn verify_control_window(request: &Value) -> Result<()> {
+    let config: crate::telemetry::Config =
+        serde_json::from_value(request["configuration"].clone())?;
+    let pool = config.runtime_pool().await?;
+    let installed: (i32, i32) = sqlx::query_as(
+        "SELECT version,max_pending_batches FROM rss_ts_ch.installation WHERE singleton",
+    )
+    .fetch_one(&pool)
+    .await?;
+    ensure!(
+        installed == (5, 16),
+        "unexpected ClickHouse control installation {installed:?}"
+    );
+    pool.close().await;
+    Ok(())
+}
 async fn check_clickhouse_installation(
     request: &Value,
     writer_password: &Path,
@@ -91,19 +107,7 @@ async fn check_clickhouse_installation(
             .await?
             .admitted
     );
-    let config: crate::telemetry::Config =
-        serde_json::from_value(request["configuration"].clone())?;
-    let pool = config.runtime_pool().await?;
-    let installed: (i32, i32) = sqlx::query_as(
-        "SELECT version,max_pending_batches FROM rss_ts_ch.installation WHERE singleton",
-    )
-    .fetch_one(&pool)
-    .await?;
-    ensure!(
-        installed == (5, 16),
-        "unexpected ClickHouse control installation {installed:?}"
-    );
-    pool.close().await;
+    verify_control_window(request).await?;
     recovery::admin_sql(request, "ALTER TABLE rss_ts_ch.raw DROP INDEX raw_revision").await?;
     recovery::admin_sql(
         request,

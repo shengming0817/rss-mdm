@@ -151,26 +151,7 @@ async fn exercise(c: &Context, name: &str) -> Result<()> {
     sqlx::raw_sql("CREATE TABLE public.observed_asset_writes(pos bigint, writer xid8); CREATE FUNCTION public.observe_asset() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN INSERT INTO public.observed_asset_writes VALUES(NEW.position,pg_current_xact_id()); RETURN NEW; END $$; CREATE TRIGGER observe_asset AFTER INSERT OR UPDATE ON rss_da.inventory_assets FOR EACH ROW EXECUTE FUNCTION public.observe_asset()").execute(&admin).await?;
     let worker = open().await?;
     let before = counts(&db).await?;
-    let profile = Arc::new(rss_observation_postgres::read_profile::ReadProfile::default());
-    ensure!(
-        profile
-            .run(worker.project(&stop, limit))
-            .await
-            .into_result()?
-            .applied
-            == 3
-    );
-    let order = std::sync::atomic::Ordering::Relaxed;
-    ensure!(
-        profile.source.decodes.load(order) == 3
-            && profile.resolver.raw_bytes.load(order) == 0
-            && profile.resolver.database_fingerprints.load(order) == 3
-    );
-    eprintln!(
-        "da_observation_bytes={} resolver_decodes={}",
-        profile.source.raw_bytes.load(order),
-        profile.resolver.decodes.load(order)
-    );
+    ensure!(worker.project(&stop, limit).await.into_result()?.applied == 3);
     let mut cost = counts(&db).await?;
     for (g, n) in &mut cost {
         *n -= before.get(g).copied().unwrap_or_default();

@@ -52,7 +52,7 @@ SELECT current_setting('transaction_isolation')='read committed'
  AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute col ON col.attrelid=to_regclass(r.relation),LATERAL aclexplode(col.attacl) a
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT FROM (VALUES
-  ('rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint)'),
+  ('rss_transactional_messaging.claim_outbox(uuid,text,integer,integer,bigint)'),
   ('rss_transactional_messaging.next_outbox_wakeup(uuid,text)'),
   ('rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'),
   ('rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)')

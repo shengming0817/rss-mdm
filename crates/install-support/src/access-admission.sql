@@ -9,7 +9,7 @@ WITH contract AS (
  SELECT * FROM jsonb_to_recordset($2->'functions') AS f(name text, search_path text, security_definer boolean)
 ), public_scope_functions AS (
  -- Mandatory RSS RLS predicates, not an exemption for the whole provider schema.
- SELECT p.oid FROM pg_proc p WHERE p.oid IN ('rss_transactional_messaging.consumer_scope_domain()'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure)
+ SELECT p.oid FROM pg_proc p WHERE p.oid IN ('rss_transactional_messaging.consumer_scope_domain()'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure,'rss_transactional_messaging.outbox_policy_present()'::regprocedure)
  AND p.prosecdef AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
  AND p.proconfig @> ARRAY['search_path=pg_catalog, rss_transactional_messaging, pg_temp']
  AND p.prorettype=CASE WHEN p.oid='rss_transactional_messaging.consumer_scope_domain()'::regprocedure
@@ -49,7 +49,7 @@ SELECT current_user=$1 AND session_user=current_user
   AND c.relkind IN('r','p','v','m','f') AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN('pg_catalog','information_schema') AND c.relkind='S' AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
  AND (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))=(SELECT count(*) FROM functions)
- AND (SELECT count(*) FROM public_scope_functions)=3
+ AND (SELECT count(*) FROM public_scope_functions)=4
  AND NOT EXISTS(SELECT 1 FROM functions f WHERE (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname||'.'||p.proname=f.name AND p.prosecdef=coalesce(f.security_definer,true) AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) AND p.proconfig @> ARRAY[f.search_path] AND has_function_privilege(current_user,p.oid,'EXECUTE'))<>1)
  AND NOT EXISTS(SELECT 1 FROM owned c WHERE
   -- Policies for installation-owner discovery do not apply to this unprivileged role.
