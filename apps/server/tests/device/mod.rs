@@ -38,7 +38,7 @@ async fn post(
 #[ignore = "T2 #3121-1: missing dangerous-action confirmation has no command effects; current confirmation binds exact device"]
 async fn current_confirmation_is_atomic() -> Result<()> {
     use rss_mdm_authorization_service::Permission;
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("device_control_host", &[]).await?;
     let identity = native::seed(&c, "windows").await?;
     let account = c
         .account(&[
@@ -99,14 +99,6 @@ async fn confirm_and_cancel(
         changed["revision"].as_i64(),
         receipt["revision"].as_i64().map(|value| value + 1)
     );
-    let command_status: String = sqlx::query_scalar(
-        "SELECT status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(id.to_string())
-    .fetch_one(&c.operator)
-    .await?;
-    assert_eq!(command_status, "cancelled");
     let reauthorize = |confirmation: serde_json::Value| {
         serde_json::json!({
             "requestId": Uuid::new_v4(), "expectedRevision": changed["revision"], "confirmation": confirmation
@@ -128,8 +120,16 @@ async fn confirm_and_cancel(
     )
     .await?;
     assert_eq!(status, 409);
-    let stored:Uuid=sqlx::query_scalar("SELECT device FROM mdm_devices.control_operations WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
-    assert_eq!(stored, device.into_uuid());
+    let stored: (Uuid, String) = sqlx::query_as(
+        "SELECT o.device, c.status FROM mdm_devices.control_operations o
+         JOIN rss_device_command.commands c ON c.tenant_id=o.tenant_id AND c.command_id=o.id::text
+         WHERE o.tenant_id=$1::uuid AND o.id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(stored, (device.into_uuid(), "cancelled".to_owned()));
     Ok(())
 }
 
