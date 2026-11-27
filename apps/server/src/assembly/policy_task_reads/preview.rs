@@ -1,6 +1,6 @@
 use super::*;
 use rss_mdm_inventory::Channel;
-use rss_mdm_management_http::execution::task_reads::{Pending, Reads as Port};
+use rss_mdm_management_http::{Pending, policy_task_reads::Reads as Port};
 use rss_mdm_policy::Action;
 use serde_json::json;
 impl Port for Reads {
@@ -11,7 +11,7 @@ impl Port for Reads {
         policy: uuid::Uuid,
         page: &'a rss_mdm_query::window::Query,
         codec: &'a rss_mdm_query::cursor::CursorCodec,
-    ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::AssignmentPage> {
+    ) -> Pending<'a, rss_mdm_management_http::policy_task_reads::AssignmentPage> {
         Box::pin(super::assignments::assignments(
             self, request, audit, policy, page, codec,
         ))
@@ -24,7 +24,7 @@ impl Port for Reads {
         policy: uuid::Uuid,
         page: &'a rss_mdm_query::window::Query,
         codec: &'a rss_mdm_query::cursor::CursorCodec,
-    ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::RunPage> {
+    ) -> Pending<'a, rss_mdm_management_http::policy_task_reads::RunPage> {
         Box::pin(Reads::runs(self, request, audit, policy, page, codec))
     }
     fn run<'a>(
@@ -33,7 +33,7 @@ impl Port for Reads {
         audit: &'a rss_mdm_audit_integration::RequestAudit,
         policy: uuid::Uuid,
         id: uuid::Uuid,
-    ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::RunDetail> {
+    ) -> Pending<'a, rss_mdm_management_http::policy_task_reads::RunDetail> {
         Box::pin(Reads::run(self, request, audit, policy, id))
     }
 
@@ -44,7 +44,7 @@ impl Port for Reads {
         input: &'a rss_mdm_policy::pages::Preview,
         query: &'a rss_mdm_query::window::Query,
         codec: &'a rss_mdm_query::cursor::CursorCodec,
-    ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::Preview> {
+    ) -> Pending<'a, rss_mdm_management_http::policy_task_reads::Preview> {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             if matches!(
@@ -131,7 +131,7 @@ impl Port for Reads {
                 }
                 _ => unreachable!(),
             };
-            self.snapshot(request,(proof,input,query,codec,&verified,self),|ctx,c,grant,_now|Box::pin(async move {
+            self.snapshot.read(request,(proof,input,query,codec,&verified,self),|ctx,c,grant,_now|Box::pin(async move {
                 let (proof,input,query,codec,verified,s)=*ctx;
                 grant.require(proof,Permission::PolicyRead,None)?;
                 grant.require(proof,Permission::ResourceRead,None)?;
@@ -181,9 +181,9 @@ async fn enrollment(
     input: &rss_mdm_policy::pages::Preview,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
-) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+) -> Result<rss_mdm_management_http::policy_task_reads::Preview, Error> {
     let proof = request.proof.as_ref();
-    use rss_mdm_management_http::execution::task_reads::{Preview, PreviewTarget};
+    use rss_mdm_management_http::policy_task_reads::{Preview, PreviewTarget};
     input.definition.validate().map_err(|_| Error::Malformed)?;
     query
         .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
@@ -193,7 +193,8 @@ async fn enrollment(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    s.snapshot(
+    QuerySnapshot::read(
+        &s.snapshot,
         request,
         (s, proof, input, query, codec),
         |ctx, c, grant, now| {
@@ -318,9 +319,9 @@ async fn access_credentials(
     input: &rss_mdm_policy::pages::Preview,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
-) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+) -> Result<rss_mdm_management_http::policy_task_reads::Preview, Error> {
     let proof = request.proof.as_ref();
-    use rss_mdm_management_http::execution::task_reads::{Preview, PreviewTarget};
+    use rss_mdm_management_http::policy_task_reads::{Preview, PreviewTarget};
     input.definition.validate().map_err(|_| Error::Malformed)?;
     query
         .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
@@ -330,7 +331,8 @@ async fn access_credentials(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    s.snapshot(
+    QuerySnapshot::read(
+        &s.snapshot,
         request,
         (s, proof, input, query, codec),
         |ctx, c, grant, _now| {
@@ -429,7 +431,7 @@ async fn retirement(
     input: &rss_mdm_policy::pages::Preview,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
-) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+) -> Result<rss_mdm_management_http::policy_task_reads::Preview, Error> {
     let proof = request.proof.as_ref();
     query
         .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
@@ -439,7 +441,8 @@ async fn retirement(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    s.snapshot(
+    QuerySnapshot::read(
+        &s.snapshot,
         request,
         (s, proof, input, query, codec),
         |ctx, c, grant, _| {

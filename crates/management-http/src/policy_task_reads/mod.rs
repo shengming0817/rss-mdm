@@ -1,12 +1,12 @@
 //! Application composition port for Policy task reads across concrete business owners.
-use crate::Error;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::context::RequestAuth;
 use rss_mdm_query::{cursor::CursorCodec, window::Query};
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin};
+
+use crate::Pending;
 use uuid::Uuid;
-pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
+pub mod http;
 pub trait Reads: Send + Sync {
     fn preview<'a>(
         &'a self,

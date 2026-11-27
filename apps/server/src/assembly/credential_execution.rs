@@ -208,16 +208,16 @@ impl rss_mdm_recovery_credentials::cleanup::InputCopies for Copies {
                 .with_connection(move |c| {
                     Box::pin(async move {
                         Ok((
-                            rss_mdm_device_service::control::storage::owned_ids_on(
+                            rss_mdm_device_service::control::storage::owned_devices_on(
                                 c,
                                 tenant,
                                 &[operation],
                             )
                             .await?
-                            .contains(&operation),
-                            native::storage::owned_ids_on(c, tenant, &[operation])
+                            .contains_key(&operation),
+                            native::storage::owned_devices_on(c, tenant, &[operation])
                                 .await?
-                                .contains(&operation),
+                                .contains_key(&operation),
                         ))
                     })
                 })

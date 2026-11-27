@@ -71,7 +71,7 @@ impl Operations {
                         Evidence::Access(
                             queries::detail_on(c, tenant, policy()?, id, p, grant)
                                 .await
-                                .map_err(super::super::task_reads::access_fault)?,
+                                .map_err(super::super::owner_errors::access_fault)?,
                         )
                     }
                     Owner::Run(Run::Credential(profile)) => {
@@ -79,7 +79,7 @@ impl Operations {
                         Evidence::Credential(
                             queries::detail_on(profile, c, tenant, policy()?, id, p, grant)
                                 .await
-                                .map_err(super::super::task_reads::credential_fault)?,
+                                .map_err(super::super::owner_errors::credential_fault)?,
                         )
                     }
                     Owner::Run(Run::Registration) => {
@@ -95,7 +95,7 @@ impl Operations {
                                 grant,
                             )
                             .await
-                            .map_err(super::super::task_reads::enrollment_fault)?,
+                            .map_err(super::super::owner_errors::enrollment_fault)?,
                         )
                     }
                 };
@@ -113,13 +113,13 @@ impl Operations {
                 }
             };
             items.push(
-                q.project_typed(Item {
+                q.project_typed(Item(OperationRow {
                     metadata,
                     evidence,
                     authorization,
                     reauthorization,
                     detail_url,
-                })
+                }))
                 .map_err(query_error)?,
             );
         }
@@ -152,7 +152,7 @@ async fn summaries_on(
     summaries.extend(
         rss_mdm_device_service::control::directory::run_summaries_on(c, tenant, device)
             .await
-            .map_err(execution_fault)?
+            .map_err(device_control_fault)?
             .into_iter()
             .map(|(id, v)| (id, Evidence::Device(v))),
     );
@@ -166,7 +166,7 @@ async fn summaries_on(
     summaries.extend(
         rss_mdm_script_service::queries::run_summaries_on(c, tenant, script)
             .await
-            .map_err(super::super::task_reads::script_fault)?
+            .map_err(super::super::owner_errors::script_fault)?
             .into_iter()
             .map(|(id, v)| (id, Evidence::Script(Box::new(v)))),
     );

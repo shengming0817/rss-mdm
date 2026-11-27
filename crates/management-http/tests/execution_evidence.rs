@@ -1,6 +1,6 @@
 //! Aggregate evidence is checked against the mounted response, using real owner DTOs.
-use crate::execution::{
-    operations::{Detail, Evidence, Item, KindOfOperation, Metadata, Page},
+use crate::operation_reads::{
+    Detail, Evidence, Item, KindOfOperation, Metadata, OperationRow, Page,
     projection::{AppleObservation, CommandStatus, Observation, Unverified},
 };
 use configuration::queries::records::Detail as ConfigurationDetail;
@@ -174,7 +174,7 @@ fn validator(document: &Value, path: &str) -> jsonschema::Validator {
 
 fn page(evidence: Option<Evidence>, kind: KindOfOperation) -> Page<Item> {
     Page {
-        items: vec![Item {
+        items: vec![Item(OperationRow {
             metadata: Metadata {
                 id: Uuid::from_u128(1),
                 kind,
@@ -190,7 +190,7 @@ fn page(evidence: Option<Evidence>, kind: KindOfOperation) -> Page<Item> {
             authorization: None,
             reauthorization: None,
             detail_url: "/api/v1/tenants/{tenant}/devices/device-a/operations/1".into(),
-        }],
+        })],
         next_cursor: None,
     }
 }

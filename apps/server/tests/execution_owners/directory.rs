@@ -3,8 +3,86 @@ mod budget;
 use super::*;
 use axum::response::IntoResponse;
 use rss_mdm_authorization_service::Permission;
-use rss_mdm_management_http::execution::operations::{Reads, SCHEMA};
+use rss_mdm_management_http::operation_reads::{Reads, SCHEMA};
 use rss_mdm_query::cursor::CursorCodec;
+
+#[tokio::test]
+#[ignore = "T2: real browser listeners bind the operation directory and Policy history to the same original run"]
+async fn mounted_directory_links_to_policy_history() -> Result<()> {
+    use rss_mdm_authorization_service::credential::RequestCredential;
+    let h = Harness::open_in("operations_http_host").await?;
+    let prepared = async {
+        let (policy, version) = h.policy("mounted-history").await?;
+        let run = h.run(version, "mounted-history", now() + 300).await?;
+        let account =
+            h.c.account(&[Permission::OperationRead, Permission::PolicyRead])
+                .await?;
+        let RequestCredential::Cookie(secret) = account.credential()? else {
+            anyhow::bail!("expected a browser session");
+        };
+        let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+        let config = crate::host_t2_support::configuration(
+            &h.c.inputs,
+            &h.c.profile,
+            address,
+            Uuid::new_v4(),
+        )
+        .await?;
+        Ok::<_, anyhow::Error>((
+            config,
+            h.c.tenant,
+            policy,
+            run,
+            format!("__Host-identity-session={}", secret.expose()),
+        ))
+    }
+    .await;
+    h.close().await?;
+    let (config, tenant, policy, run, cookie) = prepared?;
+    crate::host_t2_support::run(config, |client, base| async move {
+        let prefix = format!("/api/v1/tenants/{tenant}");
+        let get = |path: &str| {
+            client
+                .get(format!("{base}{path}"))
+                .header("cookie", &cookie)
+        };
+        let directory: Value = get(&format!("{prefix}/operations"))
+            .query(&[("filter", format!("id=={run}"))])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let rows = directory["items"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], run.to_string());
+        let history_path = format!("{prefix}/policies/{policy}/runs");
+        let detail_path = rows[0]["detailUrl"].as_str().unwrap();
+        assert_eq!(detail_path, format!("{history_path}/{run}"));
+        let history: Value = get(&history_path)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            history["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["taskId"] == run.to_string())
+        );
+        let detail: Value = get(detail_path)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(detail["taskId"], run.to_string());
+        Ok(())
+    })
+    .await
+}
 
 #[tokio::test]
 #[ignore = "T2: real native directory reads preserve nested owners and match the mounted HTTP schema"]
@@ -19,10 +97,12 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
                 protection: h.a.resources.protection.clone(),
             }),
-            tasks: h.a.task_reads.clone(),
+            snapshot: h.a.snapshot.clone(),
+            configuration: h.a.configuration.clone(),
+            software: h.a.software.queries.clone(),
+            device_control: h.a.device_queries.clone(),
             registration: h.a.registration.native.clone(),
             recovery: None,
-            execution: h.a.service.clone(),
         };
         let locator = rss_mdm_management_http::operation_diagnostics::LocatorQuery {
             device: Some(native.device),
@@ -39,7 +119,7 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
         assert_eq!(result.original.unwrap().executions, [Uuid::from_u128(1)]);
         assert!(matches!(
             result.execution?,
-            Some(rss_mdm_management_http::execution::operations::Evidence::Native { .. })
+            Some(rss_mdm_management_http::operation_reads::Evidence::Native { .. })
         ));
         let other = operations
             .diagnostic(
@@ -146,7 +226,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         let operations=Arc::new(crate::assembly::operation_reads::Operations {
             budgets: Default::default(),
             apple:Arc::new(rss_mdm_apple_channel::flow_store::Store{protection:h.a.resources.protection.clone()}),
-            tasks:h.a.task_reads.clone(),registration:h.a.registration.native.clone(),recovery:None,execution:h.a.service.clone(),
+            snapshot: h.a.snapshot.clone(), configuration: h.a.configuration.clone(), software: h.a.software.queries.clone(), device_control: h.a.device_queries.clone(),registration:h.a.registration.native.clone(),recovery:None,
         });
         for (owner,id,device) in [(rss_mdm_audit_integration::operation::OperationOwner::Script,script,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,collection,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,native,&native_object.members[0].device)] {
             let locator=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(*device),..Default::default()};
@@ -170,10 +250,15 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         let mut tx=command::seed_transaction(&h.c).await?;
         sqlx::query("UPDATE mdm_script.runs SET result=NULL WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(script).execute(&mut *tx).await?;
         tx.commit().await?;
-        let router=rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations.clone())
-            .layer(axum::Extension(CursorCodec::new(&[8;32])?))
+        let cursor = CursorCodec::new(&[8; 32])?;
+        let operations_router = rss_mdm_management_http::operation_reads::http::read_routes()
+            .with_state::<()>(operations.clone())
+            .layer(axum::Extension(cursor.clone())).into_axum();
+        let policy_router = rss_mdm_management_http::policy_task_reads::http::routes(Some(cursor))
+            .with_state::<()>(h.a.policy_task_reads.clone()).into_axum();
+        let router = operations_router.merge(policy_router)
             .layer(axum::Extension(h.c.read_auth(proof.clone())))
-            .layer(axum::Extension(h.c.request(&proof)?)).into_axum();
+            .layer(axum::Extension(h.c.request(&proof)?));
         let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
         // Exercise the real mounted handlers and HTTP encoders over loopback transport.
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -225,16 +310,28 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
                 assert_eq!(stats["statistics"]["actionRuns"],count);
                 assert_eq!(stats["statistics"]["unknown"],unknown);
             }
-            // Raw Agent Collection detail still requires its separate sensitive permission.
-            assert!(matches!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,collection_policy,collection).await,Err(rss_mdm_management_http::Error::Forbidden)));
-            assert!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,native_policy,native).await.is_ok());
-            let rule=rss_mdm_authorization_service::Rule{subject:rss_mdm_authorization_service::Subject::User{user:account.user.clone()},grants:vec![rss_mdm_authorization_service::Grant{operation:Permission::OperationRead,scope:rss_mdm_authorization_service::Scope::Device{id:*h.p.device()}}]};
+            let history_url = format!("{base}/policies/{policy}/runs");
+            let history: Value = client.get(&history_url).send().await?.error_for_status()?.json().await?;
+            let items = history["items"].as_array().unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0]["taskId"], script.to_string());
+            // Raw Agent collection evidence requires additional permission.
+            let raw = client.get(format!("{base}/policies/{collection_policy}/runs/{collection}")).send().await?;
+            assert_eq!(raw.status(), reqwest::StatusCode::FORBIDDEN);
+            let detail: Value = client.get(format!("{base}/policies/{native_policy}/runs/{native}"))
+                .send().await?.error_for_status()?.json().await?;
+            assert_eq!(detail["kind"], "collection");
+            let rule=rss_mdm_authorization_service::Rule{subject:rss_mdm_authorization_service::Subject::User{user:account.user.clone()},grants:vec![
+                rss_mdm_authorization_service::Grant{operation:Permission::PolicyRead,scope:rss_mdm_authorization_service::Scope::Tenant},
+                rss_mdm_authorization_service::Grant{operation:Permission::OperationRead,scope:rss_mdm_authorization_service::Scope::Device{id:*h.p.device()}},
+            ]};
             sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
             let page:Value=client.get(format!("{base}/operations")).send().await?.error_for_status()?.json().await?;
             assert_eq!(page["items"].as_array().unwrap().len(),2);
             assert!(page["items"].as_array().unwrap().iter().all(|v|v["device"]==h.p.device().to_string()));
             let stats:Value=client.get(format!("{base}/operations/statistics")).send().await?.error_for_status()?.json().await?;
             assert_eq!(stats["statistics"]["total"],2);
+            assert_eq!(client.get(&history_url).send().await?.status(), reqwest::StatusCode::FORBIDDEN);
             Ok::<(),anyhow::Error>(())
         }.await;
         let _=stop.send(());
@@ -243,7 +340,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         // A verified identity lacking OperationRead is rejected by the same production handler.
         let denied=h.c.account(&[Permission::PolicyRead]).await?;
         let denied=Arc::new(h.c.authenticate(&denied).await?);
-        let router=rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations)
+        let router=rss_mdm_management_http::operation_reads::http::read_routes().with_state::<()>(operations)
             .layer(axum::Extension(CursorCodec::new(&[8;32])?))
             .layer(axum::Extension(h.c.read_auth(denied.clone())))
             .layer(axum::Extension(h.c.request(&denied)?)).into_axum();
@@ -292,11 +389,11 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
             committed.send(()).unwrap();
             Ok::<_, anyhow::Error>(())
         };
-        let reader = h.a.task_reads.snapshot(&request, (tenant.clone(), Some(observed), Some(wait_committed)), |state, c, _, _| Box::pin(async move {
-            let before: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::task_reads::sql)?;
+        let reader = h.a.snapshot.read(&request, (tenant.clone(), Some(observed), Some(wait_committed)), |state, c, _, _| Box::pin(async move {
+            let before: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::query_snapshot::sql)?;
             state.1.take().unwrap().send(()).unwrap();
             state.2.take().unwrap().await.unwrap();
-            let after: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::task_reads::sql)?;
+            let after: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::query_snapshot::sql)?;
             assert_eq!(before, after);
             Ok(before)
         }));
@@ -306,7 +403,7 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
         let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) = account.credential()? else { unreachable!() };
         let session = h.c.authority.inspect_session(h.c.execution(), secret, request.remaining()?).await?;
         let mut revoked = false;
-        let rejected = h.a.task_reads.snapshot(&request, (&h.c.authority, Some(session), &mut revoked), |state, _, _, _| Box::pin(async move {
+        let rejected = h.a.snapshot.read(&request, (&h.c.authority, Some(session), &mut revoked), |state, _, _, _| Box::pin(async move {
             state.0.revoke_current_session(state.1.take().unwrap(), rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(3))).await.expect("Identity revocation must commit before testing the response tail");
             *state.2 = true;
             Ok(())
@@ -348,7 +445,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         let expected=std::collections::BTreeMap::from([(device,true),(manual,true),(empty,false)]);
         let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(h.c.database.registration(), h.c.audit.clone()));
         let reads = Arc::new(crate::assembly::device_reads::Devices {
-            tasks: h.a.task_reads.clone(),
+            snapshot: h.a.snapshot.clone(), software: h.a.software.queries.clone(), device_control: h.a.device_queries.clone(), content_available: h.a.resources.config.content.is_some(), recovery_enabled: false,
             devices: devices.clone(),
             windows: true,
             apple: false,

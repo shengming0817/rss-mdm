@@ -15,11 +15,11 @@ impl Operations {
         q: &LocatorQuery,
     ) -> Result<Diagnostic, Error> {
         let p = request.proof.as_ref();
-        let original = self.tasks.snapshot(request, (p, locator), |(p, l), c, grant, _| Box::pin(async move {
+        let original = self.snapshot.read(request, (p, locator), |(p, l), c, grant, _| Box::pin(async move {
             match l.owner {
-                O::ScriptInvocation => rss_mdm_script_service::self_service::diagnostic_on(c, p, grant, l).await.map_err(super::super::task_reads::script_fault),
+                O::ScriptInvocation => rss_mdm_script_service::self_service::diagnostic_on(c, p, grant, l).await.map_err(super::super::owner_errors::script_fault),
                 O::SoftwareInvocation => rss_mdm_software_service::deployment::self_service::diagnostic_on(c, p, grant, l).await.map_err(software_fault),
-                O::EnrollmentInvocation => rss_mdm_registration_service::enrollment::tasks::self_service::diagnostic_on(c, p, grant, l).await.map_err(super::super::task_reads::enrollment_fault),
+                O::EnrollmentInvocation => rss_mdm_registration_service::enrollment::tasks::self_service::diagnostic_on(c, p, grant, l).await.map_err(super::super::owner_errors::enrollment_fault),
                 _ => Err(Error::Malformed),
             }
         })).await?;
@@ -56,8 +56,8 @@ impl Operations {
         let device = q.device.as_ref().ok_or(Error::Malformed)?;
         if owner == O::DeviceControlRequest {
             return self
-                .tasks
-                .snapshot(request, (self, p), |(s, p), c, grant, now| {
+                .snapshot
+                .read(request, (self, p), |(s, p), c, grant, now| {
                     Box::pin(async move {
                         grant.require(p, Permission::OperationRead, Some(device))?;
                         let Some(receipt) = rss_mdm_device_service::control::storage::read_on(
@@ -118,7 +118,7 @@ impl Operations {
                 })
                 .await;
         }
-        self.tasks.snapshot(request,(self,p),|ctx,c,grant,now|Box::pin(async move{
+        self.snapshot.read(request,(self,p),|ctx,c,grant,now|Box::pin(async move{
             let(s,p)=*ctx;
             grant.require(p,Permission::OperationRead,Some(device))?;
             let native=match owner {
@@ -166,13 +166,13 @@ impl Operations {
             let evidence=async { Ok::<_,Error>(if let Some(native)=native {
                 Evidence::Native{detail:Box::new(s.detail_owned_on(c,p,grant,now,device,id,true,native).await?)}
             }else{match owner {
-                O::DeviceAction=>Evidence::Device(rss_mdm_device_service::control::directory::run_summaries_on(c,p.binding().tenant(),vec![id]).await.map_err(execution_fault)?.remove(&id).ok_or(Error::NotFound)?),
+                O::DeviceAction=>Evidence::Device(rss_mdm_device_service::control::directory::run_summaries_on(c,p.binding().tenant(),vec![id]).await.map_err(device_control_fault)?.remove(&id).ok_or(Error::NotFound)?),
                 O::SoftwareAction=>Evidence::Software(rss_mdm_software_service::deployment::directory::run_summaries_on(c,p.binding().tenant(),vec![id]).await.map_err(software_fault)?.remove(&id).ok_or(Error::NotFound)?),
-                O::Script=>Evidence::Script(Box::new(rss_mdm_script_service::queries::run_summaries_on(c,p.binding().tenant(),vec![id]).await.map_err(super::super::task_reads::script_fault)?.remove(&id).ok_or(Error::NotFound)?)),
+                O::Script=>Evidence::Script(Box::new(rss_mdm_script_service::queries::run_summaries_on(c,p.binding().tenant(),vec![id]).await.map_err(super::super::owner_errors::script_fault)?.remove(&id).ok_or(Error::NotFound)?)),
                 O::CollectionExecution=>Evidence::Collection(Box::new(rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(c,p.binding().tenant(),vec![id]).await?.remove(&id).ok_or(Error::NotFound)?)),
-                O::EnrollmentTask=>Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm,c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::task_reads::enrollment_fault)?),
-                O::DeviceAccessTask=>Evidence::Access(rss_mdm_device_access_postgres::device_access::execution::queries::detail_on(c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::task_reads::access_fault)?),
-                O::CredentialTask=>Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm,c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::task_reads::credential_fault)?),
+                O::EnrollmentTask=>Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm,c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::owner_errors::enrollment_fault)?),
+                O::DeviceAccessTask=>Evidence::Access(rss_mdm_device_access_postgres::device_access::execution::queries::detail_on(c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::owner_errors::access_fault)?),
+                O::CredentialTask=>Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm,c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::owner_errors::credential_fault)?),
                 _=>return Err(Error::Malformed),
             }}) }.await;
             Ok(Diagnostic { original, execution: evidence.map(Some) })

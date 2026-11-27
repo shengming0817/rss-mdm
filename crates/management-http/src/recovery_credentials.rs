@@ -254,3 +254,52 @@ impl rss_mdm_http_contract::signature::Output for DisclosureResponse {
         }).collect()
     }
 }
+
+pub fn command_routes() -> Router<
+    Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
+    impl rss_mdm_http_contract::module::Declaration + use<>,
+> {
+    rss_mdm_http_contract::route_module! {struct Routes for [Browser]{post_create_recovery}}
+    Routes {
+        post_create_recovery: rss_mdm_http_contract::module::Route::new(
+            "/devices/{device}/recovery-credentials/operations",
+            post(
+                create_recovery,
+                &contracts::DEVICES,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
+        ),
+    }
+    .assemble()
+}
+async fn create_recovery(
+    State(app): State<Option<Arc<rss_mdm_recovery_credentials::native::Service>>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
+    input: Result<
+        Json<rss_mdm_recovery_credentials::native::operations::Input>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<
+    rss_mdm_http_contract::signature::WithStatus<
+        202,
+        Json<rss_mdm_recovery_credentials::native::AcceptedReceipt>,
+    >,
+    Error,
+> {
+    let input = input.map_err(Error::from)?.0;
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::RecoveryCommand,
+        input.operation_id,
+        "command_accept",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target_device(&device);
+    app.as_ref()
+        .ok_or(Error::Unsupported)?
+        .create_recovery_credential(&auth.proof, &device, &input, &audit)
+        .await
+        .map(|v| rss_mdm_http_contract::signature::WithStatus(Json(v)))
+        .map_err(Error::from)
+}

@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub fn previews(
     policies: Arc<Policies>,
     configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
-    tasks: Arc<dyn crate::execution::task_reads::Reads>,
+    tasks: Arc<dyn crate::policy_task_reads::Reads>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
@@ -52,13 +52,13 @@ pub(crate) fn register_previews(
 }
 
 pub fn routes(
-    queries: Arc<dyn crate::execution::task_reads::Reads>,
+    queries: Arc<dyn crate::policy_task_reads::Reads>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router<Arc<Policies>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some(queries), Some(cursor))
 }
 pub(crate) fn register(
-    queries: Option<Arc<dyn crate::execution::task_reads::Reads>>,
+    queries: Option<Arc<dyn crate::policy_task_reads::Reads>>,
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
 ) -> Router<Arc<Policies>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     let router = {
@@ -180,7 +180,7 @@ async fn rerun(
 }
 
 async fn assignments(
-    State(service): State<Arc<dyn crate::execution::task_reads::Reads>>,
+    State(service): State<Arc<dyn crate::policy_task_reads::Reads>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
@@ -189,7 +189,7 @@ async fn assignments(
     >,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
 ) -> std::result::Result<
-    rss_mdm_http_contract::CollectionResponse<Json<crate::execution::task_reads::AssignmentPage>>,
+    rss_mdm_http_contract::CollectionResponse<Json<crate::policy_task_reads::AssignmentPage>>,
     Error,
 > {
     (async {

@@ -1,6 +1,6 @@
 //! Lifecycle queries preserve complete device targets and reuse Policy query endpoints.
 use super::*;
-use rss_mdm_management_http::execution::task_reads as records;
+use rss_mdm_management_http::policy_task_reads as records;
 type Result<T> = std::result::Result<T, Error>;
 use rss_mdm_policy::Policy;
 use rss_mdm_scope_service::channels::{DeviceAssignment, ScopeAdmission};

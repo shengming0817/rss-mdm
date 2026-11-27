@@ -401,7 +401,7 @@ async fn directory_da_target_isolation(
     id: Uuid,
 ) -> Result<()> {
     use crate::assembly::operation_reads::sources::Scope;
-    use rss_mdm_management_http::execution::operations::SCHEMA;
+    use rss_mdm_management_http::operation_reads::SCHEMA;
     let mut tx = seed(c).await?;
     let epoch: Uuid =
         sqlx::query_scalar("SELECT epoch FROM rss_da.devices WHERE tenant_id=$1 AND id=$2")
