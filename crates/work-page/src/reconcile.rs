@@ -396,9 +396,7 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     let report = CURRENT
         .scope((scope.clone(), store.round.clone()), execution)
         .await?;
-    // A confirmed deferral releases the same resource hold as convergence. Give other
-    // due tickets a chance before this target reaches its own reobservation deadline.
-    if report.converged > 0 || report.deferred > 0 {
+    if report.converged > 0 {
         store.round.request_scan();
     }
     Ok(())
@@ -412,6 +410,7 @@ struct Admitted<'a, S> {
 }
 struct Leased<C> {
     claim: C,
+    binding_changed: std::sync::atomic::AtomicBool,
     _slot: Slot,
 }
 impl<C: Claim> Claim for Leased<C> {
@@ -468,7 +467,11 @@ impl<S: DurableStore> DurableStore for Admitted<'_, S> {
                 .claims
                 .into_iter()
                 .zip(slots)
-                .map(|(claim, _slot)| Leased { claim, _slot })
+                .map(|(claim, _slot)| Leased {
+                    claim,
+                    _slot,
+                    binding_changed: Default::default(),
+                })
                 .collect(),
             more: batch.more,
         })
@@ -487,7 +490,17 @@ impl<S: DurableStore> DurableStore for Admitted<'_, S> {
         completion: Completion,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        self.store.finish(&claim.claim, completion, control).await
+        self.store.finish(&claim.claim, completion, control).await?;
+        // A stale execution binding yielded the device to current work. Rescan
+        // after release; ordinary timed deferrals retain their original wakeup.
+        if matches!(completion, Completion::Deferred(_))
+            && claim
+                .binding_changed
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.round.request_scan();
+        }
+        Ok(())
     }
     async fn release<T: Timer>(
         &self,
@@ -505,7 +518,15 @@ impl<C: Claim, R: Reconciler<C>> Reconciler<Leased<C>> for Delegate<'_, R> {
         c: &Leased<C>,
         control: &Control<'_, T>,
     ) -> Result<ReconcileStep<ReconcileDiff<Self::State>>, Error> {
-        self.0.observe(&c.claim, control).await
+        self.0
+            .observe(&c.claim, control)
+            .await
+            .inspect_err(|error| {
+                if error.kind() == ErrorKind::BindingChanged {
+                    c.binding_changed
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            })
     }
     async fn apply<T: Timer>(
         &self,
