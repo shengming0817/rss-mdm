@@ -58,9 +58,11 @@ impl Transactions {
                                 if policy {
                                     super::source_changes::verify_storage(c).await?;
                                 }
-                                sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
-                                    .fetch_one(c)
-                                    .await
+                                sqlx::query_scalar::<_, bool>(
+                                    rss_mdm_work_page::command_admission_sql!("admission.sql"),
+                                )
+                                .fetch_one(c)
+                                .await
                             })
                         })
                         .await?;

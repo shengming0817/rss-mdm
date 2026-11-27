@@ -71,3 +71,18 @@ pub mod lanes {
     }
     include!(concat!(env!("OUT_DIR"), "/command_lanes.rs"));
 }
+
+/// Prefix a command owner's admission CTEs with the canonical initial-state policy check.
+/// The query runs against pg_catalog using the owner's ordinary login.
+#[macro_export]
+macro_rules! command_admission_sql {
+    ($file:literal) => {
+        concat!(
+            "WITH command_initial_state(relation) AS (SELECT p.polrelid FROM pg_policy p ",
+            "WHERE p.polname='command_initial_state' AND NOT p.polpermissive AND p.polcmd='a' ",
+            "AND p.polroles @> ARRAY['mdm_command_runtime'::regrole::oid,'mdm_policy_runtime'::regrole::oid] ",
+            "AND pg_get_expr(p.polwithcheck,p.polrelid)='(NOT gateway_accepted)'),\n",
+            include_str!($file)
+        )
+    };
+}

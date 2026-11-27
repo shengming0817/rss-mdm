@@ -1,4 +1,4 @@
-WITH tables AS (
+tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_devices' AND c.relkind='r' AND c.relname IN('control_operations','control_requests','unmanage_runs','unmanage_receipts','control_recovery','unmanage_policy_recovery')
 ), update_columns(relation, col) AS (VALUES
  ('rss_da.access_policy_recovery','input_consumed'),('rss_da.access_policy_recovery','input_revision'),('rss_da.access_policy_recovery','input_window'),('rss_da.access_policy_recovery','recovery_after'),('rss_da.access_policy_recovery','runs_done'),('rss_da.access_runs','result'),('rss_da.access_runs','state'),('rss_da.agent_delivery','enabled'),('rss_da.agent_delivery','revision'),('rss_da.agent_delivery','tenant_id'),('rss_da.bindings','account'),('rss_da.bindings','document'),('rss_da.bindings','generation'),('rss_da.bindings','instance'),('rss_da.bindings','principal'),('rss_da.bindings','revision'),('rss_da.bindings','state'),('rss_da.credential_agent_admission','policy_after'),('rss_da.credential_policy_recovery','input_consumed'),('rss_da.credential_policy_recovery','input_revision'),('rss_da.credential_policy_recovery','input_window'),('rss_da.credential_policy_recovery','recovery_after'),('rss_da.credential_policy_recovery','runs_done'),('rss_da.credential_runs','result'),('rss_da.credential_runs','source_objects'),('rss_da.credential_runs','state'),('rss_da.recovery_entries','current_version'),('rss_da.recovery_entries','retired'),('rss_da.recovery_entries','revision'),('rss_da.recovery_versions','cleanup_checked_at'),('rss_da.recovery_versions','invalidated_at'),('rss_da.recovery_versions','key_id'),('rss_da.recovery_versions','pending'),('rss_da.recovery_versions','sealed'),('rss_da.recovery_versions','validity'),
@@ -129,7 +129,7 @@ SELECT current_setting('server_encoding')='UTF8' AND current_user='mdm_command_r
    AND pg_get_expr(polqual,polrelid)=pg_get_expr(polwithcheck,polrelid)))
  AND NOT EXISTS(SELECT FROM allowed a JOIN pg_class c ON c.oid=to_regclass(a.relation)
    JOIN pg_attribute col ON col.attrelid=c.oid AND col.attname='gateway_accepted' AND NOT col.attisdropped
-   WHERE a.ins AND NOT public.mdm_command_initial_state_ok(c.oid))
+   WHERE a.ins AND c.oid NOT IN (SELECT relation FROM command_initial_state))
  AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM tables) AND NOT tgisinternal )
  AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='mdm_software_deployment.action_runs'::regclass AND tgname='software_results' AND tgfoid='mdm_software_deployment.advance_software_results()'::regprocedure AND tgenabled='O')
  AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='mdm_agent.bindings'::regclass AND tgname='software_bindings' AND tgfoid='mdm_software_deployment.advance_software_bindings()'::regprocedure AND tgenabled='O')

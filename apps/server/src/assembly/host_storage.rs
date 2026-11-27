@@ -1,7 +1,7 @@
 //! Exact union of privileges required by the shared host transaction role.
 use rss_transactional_messaging_postgres::PgTransaction;
 fn contract() -> String {
-    let mut sql = include_str!("command-admission.sql").to_owned();
+    let mut sql = rss_mdm_work_page::command_admission_sql!("command-admission.sql").to_owned();
     sql = sql.replace(
         "{agent_update_columns}",
         rss_mdm_agent_channel::update_columns_sql(rss_mdm_install_support::StorageProfile::Mdm),

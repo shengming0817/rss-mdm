@@ -73,10 +73,3 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION public.mdm_dispatch_collection_wake(uuid,bytea) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.mdm_dispatch_collection_wake(uuid,bytea) TO mdm_dispatch_inventory;
-
-CREATE FUNCTION public.mdm_command_initial_state_ok(relation oid) RETURNS boolean
-LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog,pg_temp AS $$
- SELECT EXISTS(SELECT FROM pg_policy p WHERE p.polrelid=relation AND p.polname='command_initial_state'
-  AND NOT p.polpermissive AND p.polcmd='a' AND p.polroles @> ARRAY['mdm_command_runtime'::regrole::oid,'mdm_policy_runtime'::regrole::oid]
-  AND pg_get_expr(p.polwithcheck,p.polrelid)='(NOT gateway_accepted)')
-$$;

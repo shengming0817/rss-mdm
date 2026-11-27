@@ -1,8 +1,8 @@
-WITH expected(name) AS (VALUES ('mdm_script.runs'),('mdm_script.receipts'),('mdm_script.output_chunks'),('mdm_script.agent_admission'),('mdm_script.policy_recovery')), tables AS (SELECT c.* FROM expected e JOIN pg_class c ON c.oid=to_regclass(e.name))
+expected(name) AS (VALUES ('mdm_script.runs'),('mdm_script.receipts'),('mdm_script.output_chunks'),('mdm_script.agent_admission'),('mdm_script.policy_recovery')), tables AS (SELECT c.* FROM expected e JOIN pg_class c ON c.oid=to_regclass(e.name))
 SELECT (SELECT count(*) FROM tables)=5 AND NOT EXISTS(
  SELECT FROM tables t WHERE t.relkind<>'r' OR t.relpersistence<>'p' OR NOT t.relrowsecurity OR NOT t.relforcerowsecurity
  OR t.relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
- OR (EXISTS(SELECT FROM pg_attribute col WHERE col.attrelid=t.oid AND col.attname='gateway_accepted' AND NOT col.attisdropped) AND NOT public.mdm_command_initial_state_ok(t.oid))
+ OR (EXISTS(SELECT FROM pg_attribute col WHERE col.attrelid=t.oid AND col.attname='gateway_accepted' AND NOT col.attisdropped) AND t.oid NOT IN (SELECT relation FROM command_initial_state))
  OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid=t.oid AND NOT (polname='command_initial_state' AND NOT polpermissive AND polcmd='a' AND pg_get_expr(polwithcheck,polrelid)='(NOT gateway_accepted)') AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=t.oid AND p.polname='tenant'
  AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]

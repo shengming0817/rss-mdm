@@ -417,9 +417,11 @@ pub(crate) async fn admit_policy_participant(
                     return Ok(false);
                 }
                 rss_mdm_inventory_postgres::verify_asset_history(c).await?;
-                sqlx::query_scalar::<_, bool>(include_str!("policy-participant-admission.sql"))
-                    .fetch_one(c)
-                    .await
+                sqlx::query_scalar::<_, bool>(rss_mdm_work_page::command_admission_sql!(
+                    "policy-participant-admission.sql"
+                ))
+                .fetch_one(c)
+                .await
             })
         })
         .await?;

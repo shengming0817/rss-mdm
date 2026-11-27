@@ -1,4 +1,4 @@
-WITH required_columns(schema_name, table_name, column_name) AS (
+required_columns(schema_name, table_name, column_name) AS (
  SELECT 'mdm_access','command_authorities',unnest(ARRAY['tenant_id','device','command_device']) WHERE $2
  UNION ALL
  SELECT 'mdm_devices','retirement_work',unnest(ARRAY['tenant_id','execution','operation']) WHERE $4
@@ -12,7 +12,7 @@ SELECT NOT EXISTS (
  OR NOT has_schema_privilege(current_user,n.oid,'USAGE')
  OR NOT has_table_privilege(current_user,c.oid,'SELECT')
  OR NOT has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')
- OR NOT public.mdm_command_initial_state_ok(c.oid)
+ OR c.oid NOT IN (SELECT relation FROM command_initial_state)
 )
 AND NOT EXISTS (
  SELECT FROM required_columns r

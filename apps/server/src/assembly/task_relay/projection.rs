@@ -445,13 +445,15 @@ async fn business_admitted(
             Box::pin(async move {
                 tx.with_connection(move |c| {
                     Box::pin(async move {
-                        sqlx::query_scalar(include_str!("business-admission.sql"))
-                            .bind(lane.tables)
-                            .bind(native)
-                            .bind(lane == INVENTORY)
-                            .bind(lane == DEVICE)
-                            .fetch_one(c)
-                            .await
+                        sqlx::query_scalar(rss_mdm_work_page::command_admission_sql!(
+                            "business-admission.sql"
+                        ))
+                        .bind(lane.tables)
+                        .bind(native)
+                        .bind(lane == INVENTORY)
+                        .bind(lane == DEVICE)
+                        .fetch_one(c)
+                        .await
                     })
                 })
                 .await

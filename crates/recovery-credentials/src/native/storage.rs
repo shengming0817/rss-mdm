@@ -331,9 +331,11 @@ pub async fn required_permissions_on(
 
 /// Policy cannot read mutable recovery state or write recovery operations.
 pub async fn verify_policy_access_on(c: &mut PgConnection) -> std::result::Result<(), sqlx::Error> {
-    if !sqlx::query_scalar::<_, bool>(include_str!("policy-access.sql"))
-        .fetch_one(c)
-        .await?
+    if !sqlx::query_scalar::<_, bool>(rss_mdm_work_page::command_admission_sql!(
+        "policy-access.sql"
+    ))
+    .fetch_one(c)
+    .await?
     {
         return Err(sqlx::Error::Protocol(
             "Recovery configuration access rejected".into(),

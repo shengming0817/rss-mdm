@@ -1,8 +1,10 @@
 //! Exact owner storage and privileged retirement admission.
 pub async fn verify_storage(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
-    if !sqlx::query_scalar::<_, bool>(include_str!("storage-admission.sql"))
-        .fetch_one(&mut *c)
-        .await?
+    if !sqlx::query_scalar::<_, bool>(rss_mdm_work_page::command_admission_sql!(
+        "storage-admission.sql"
+    ))
+    .fetch_one(&mut *c)
+    .await?
     {
         return Err(sqlx::Error::Protocol("task owner storage rejected".into()));
     }

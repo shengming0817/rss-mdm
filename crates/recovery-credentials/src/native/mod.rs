@@ -117,9 +117,11 @@ impl Transactions {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     tx.with_connection(|c| {
                         Box::pin(async move {
-                            let valid: bool = sqlx::query_scalar(include_str!("admission.sql"))
-                                .fetch_one(c)
-                                .await?;
+                            let valid: bool = sqlx::query_scalar(
+                                rss_mdm_work_page::command_admission_sql!("admission.sql"),
+                            )
+                            .fetch_one(c)
+                            .await?;
                             if !valid {
                                 return Err(sqlx::Error::Protocol(
                                     "Recovery native participant admission".into(),
