@@ -64,13 +64,6 @@ pub(super) async fn receive(
         ),
         None => (1, State::initial()),
     };
-    if service.project_reports {
-        let pending:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1::uuid AND device=$2 AND kind=$3 AND delivery_pending")
-            .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).fetch_one(&mut *c).await.map_err(db)?;
-        if pending >= i64::from(service.report_limits.history_count) {
-            return Err(Error::Capacity);
-        }
-    }
     let id = |s: String| Id::new(s).map_err(|_| Error::Malformed);
     let batch = Batch::new(
         id(sequence.to_string())?,
@@ -92,6 +85,13 @@ pub(super) async fn receive(
         .map_err(|_| Error::Corrupt)?;
     if !decision.outcome().is_applicable() {
         return Err(Error::Conflict);
+    }
+    if service.project_reports {
+        let pending:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1::uuid AND device=$2 AND kind=$3 AND delivery_pending")
+            .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).fetch_one(&mut *c).await.map_err(db)?;
+        if pending >= i64::from(service.report_limits.history_count) {
+            return Err(Error::Capacity);
+        }
     }
     // Tenant-wide bounded intake. Exact retries never spend quota or refresh receipt time.
     let accepted:Option<i64>=sqlx::query_scalar("INSERT INTO rss_da.report_budget(tenant_id,minute,reports,bytes) VALUES($1::uuid,$2,1,$3) ON CONFLICT(tenant_id) DO UPDATE SET minute=excluded.minute,reports=CASE WHEN rss_da.report_budget.minute=excluded.minute THEN rss_da.report_budget.reports+1 ELSE 1 END,bytes=CASE WHEN rss_da.report_budget.minute=excluded.minute THEN rss_da.report_budget.bytes+excluded.bytes ELSE excluded.bytes END WHERE rss_da.report_budget.minute<>excluded.minute OR (rss_da.report_budget.reports<$4 AND rss_da.report_budget.bytes+excluded.bytes<=$5) RETURNING reports")

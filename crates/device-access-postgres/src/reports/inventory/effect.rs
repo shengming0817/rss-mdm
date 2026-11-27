@@ -1,18 +1,18 @@
 use super::*;
+use crate::reports::AssetFacts;
 use rss_mdm_agent_wire::da;
 use rss_observation_postgres::VerifiedObservation;
 use rss_projection::{EventWith, Phase};
 use rss_projection_postgres::{
     EffectIsolation, PgEffect, PgEffectOutcome, PgOperationError, PgTransaction,
 };
-use serde_json::{Value, json};
 
 pub(super) struct Assets {
     pub source: Arc<Source>,
     pub binding: ExecutionBinding,
     pub installation: Uuid,
 }
-fn facts(kind: &str, bytes: &[u8]) -> Result<(da::ReportIdentity, i64, Value), Error> {
+fn facts(kind: &str, bytes: &[u8]) -> Result<(da::ReportIdentity, i64, AssetFacts), Error> {
     match kind {
         "status" => {
             let r: da::StatusReport = serde_json::from_slice(bytes).map_err(|_| Error::Corrupt)?;
@@ -20,7 +20,14 @@ fn facts(kind: &str, bytes: &[u8]) -> Result<(da::ReportIdentity, i64, Value), E
             Ok((
                 r.identity,
                 r.sequence,
-                json!({"clientVersion":r.client_version,"modules":r.modules,"health":r.health,"binding":r.binding,"factor":r.factor,"configurationDigest":r.configuration_digest}),
+                AssetFacts::Status {
+                    client_version: r.client_version,
+                    modules: r.modules,
+                    health: r.health,
+                    binding: r.binding,
+                    factor: r.factor,
+                    configuration_digest: r.configuration_digest,
+                },
             ))
         }
         "application" => {
@@ -30,7 +37,13 @@ fn facts(kind: &str, bytes: &[u8]) -> Result<(da::ReportIdentity, i64, Value), E
             Ok((
                 r.identity,
                 r.sequence,
-                json!({"artifact":r.artifact,"digest":r.digest,"state":r.state,"sources":r.sources,"operationId":r.operation_id}),
+                AssetFacts::Application {
+                    artifact: r.artifact,
+                    digest: r.digest,
+                    state: r.state,
+                    sources: r.sources,
+                    operation_id: r.operation_id,
+                },
             ))
         }
         _ => Err(Error::Corrupt),
@@ -108,7 +121,7 @@ impl PgEffect for Assets {
         tx.with_connection(move |c|Box::pin(async move{
             fence(c,binding).await?;
             sqlx::query("INSERT INTO rss_da.inventory_assets (tenant_id,installation,device,registration_epoch,kind,generation,sequence,position,received_at,facts) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (tenant_id,installation,device,registration_epoch,kind,generation) DO UPDATE SET sequence=excluded.sequence,position=excluded.position,received_at=excluded.received_at,facts=excluded.facts")
-              .bind(identity.tenant).bind(identity.service_id).bind(device).bind(epoch).bind(kind).bind(GENERATION).bind(sequence).bind(pos.get() as i64).bind(received).bind(values).execute(c).await?;
+              .bind(identity.tenant).bind(identity.service_id).bind(device).bind(epoch).bind(kind).bind(GENERATION).bind(sequence).bind(pos.get() as i64).bind(received).bind(sqlx::types::Json(values)).execute(c).await?;
             Ok(())
         })).await?;
         Ok(PgEffectOutcome::Applied)

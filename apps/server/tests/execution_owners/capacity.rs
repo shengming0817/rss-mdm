@@ -248,7 +248,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let replay = send(body.clone(), true).await?;
     assert_eq!(replay, first);
     let mut changed = values;
-    changed[2].value = w::CollectedValue::Value(w::Scalar::Boolean(false));
+    changed.last_mut().expect("registered boolean field").value =
+        w::CollectedValue::Value(w::Scalar::Boolean(false));
     let conflict = w::ReportRequest::new(
         id,
         1,

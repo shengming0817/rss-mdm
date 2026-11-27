@@ -39,6 +39,26 @@ pub struct Page {
     pub items: Vec<View>,
     pub next_cursor: Option<String>,
 }
+/// Device-reported values specific to the two authenticated DA report types.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged, rename_all_fields = "camelCase", deny_unknown_fields)]
+pub enum AssetFacts {
+    Status {
+        client_version: String,
+        modules: da::ClientModules,
+        health: da::Health,
+        binding: da::Health,
+        factor: da::Health,
+        configuration_digest: Option<String>,
+    },
+    Application {
+        artifact: Uuid,
+        digest: String,
+        state: da::ApplicationState,
+        sources: Vec<da::ReportedSource>,
+        operation_id: Uuid,
+    },
+}
 /// Latest committed Inventory fact for one authenticated DA report stream.
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -49,7 +69,7 @@ pub struct Asset {
     pub position: i64,
     pub received_at: i64,
     pub evidence: da::EvidenceLevel,
-    pub facts: serde_json::Value,
+    pub facts: AssetFacts,
 }
 fn query_error(e: rss_mdm_query::Error) -> Error {
     match e {
@@ -95,7 +115,7 @@ impl Service {
             let rows=sqlx::query("SELECT kind,sequence,position,received_at,facts FROM rss_da.inventory_assets WHERE tenant_id=$1::uuid AND installation=$2 AND device=$3 AND registration_epoch=$4 AND generation=$5 ORDER BY kind")
                 .bind(p.tenant_id()).bind(service.service_id()?).bind(device.into_uuid()).bind(epoch).bind(inventory::GENERATION).fetch_all(c).await.map_err(db)?;
             rows.into_iter().map(|r|Ok(Asset{kind:match r.try_get::<&str,_>("kind").map_err(db)?{"status"=>Kind::Status,"application"=>Kind::Application,_=>return Err(Error::Corrupt)},
-               registration_epoch:epoch,sequence:r.try_get("sequence").map_err(db)?,position:r.try_get("position").map_err(db)?,received_at:r.try_get("received_at").map_err(db)?,evidence:da::EvidenceLevel::Reported,facts:r.try_get("facts").map_err(db)?})).collect()
+               registration_epoch:epoch,sequence:r.try_get("sequence").map_err(db)?,position:r.try_get("position").map_err(db)?,received_at:r.try_get("received_at").map_err(db)?,evidence:da::EvidenceLevel::Reported,facts:r.try_get::<sqlx::types::Json<AssetFacts>,_>("facts").map_err(db)?.0})).collect()
         })).await
     }
     pub async fn latest_report(
