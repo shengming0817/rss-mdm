@@ -693,14 +693,21 @@ async fn accept_collection(h: &Harness) -> Result<Uuid> {
 /// Two ordered partitions of one tenant/domain. The first head has an invalid persisted
 /// Script result. Its successor and the independent head both have valid owner rows.
 async fn ordered_scripts(h: &Harness, template: Uuid) -> Result<[String; 3]> {
-    ordered_scripts_in(h, template, h.c.execution()).await
+    ordered_scripts_in(
+        h,
+        template,
+        h.c.execution(),
+        [("broken", true), ("broken", false), ("healthy", false)],
+    )
+    .await
 }
 
-async fn ordered_scripts_in(
+async fn ordered_scripts_in<const N: usize>(
     h: &Harness,
     template: Uuid,
     binding: rss_transactional_messaging::fence::ExecutionBinding,
-) -> Result<[String; 3]> {
+    heads: [(&str, bool); N],
+) -> Result<[String; N]> {
     use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
     use rss_transactional_messaging::{
         message::*,
@@ -708,20 +715,17 @@ async fn ordered_scripts_in(
     };
     use rss_transactional_messaging_postgres::PgOutboxWriter;
     let domain = MessagingDomain::parse(crate::assembly::task_relay::lanes::SCRIPT.domain)?;
-    let keys = [
-        PartitionKey::parse("broken")?,
-        PartitionKey::parse("healthy")?,
-    ];
-    let partitions = keys
-        .iter()
-        .map(|key| PartitionIdentity::new(binding.tenant(), domain.clone(), key.clone()))
-        .collect::<Vec<_>>();
+    let mut partitions = Vec::new();
     let writer = PgOutboxWriter::new(h.a.resources.storage.runtime.clone(), domain.clone());
-    let runs = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    let runs: [Uuid; N] = std::array::from_fn(|_| Uuid::new_v4());
     let ids = runs.map(|id| format!("script.{id}"));
     let mut messages = Vec::new();
     for (index, id) in ids.iter().enumerate() {
-        let key = &keys[usize::from(index == 2)];
+        let key = PartitionKey::parse(heads[index].0)?;
+        let partition = PartitionIdentity::new(binding.tenant(), domain.clone(), key.clone());
+        if !partitions.contains(&partition) {
+            partitions.push(partition);
+        }
         let authored = AuthoredMessageMetadata::new(
             binding.tenant(),
             Timepoint::try_from(time::OffsetDateTime::now_utc().unix_timestamp())?,
@@ -735,7 +739,7 @@ async fn ordered_scripts_in(
         );
         let metadata = MessageMetadata::new(
             authored,
-            MessageMetadataExtensions::new(None, Some(key.clone()), None, Default::default()),
+            MessageMetadataExtensions::new(None, Some(key), None, Default::default()),
         );
         messages.push(PendingMessage::new(MessageEnvelope::new(
             MessageId::parse(id)?,
@@ -770,7 +774,7 @@ async fn ordered_scripts_in(
     for (index, run) in runs.into_iter().enumerate() {
         let written = sqlx::query("INSERT INTO mdm_script.runs(expected_epoch,tenant_id,id,policy_version,resource_id,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,invocation,result,dispatch_fingerprint)
             SELECT $6,r.tenant_id,$3,r.policy_version,r.resource_id,r.origin,r.source_objects,r.device,$4,r.created_at,r.available_at,r.deadline,r.state,r.invocation,$5,o.fingerprint FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.message_id=$4 AND o.domain='mdm.script.v1' WHERE r.tenant_id=$1::uuid AND r.id=$2")
-            .bind(h.c.tenant.to_string()).bind(template).bind(run).bind(&ids[index]).bind((index==0).then(||serde_json::json!({"invalid":true}))).bind(binding.epoch().get()).execute(&mut *tx).await?;
+            .bind(h.c.tenant.to_string()).bind(template).bind(run).bind(&ids[index]).bind(heads[index].1.then(||serde_json::json!({"invalid":true}))).bind(binding.epoch().get()).execute(&mut *tx).await?;
         assert_eq!(written.rows_affected(), 1);
     }
     tx.commit().await?;
@@ -1026,7 +1030,7 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
         command::wait_relay(async || Ok(status(&drained).await? == "publishing")).await?;
         in_flight.send(lock).map_err(|_| anyhow::anyhow!("drain receiver closed"))?;
         Ok(())
-    }, || async {if let Ok(lock)=drain.await {lock.rollback().await?;} Ok(())}).await?;
+    }, || async {if let Ok(lock)=drain.await {lock.rollback().await?;} Ok(())}).await.map_err(|e| e.context("first host isolation and drain"))?;
     assert!(published(&drained).await?);
     let previous = c.execution();
     let next = rss_transactional_messaging::fence::ExecutionBinding::new(
@@ -1034,12 +1038,17 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
         previous.tenant(),
         rss_transactional_messaging::fence::Epoch::new(2)?,
     );
-    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1").bind(c.tenant.to_string()).execute(&c.operator).await?.rows_affected(),1);
+    let mut replacement = configuration().await?;
+    replacement["storage_binding"]["epoch"] = serde_json::json!(2);
+    let management = replacement["identity"]["management_tenant"]
+        .as_str()
+        .unwrap();
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE epoch=1 AND tenant_id IN ($1::uuid,$2::uuid)").bind(c.tenant.to_string()).bind(management).execute(&c.operator).await?.rows_affected(),2);
     let template = Uuid::parse_str(peer.strip_prefix("script.").unwrap())?;
-    let [_, _, next_peer] = ordered_scripts_in(&h, template, next)
+    let [next_peer] = ordered_scripts_in(&h, template, next, [("healthy", false)])
         .await
         .map_err(|e| e.context("seed ordered work in the new tenant epoch"))?;
-    crate::host_t2_support::run(configuration().await?, async |client, base| {
+    crate::host_t2_support::run(replacement, async |client, base| {
         command::wait_relay(async || published(&next_peer).await).await?;
         assert_eq!(status(&bad).await?, "dead_letter");
         assert_eq!(status(&successor).await?, "pending");
@@ -1049,7 +1058,8 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
         );
         Ok(())
     })
-    .await?;
+    .await
+    .map_err(|e| e.context("second host startup and delivery"))?;
     h.close().await
 }
 
