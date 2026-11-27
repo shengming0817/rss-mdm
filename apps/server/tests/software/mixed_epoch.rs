@@ -11,9 +11,11 @@ async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()
     let messaging =
         rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), binding, owner::deadline())
             .await?;
-    owner::Transaction::inspect(
+    owner::Transaction::run(
+        &f.resources.storage.audit,
         runtime,
         binding,
+        &background(binding),
         (reader, messaging),
         move |(reader, messaging), tx| {
             Box::pin(async move {
@@ -27,13 +29,14 @@ async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()
     Ok(())
 }
 async fn assign(
-    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    policy_owner: crate::owner_storage::OwnerRuntime,
     scope_result: Uuid,
     binding: ExecutionBinding,
     policy: Uuid,
     version: Uuid,
     target: PrimaryRegistration,
 ) -> Result<()> {
+    let runtime = policy_owner.runtime;
     let profile = rss_mdm_install_support::StorageProfile::Mdm;
     let reader = rss_mdm_policy_postgres::PolicyReader::bind(profile, runtime.clone());
     let messaging =
@@ -51,9 +54,11 @@ async fn assign(
         scope_result,
         entry_revision: 1,
     };
-    let result = owner::Transaction::inspect(
+    let result = owner::Transaction::run(
+        &policy_owner.audit,
         &runtime,
         binding,
+        &background(binding),
         (reader, messaging),
         move |(reader, messaging), tx| {
             Box::pin(async move {
@@ -102,7 +107,7 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
     .fetch_one(&c.operator)
     .await?;
     assert!(frozen, "a run-only wake is durable");
-    let runtime = planning::owner(&c, "mdm_policy_runtime").await?.runtime;
+    let policy_owner = planning::owner(&c, "mdm_policy_runtime").await?;
     let scope_result = sqlx::query_scalar(
         "SELECT resolution FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -121,7 +126,7 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
         "a current writer cannot wake a historical run"
     );
     assign(
-        runtime,
+        policy_owner,
         scope_result,
         current,
         policy,

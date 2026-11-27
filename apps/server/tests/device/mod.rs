@@ -1,6 +1,7 @@
 mod applicability;
 mod fixture;
 mod reads;
+mod settlement;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     native_identity_t2_support as native,
@@ -44,6 +45,8 @@ async fn current_confirmation_is_atomic() -> Result<()> {
         .await?;
     let stored:Uuid=sqlx::query_scalar("SELECT device FROM mdm_devices.control_operations WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
     assert_eq!(stored, identity.device.into_uuid());
+    input.operation_id = Uuid::new_v4();
+    settlement::check_create(&c, &a, &proof, &identity.device, &input).await?;
     Fixture::close(a).await?;
     c.close().await;
     Ok(())

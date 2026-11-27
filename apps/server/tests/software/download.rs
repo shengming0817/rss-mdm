@@ -32,9 +32,11 @@ async fn queued(
         .await?;
     limit_run(c, id, lifetime).await?;
     let execution = c.execution();
-    owner::Transaction::inspect(
+    owner::Transaction::run(
+        &fixture.resources.storage.audit,
         &fixture.resources.storage.runtime,
         execution,
+        &background(execution),
         fixture.software.service.as_ref(),
         move |service, tx| {
             Box::pin(async move {

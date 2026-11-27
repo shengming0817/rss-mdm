@@ -740,12 +740,17 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for SoftwareService {
                         |(service, claim, context), tx| {
                             Box::pin(async move {
                                 if let Err(e) = service.transactions.audit_store.bind_in(tx).await {
-                                    return Err(Transaction::rejection(Fault::Request(e.into()), context.3));
+                                    return Err(Transaction::rejection(
+                                        Fault::Request(e.into()),
+                                        context.3,
+                                    ));
                                 }
                                 let prepared =
                                     match prepare(service, tx, context.1, context.2).await {
                                         Ok(prepared) => prepared,
-                                        Err(error) => return Err(Transaction::rejection(error, context.3)),
+                                        Err(error) => {
+                                            return Err(Transaction::rejection(error, context.3));
+                                        }
                                     };
 
                                 if prepared.is_some() {
