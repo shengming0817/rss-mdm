@@ -332,19 +332,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     })?;
     sqlx::query("UPDATE mdm_policy.policies SET current_version=$3,version_number=2,revision=revision+1,definition=jsonb_set(definition,'{action}',$4) WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(ap).bind(next).bind(action).execute(&mut *changed).await?;
     changed.commit().await?;
-    owner::Transaction::run(
-        &a.resources.storage.audit,
-        &a.resources.storage.runtime,
-        c.execution(),
-        &background(c.execution()),
-        a.software.service.as_ref(),
-        move |service, tx| {
-            Box::pin(async move {
-                owner::actions::recovery::recover_one(execution_binding, service, tx, id).await
-            })
-        },
-    )
-    .await?;
+    recover_run(&c, &a, id).await?;
     let recovered:rss_mdm_task_state::RunState=serde_json::from_value(sqlx::query_scalar("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?)?;
     assert_eq!(recovered.execution, rss_mdm_task_state::Execution::Unknown);
     assert_eq!(
@@ -357,11 +345,28 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
         sqlx::query_scalar::<_,i64>("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business'").bind(c.tenant.to_string()).fetch_one(&c.operator)
     };
     let before = facts().await?;
-    for (submitted, original) in [(Uuid::new_v4(), false), (attempt, true)] {
+    use rss_mdm_task_state::{Cancellation, Execution};
+    for (submitted, reboot, execution, effect, added) in [
+        (Uuid::new_v4(), false, Execution::Unknown, None, 0),
+        (
+            attempt,
+            true,
+            Execution::WaitingReboot,
+            Some("waiting_reboot"),
+            1,
+        ),
+        (attempt, false, Execution::Succeeded, Some("verified"), 2),
+    ] {
+        let mut report = satisfied_result(&steps, digest, now())?;
+        report
+            .steps
+            .first_mut()
+            .ok_or_else(|| anyhow::anyhow!("empty signed installation plan"))?
+            .reboot_required = reboot;
         let event = w::TaskEventRequest::new(
             Uuid::new_v4(),
             submitted,
-            w::TaskEvent::SoftwareResult(satisfied_result(&steps, digest, now())?),
+            w::TaskEvent::SoftwareResult(report),
             context(),
         )?;
         let audit = audit(&c);
@@ -387,57 +392,30 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
             },
         )
         .await;
-        audit.finalize(None);
-        if original {
+        let outcome = finish(&audit, outcome);
+        if submitted == attempt {
             outcome?;
         } else {
             assert!(matches!(outcome, Err(owner::Error::Conflict)));
         }
-        let (saved,result):(Value,Option<Value>)=sqlx::query_as("SELECT state,result FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
-        let saved: rss_mdm_task_state::RunState = serde_json::from_value(saved)?;
-        assert_eq!(saved.attempt(), Some(attempt));
-        assert_eq!(
-            saved.execution,
-            if original {
-                rss_mdm_task_state::Execution::Succeeded
-            } else {
-                rss_mdm_task_state::Execution::Unknown
-            }
-        );
-        assert_eq!(result.is_some(), original);
-        assert_eq!(facts().await?, before + i64::from(original));
+        if reboot {
+            recover_run(&c, &a, id).await?;
+        }
+        let (state, stored_effect): (Value, Option<String>) = sqlx::query_as(
+            "SELECT state, result->>'effect' FROM mdm_software_deployment.action_runs
+             WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(c.tenant.to_string())
+        .bind(id)
+        .fetch_one(&c.operator)
+        .await?;
+        let state: rss_mdm_task_state::RunState = serde_json::from_value(state)?;
+        assert_eq!(state.attempt(), Some(attempt));
+        assert_eq!(state.cancellation, Cancellation::Requested);
+        assert_eq!(state.execution, execution);
+        assert_eq!(stored_effect.as_deref(), effect);
+        assert_eq!(facts().await?, before + added);
     }
-    // The same exit also retains waiting-for-reboot evidence rather than manufacturing success.
-    let mut reboot = rss_mdm_task_state::RunState::new(now() + 300, now())?;
-    reboot.claim(attempt, now())?;
-    reboot.received(attempt, now())?;
-    reboot.start(attempt, now())?;
-    reboot.waiting_reboot(attempt)?;
-    let mut tx = command::seed_transaction(&c).await?;
-    sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(reboot)?).execute(&mut *tx).await?;
-    tx.commit().await?;
-    owner::Transaction::run(
-        &a.resources.storage.audit,
-        &a.resources.storage.runtime,
-        c.execution(),
-        &background(c.execution()),
-        a.software.service.as_ref(),
-        move |service, tx| {
-            Box::pin(async move {
-                owner::actions::recovery::recover_one(execution_binding, service, tx, id).await
-            })
-        },
-    )
-    .await?;
-    let recovered:rss_mdm_task_state::RunState=serde_json::from_value(sqlx::query_scalar("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?)?;
-    assert_eq!(
-        recovered.execution,
-        rss_mdm_task_state::Execution::WaitingReboot
-    );
-    assert_eq!(
-        recovered.cancellation,
-        rss_mdm_task_state::Cancellation::Requested
-    );
     Fixture::close(a).await?;
     c.close().await;
     Ok(())
@@ -557,11 +535,12 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
         owner::deadline(),
     ))
     .await?;
-    owner::Transaction::run(
+    let request = background(c.execution());
+    let result = owner::Transaction::run(
         &a.resources.storage.audit,
         &a.resources.storage.runtime,
         c.execution(),
-        &background(c.execution()),
+        &request,
         messaging,
         move |m, tx| {
             Box::pin(
@@ -569,7 +548,8 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
             )
         },
     )
-    .await?;
+    .await;
+    finish(&request, result)?;
     let stop = tokio_util::sync::CancellationToken::new();
     let signals = owner::worker_wake::Signals::default();
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {

@@ -22,6 +22,36 @@ pub(super) fn background(
         AuditIntent::Management,
     )
 }
+pub(super) fn finish<T>(
+    audit: &RequestAudit,
+    result: std::result::Result<T, owner::Error>,
+) -> std::result::Result<T, owner::Error> {
+    audit.finalize(
+        result
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    result
+}
+pub(super) async fn recover_run(c: &Context, a: &Fixture, id: Uuid) -> Result<()> {
+    let binding = c.execution();
+    let audit = background(binding);
+    let result = owner::Transaction::run(
+        &a.resources.storage.audit,
+        &a.resources.storage.runtime,
+        binding,
+        &audit,
+        a.software.service.as_ref(),
+        move |service, tx| {
+            Box::pin(async move {
+                owner::actions::recovery::recover_one(binding, service, tx, id).await
+            })
+        },
+    )
+    .await;
+    Ok(finish(&audit, result)?)
+}
 pub fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,

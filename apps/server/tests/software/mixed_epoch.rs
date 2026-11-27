@@ -11,11 +11,12 @@ async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()
     let messaging =
         rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), binding, owner::deadline())
             .await?;
-    owner::Transaction::run(
+    let request = background(binding);
+    let result = owner::Transaction::run(
         &f.resources.storage.audit,
         runtime,
         binding,
-        &background(binding),
+        &request,
         (reader, messaging),
         move |(reader, messaging), tx| {
             Box::pin(async move {
@@ -25,7 +26,8 @@ async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()
             })
         },
     )
-    .await?;
+    .await;
+    finish(&request, result)?;
     Ok(())
 }
 async fn assign(
@@ -54,11 +56,12 @@ async fn assign(
         scope_result,
         entry_revision: 1,
     };
+    let request = background(binding);
     let result = owner::Transaction::run(
         &policy_owner.audit,
         &runtime,
         binding,
-        &background(binding),
+        &request,
         (reader, messaging),
         move |(reader, messaging), tx| {
             Box::pin(async move {
@@ -72,6 +75,7 @@ async fn assign(
         },
     )
     .await;
+    let result = finish(&request, result);
     runtime.close().await;
     Ok(result?)
 }

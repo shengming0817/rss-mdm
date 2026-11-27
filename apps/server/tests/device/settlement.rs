@@ -1,6 +1,8 @@
 //! A lost acknowledgement is resolved against the original command and request receipt.
 use super::*;
-use rss_mdm_audit_integration::{AuditIntent, WriteOutcome};
+use rss_mdm_audit_integration::{
+    AuditIntent, FailureReason, RequestAudit, WriteOutcome, operation::OperationOwner,
+};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_device_service::control::{Error, device_control::Input};
 use rss_transactional_messaging_postgres::PgTransactionFault;
@@ -15,8 +17,22 @@ pub(super) async fn check_create(
     let id = input.operation_id;
     let request = || -> Result<_> {
         let audit = c.request(proof)?;
-        audit.operation(id, "device_control", AuditIntent::Management);
+        audit.owned_operation(
+            OperationOwner::DeviceControl,
+            id,
+            "command_accept",
+            AuditIntent::Management,
+        );
+        audit.target_device(device);
         Ok(audit)
+    };
+    let create = async |audit: &RequestAudit| {
+        let result = fixture
+            .service
+            .create_control(proof, device, input, audit)
+            .await;
+        audit.finalize(result.as_ref().err().map(|_| FailureReason::Transaction));
+        result
     };
     let evidence = || {
         sqlx::query_as::<_, (i64, i64, i64, i64)>(
@@ -38,13 +54,7 @@ pub(super) async fn check_create(
     let runtime = &fixture.resources.storage.runtime;
     let audit = request()?;
     runtime.inject_next_transaction_fault(PgTransactionFault::RollbackFailedAfterAck);
-    assert!(matches!(
-        fixture
-            .service
-            .create_control(proof, device, input, &audit)
-            .await,
-        Err(Error::RollbackFailed)
-    ));
+    assert!(matches!(create(&audit).await, Err(Error::RollbackFailed)));
     assert_eq!(audit.snapshot().write_outcome, WriteOutcome::RollbackFailed);
     assert_eq!(evidence().await?, (0, 0, 0, 0));
     assert_eq!(c.audit_count("mdm.business", &id.to_string()).await?, 0);
@@ -52,22 +62,13 @@ pub(super) async fn check_create(
     assert_eq!(recovery_epoch(1).await?.rows_affected(), 1);
     let audit = request()?;
     runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
-    assert!(matches!(
-        fixture
-            .service
-            .create_control(proof, device, input, &audit)
-            .await,
-        Err(Error::CommitUnknown)
-    ));
+    assert!(matches!(create(&audit).await, Err(Error::CommitUnknown)));
     assert_eq!(audit.snapshot().write_outcome, WriteOutcome::Unknown);
     assert_eq!(evidence().await?, (1, 1, 1, 1));
     assert_eq!(c.audit_count("mdm.business", &id.to_string()).await?, 1);
 
     let replay = request()?;
-    let receipt = fixture
-        .service
-        .create_control(proof, device, input, &replay)
-        .await?;
+    let receipt = create(&replay).await?;
     assert_eq!(
         (
             receipt.operation_id,
