@@ -763,6 +763,10 @@ async fn ordered_scripts_in(
         .await
         .fold(Ok, Err, Err, Err, Err, Err)?;
     let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("SELECT set_config('rss.execution_epoch',$1,true)")
+        .bind(binding.epoch().get().to_string())
+        .execute(&mut *tx)
+        .await?;
     for (index, run) in runs.into_iter().enumerate() {
         let written = sqlx::query("INSERT INTO mdm_script.runs(expected_epoch,tenant_id,id,policy_version,resource_id,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,invocation,result,dispatch_fingerprint)
             SELECT $6,r.tenant_id,$3,r.policy_version,r.resource_id,r.origin,r.source_objects,r.device,$4,r.created_at,r.available_at,r.deadline,r.state,r.invocation,$5,o.fingerprint FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.message_id=$4 AND o.domain='mdm.script.v1' WHERE r.tenant_id=$1::uuid AND r.id=$2")
@@ -1030,7 +1034,9 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
     );
     assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1").bind(c.tenant.to_string()).execute(&c.operator).await?.rows_affected(),1);
     let template = Uuid::parse_str(peer.strip_prefix("script.").unwrap())?;
-    let [_, _, next_peer] = ordered_scripts_in(&h, template, next).await?;
+    let [_, _, next_peer] = ordered_scripts_in(&h, template, next)
+        .await
+        .map_err(|e| e.context("seed ordered work in the new tenant epoch"))?;
     crate::host_t2_support::run(configuration().await?, async |client, base| {
         command::wait_relay(async || published(&next_peer).await).await?;
         assert_eq!(status(&bad).await?, "dead_letter");
