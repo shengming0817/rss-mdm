@@ -1001,8 +1001,10 @@ async fn quarantined_script_keeps_host_ready() -> Result<()> {
     ));
     let drained = format!("script.{draining}");
     let due = async |message: &str, now: bool| -> Result<()> {
+        let mut tx = command::seed_transaction(c).await?;
         let changed = sqlx::query("UPDATE rss_transactional_messaging.outbox SET retry_after=clock_timestamp()+CASE WHEN $3 THEN interval '0' ELSE interval '5 minutes' END WHERE tenant_id=$1::uuid AND message_id=$2 AND status='pending'")
-            .bind(c.tenant.to_string()).bind(message).bind(now).execute(&c.operator).await?;
+            .bind(c.tenant.to_string()).bind(message).bind(now).execute(&mut *tx).await?;
+        tx.commit().await?;
         assert_eq!(changed.rows_affected(), 1);
         Ok(())
     };
