@@ -14,6 +14,15 @@ pub(super) enum Owner {
     Registration,
     Recovery,
 }
+pub(super) async fn on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: Uuid,
+) -> std::result::Result<Owner, Error> {
+    let owners = batch_on(c, tenant, &[id]).await?;
+    owners.get(&id).copied().ok_or(Error::NotFound)
+}
+
 pub(super) async fn on_device(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
@@ -86,13 +95,7 @@ async fn resolve(
 
 pub(super) async fn in_transaction(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Owner> {
     let tenant = tx.tenant_id();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            Ok(batch_on(c, tenant, &[id])
-                .await
-                .and_then(|owners| owners.get(&id).copied().ok_or(Error::NotFound)))
-        })
-    })
-    .await?
-    .map_err(Fault::from)
+    tx.with_connection(move |c| Box::pin(async move { Ok(on(c, tenant, id).await) }))
+        .await?
+        .map_err(Fault::from)
 }
