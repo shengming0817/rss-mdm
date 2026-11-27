@@ -18,6 +18,15 @@ const SCRIPT: &str = concat!(
     "/../../hack/test-support/identity_keycloak.py"
 );
 
+#[derive(Clone, Copy)]
+pub struct DeviceChange<'a> {
+    pub client: &'a Client,
+    pub base: &'a str,
+    pub resource: &'a str,
+    pub session: &'a str,
+    pub csrf: &'a str,
+    pub input: &'a Value,
+}
 pub struct Keycloak {
     directory: PathBuf,
     info: Value,
@@ -98,12 +107,7 @@ impl Keycloak {
             .set(id)
             .map_err(|_| anyhow::anyhow!("provider already installed"))
     }
-    pub async fn link_employee(
-        &self,
-        pool: &sqlx::PgPool,
-        tenant: &str,
-        person: Uuid,
-    ) -> Result<()> {
+    async fn link_employee(&self, pool: &sqlx::PgPool, tenant: &str, person: Uuid) -> Result<()> {
         let mut tx = pool.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(tenant)
@@ -116,12 +120,7 @@ impl Keycloak {
         tx.commit().await?;
         Ok(())
     }
-    pub async fn expire_grant(
-        &self,
-        pool: &sqlx::PgPool,
-        tenant: &str,
-        principal: Uuid,
-    ) -> Result<()> {
+    async fn expire_grant(&self, pool: &sqlx::PgPool, tenant: &str, principal: Uuid) -> Result<()> {
         let mut tx = pool.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(tenant)
@@ -132,15 +131,39 @@ impl Keycloak {
         tx.commit().await?;
         Ok(())
     }
-    pub async fn grant(
+    pub async fn employee_grant(
         &self,
-        client: &Client,
-        base: &str,
-        resource: &str,
-        session: &str,
-        csrf: &str,
-        input: &Value,
+        change: DeviceChange<'_>,
+        pool: &sqlx::PgPool,
+        tenant: &str,
+        principal: Uuid,
     ) -> Result<String> {
+        self.link_employee(pool, tenant, principal).await?;
+        let expired = self.grant(change).await?;
+        self.expire_grant(pool, tenant, principal).await?;
+        let denied = change
+            .client
+            .put(change.resource)
+            .header("origin", &self.origin)
+            .header("cookie", format!("{}; {expired}", change.session))
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", change.csrf)
+            .json(change.input)
+            .send()
+            .await?;
+        ensure!(denied.status() == 401, "expired grant was accepted");
+        self.grant(change).await
+    }
+
+    async fn grant(&self, change: DeviceChange<'_>) -> Result<String> {
+        let DeviceChange {
+            client,
+            base,
+            resource,
+            session,
+            csrf,
+            input,
+        } = change;
         let provider = self.provider.get().context("configured IdP")?;
         let reply = client
             .post(format!("{resource}/step-up/oidc/{provider}"))

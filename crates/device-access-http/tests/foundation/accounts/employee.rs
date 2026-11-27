@@ -139,19 +139,20 @@ pub(super) async fn recover(
         assert!(put(&input, &cookie).await?.status().is_client_error());
         let grant = if revision == 2 {
             let oidc = c.oidc.get().context("standalone Keycloak")?;
-            oidc.link_employee(&c.operator, &c.tenant.to_string(), employee)
-                .await?;
-            let grant = oidc
-                .grant(client, &c.browser_origin, &resource, &cookie, &csrf, &input)
-                .await?;
-            oidc.expire_grant(&c.operator, &c.tenant.to_string(), employee)
-                .await?;
-            assert_eq!(
-                put(&input, &format!("{cookie}; {grant}")).await?.status(),
-                401
-            );
-            oidc.grant(client, &c.browser_origin, &resource, &cookie, &csrf, &input)
-                .await?
+            oidc.employee_grant(
+                super::super::device_oidc::DeviceChange {
+                    client,
+                    base: &c.browser_origin,
+                    resource: &resource,
+                    session: &cookie,
+                    csrf: &csrf,
+                    input: &input,
+                },
+                &c.operator,
+                &c.tenant.to_string(),
+                employee,
+            )
+            .await?
         } else {
             browser.grant(&input).await?
         };

@@ -319,7 +319,6 @@ async fn embedded_step_up(
         .await?;
     let session = employee.cookie_session()?;
     let principal = Uuid::parse_str(&employee.user.principal_id)?;
-    oidc.link_employee(&c.operator, &tenant, principal).await?;
     let binding = employee_device(c, da, principal).await?;
     let resource = format!(
         "{base}/api/v1/tenants/{tenant}/devices/{}/device-access/bindings/{}",
@@ -328,7 +327,19 @@ async fn embedded_step_up(
     let cookie = format!("__Host-identity-session={}", session.expose());
     let input = serde_json::json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"repair_binding"}});
     let grant = oidc
-        .grant(client, base, &resource, &cookie, &session.csrf(), &input)
+        .employee_grant(
+            device_oidc::DeviceChange {
+                client,
+                base,
+                resource: &resource,
+                session: &cookie,
+                csrf: &session.csrf(),
+                input: &input,
+            },
+            &c.operator,
+            &tenant,
+            principal,
+        )
         .await?;
     let put = |change: &serde_json::Value, grant: &str| {
         client
@@ -340,11 +351,6 @@ async fn embedded_step_up(
             .json(change)
             .send()
     };
-    oidc.expire_grant(&c.operator, &tenant, principal).await?;
-    assert_eq!(put(&input, &grant).await?.status(), 401);
-    let grant = oidc
-        .grant(client, base, &resource, &cookie, &session.csrf(), &input)
-        .await?;
     let mut wrong = input.clone();
     wrong["operationId"] = Uuid::new_v4().to_string().into();
     assert_eq!(put(&wrong, &grant).await?.status(), 401);
