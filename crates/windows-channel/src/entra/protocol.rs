@@ -100,9 +100,7 @@ pub(crate) async fn enrollment(
     let provisioning =
         crate::issuance::provision_request(&windows, &intent, &certificate, d.id, &d.tenant)?;
     // Identity recheck runs before the final MDM transaction and never under its locks.
-    let admission = admission
-        .recheck_entra(&entra.authority, remaining(cutoff))
-        .await?;
+    let admission = admission.recheck_entra(&entra.authority, cutoff).await?;
     crate::issuance::complete(
         &app.audit_store,
         &windows,

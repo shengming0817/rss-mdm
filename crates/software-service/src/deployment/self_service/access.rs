@@ -128,8 +128,8 @@ pub(super) async fn qualify_on(
                 .recheck(
                     execution,
                     reference,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        std::time::Duration::from_secs(10),
+                    rss_request_context::Deadline::at(
+                        std::time::Instant::now() + std::time::Duration::from_secs(10),
                     ),
                 )
                 .await

@@ -38,6 +38,7 @@ LOCAL_PACKAGES = {
     "rss-mdm-policy-service": "crates/policy-service",
     "rss-mdm-resource-service": "crates/resource-service",
 
+    "rss-mdm-identity-http": "crates/identity-http",
     "rss-mdm-http-contract": "crates/http-contract",
     "rss-mdm-query-postgres": "crates/query-postgres",
     "rss-mdm-query": "crates/query",
@@ -94,32 +95,9 @@ LOCAL_PACKAGES = {
     "rss-mdm-examples": "crates/examples",
 }
 
-IDENTITY_PACKAGES = {"rss-identity-core", "rss-identity-postgres", "rss-identity-http-axum", "rss-identity-oidc"}
+IDENTITY_PACKAGES = {"rss-identity-core", "rss-identity-postgres", "rss-identity-web-credentials", "rss-identity-oidc"}
 
 AUDIT_PACKAGES = {"rss-audit-core", "rss-audit-postgres", "rss-ledger", "rss-ledger-postgres"}
-
-def audit_dependency(dep):
-    require(isinstance(dep, dict) and set(dep) <= {'git','rev','features','default-features'} and {'git','rev'} <= set(dep), 'invalid Audit dependency')
-    return identity_dependency({key:dep[key] for key in ('git','rev')})
-
-def audit_pin(manifest):
-    deps = manifest['workspace']['dependencies']
-    pairs = {audit_dependency(deps[name]) for name in AUDIT_PACKAGES}
-    require(len(pairs) == 1, 'Audit packages must share exact source')
-    return next(iter(pairs))
-
-def identity_dependency(dep):
-    require(isinstance(dep, dict) and set(dep)=={'git','rev'}, 'invalid Identity dependency')
-    url=urlsplit(dep['git'])
-    require(url.scheme=='https' and url.hostname and not url.username and not url.password and not url.query and not url.fragment, 'invalid Identity Git URL')
-    require(re.fullmatch(r'[0-9a-f]{40}',dep['rev']), 'invalid Identity revision')
-    return dep['git'],dep['rev']
-
-def identity_pin(manifest):
-    deps=manifest['workspace']['dependencies']
-    pairs={identity_dependency(deps[name]) for name in IDENTITY_PACKAGES}
-    require(len(pairs)==1, 'Identity packages must share exact source')
-    return next(iter(pairs))
 
 def verify_chrono_exception(lock):
     packages = lock['package']
@@ -145,8 +123,7 @@ def verify_policy(policy, manifest, lock):
     if ignores:
         verify_chrono_exception(lock)
     require(policy['sources']['unknown-git']=='deny' and policy['sources']['unknown-registry']=='deny', 'unknown sources must fail')
-    urls={rss_pin(manifest)[0],identity_pin(manifest)[0],audit_pin(manifest)[0]}
-    require(len(urls)==3 and set(policy['sources']['allow-git'])==urls, 'source permissions must match distinct reviewed repositories')
+    require(policy['sources']['allow-git'] == [rss_pin(manifest)[0]], 'only the pinned RSS source is allowed')
 
 def require(condition, message):
     if not condition:
@@ -162,18 +139,12 @@ def rss_pin(manifest, required=True):
                 if name in LOCAL_PACKAGES:
                     require(dependency == {"path": LOCAL_PACKAGES[name]}, f"invalid local member source: {alias}")
                     continue
-                if name in AUDIT_PACKAGES:
-                    audit_dependency(dependency)
-                    continue
-                if name in IDENTITY_PACKAGES:
-                    identity_dependency(dependency)
-                    continue
                 if not name.startswith("rss-"):
                     continue
                 require(isinstance(dependency, dict), f"RSS dependency {alias} must use git + rev")
                 require(not any(k in dependency for k in ("path", "branch", "tag", "version", "workspace")), f"invalid RSS source: {alias}")
                 url, rev = dependency.get("git"), dependency.get("rev")
-                require(isinstance(url, str) and url.startswith("https://") and isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev), f"invalid RSS pin: {alias}")
+                require(isinstance(url, str) and url == "https://dev.azure.com/shengming0923/rss/_git/rss" and isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev), f"invalid RSS pin: {alias}")
                 pins.add((url, rev))
     if not pins and not required:
         return None
@@ -183,8 +154,6 @@ def rss_pin(manifest, required=True):
 def workspace_pin(root):
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
     pin = rss_pin(manifest)
-    identity_pin(manifest)
-    audit_pin(manifest)
     verify_policy(tomllib.loads((root / "deny.toml").read_text()), manifest,
                   tomllib.loads((root / "Cargo.lock").read_text()))
     shared = manifest["workspace"]["dependencies"]
@@ -393,12 +362,6 @@ def verify_metadata(data, root, mode, pin):
     for package in data["packages"]:
         if package["name"] in LOCAL_PACKAGES:
             require(package['source'] is None and Path(package['manifest_path']).resolve() == root / LOCAL_PACKAGES[package["name"]] / 'Cargo.toml', 'dependency isolation check failed')
-        elif package["name"] in IDENTITY_PACKAGES:
-            identity_url,revision = identity_pin(tomllib.loads((root / 'Cargo.toml').read_text()))
-            require(package['source'] == f'git+{identity_url}?rev={revision}#{revision}', 'Identity source drift')
-        elif package["name"] in AUDIT_PACKAGES:
-            audit_url, revision = audit_pin(tomllib.loads((root / 'Cargo.toml').read_text()))
-            require(package['source'] == f'git+{audit_url}?rev={revision}#{revision}', 'Audit source drift')
         elif package["name"].startswith("rss-"):
             require(package['source'] == expected, (package['name'], package['source']))
         else:
@@ -408,6 +371,8 @@ def verify_metadata(data, root, mode, pin):
     features = {packages[n["id"]]: n["features"] for n in data["resolve"]["nodes"]}
     for name in ("rss-observation-postgres", "rss-projection-postgres"):
         require("integration" not in features[name], f"unexpected {mode} features for {name}")
+    require(not {'rss-identity-http-axum', 'rss-identity-service-http'}.intersection(packages.values()),
+            'product must own its Identity HTTP endpoints')
     require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES | AUDIT_PACKAGES, 'Identity/Audit components missing')
     require("test-support" not in features["rss-identity-oidc"], "OIDC fixture transport feature drift")
     require("test-support" not in features["rss-identity-postgres"], "Identity fact-time feature drift")
@@ -430,7 +395,7 @@ def verify_metadata(data, root, mode, pin):
     # Identity #2984 removed the vulnerable OIDC closure; reject reintroduction.
     require(not any(p['name'] in {'rsa', 'openidconnect'} for p in data['packages']),
             'retired vulnerable OIDC dependency reintroduced')
-    return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] not in LOCAL_PACKAGES and p["name"] not in IDENTITY_PACKAGES)
+    return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] not in LOCAL_PACKAGES)
 
 def dependency_graphs(pin):
     for mode, extra in [("normal", []), ("all-features", ["--all-features"])]:
@@ -635,8 +600,6 @@ def execute_ci():
     evidence['verificationComplete'] = (t2_mode == 'all' and integration['status'] == 'passed'
                                         and not any(value['status'] == 'failed' for value in results.values()))
     evidence['t2'] = integration
-    identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
-    evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
     publish(OUT/"result.json",evidence)
     print(json.dumps(evidence, indent=2))
     return int(any(value["status"] == "failed" for value in results.values()) or t2_mode == 'all' and integration['status'] != 'passed')

@@ -140,6 +140,32 @@ pub async fn verify(
         "Inventory admission accepted a worker unable to acknowledge reports"
     );
     drop((browser, protocol));
+    let mut federated = value.clone();
+    federated["oidc"] = identity_http::federation_config(&m.directory, &origin, false)?;
+    let (end, end_requested) = tokio::sync::oneshot::channel();
+    let federated_host = tokio::spawn(rss_da_app::host::serve(
+        serde_json::from_value(federated)?,
+        async move { end_requested.await.map_err(std::io::Error::other) },
+    ));
+    let client = m.client(None)?;
+    let probe = async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while client
+                .head(format!("{origin}/api/v1/identity/oidc/callback"))
+                .send()
+                .await
+                .is_err()
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await?;
+        identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), true).await
+    }
+    .await;
+    let _ = end.send(());
+    federated_host.await??;
+    probe?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let config = rss_da_app::config::load(&runtime_file)?;
     let running = tokio::spawn(rss_da_app::host::serve(config, async move {
@@ -158,6 +184,14 @@ pub async fn verify(
         })
         .await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        identity_http::surface(&rss_da_app::http_contract()?, true);
+        identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), false).await?;
+        identity_http::anonymous_session(&client, &base).await?;
+        identity_http::session_lifecycle(&client, &base, &origin, &login, password).await?;
+        assert_eq!(
+            client.get(format!("{base}/profile")).send().await?.status(),
+            401
+        );
         let response = client
             .post(format!("{base}/login"))
             .header("origin", &origin)
@@ -352,3 +386,6 @@ async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) ->
     ));
     Ok(())
 }
+
+#[path = "../../../../hack/test-support/identity_http.rs"]
+mod identity_http;

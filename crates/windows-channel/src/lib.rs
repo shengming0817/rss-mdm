@@ -599,15 +599,7 @@ async fn enrollment(
 
         let proof = app
             .identity
-            .authenticate(
-                execution,
-                &app.access.authorization,
-                credential,
-                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                    cutoff,
-                    &rss_mdm_audit_integration::budget::RuntimeTimer,
-                ),
-            )
+            .authenticate(execution, &app.access.authorization, credential, cutoff)
             .await?;
         if proof.principal_id() != auth.actor || proof.instance_id() != auth.instance {
             return Err(Error::Unauthorized);
@@ -703,10 +695,7 @@ async fn enrollment(
                 execution,
                 &app.access.authorization,
                 app.credentials.get(auth.credential_ref)?,
-                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                    cutoff,
-                    &rss_mdm_audit_integration::budget::RuntimeTimer,
-                ),
+                cutoff,
             )
             .await?;
         auth.authorize(&proof)?;

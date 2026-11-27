@@ -10,8 +10,8 @@ use rss_mdm_agent_wire::{da, runtime as wire};
 use rss_mdm_authorization_service::{context::AuthorizedPrincipal, credential::RequestCredential};
 use rss_mdm_device_access::deployment::{Deployment, Observation};
 use rss_mdm_device_access_postgres as pg;
-fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(10))
+fn deadline() -> rss_request_context::Deadline {
+    rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10))
 }
 pub(super) fn key() -> Ed25519KeyPair {
     Ed25519KeyPair::from_seed_unchecked(&[49; 32]).unwrap()
@@ -109,8 +109,8 @@ pub(super) async fn login(
         c.execution(),
         &c.authorization,
         RequestCredential::Cookie(SessionSecret::parse(secret.expose().into())?),
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            std::time::Duration::from_secs(10),
+        rss_request_context::Deadline::at(
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
         ),
     ))
     .await?;

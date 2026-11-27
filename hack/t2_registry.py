@@ -97,7 +97,7 @@ MODULES = {
 
     'device_access.foundation': dict(package='rss-mdm-device-access-http', target='foundation', installer=None,
         prefix='foundation::',profiles=('da_foundation',),
-        inputs=('hack/test-support/da-delivery-checkpoints.sql', 'hack/test-support/inventory-pages.sql', 'crates/agent-wire/src/identity.rs', 'apps/da-server/*','crates/apple-mdm/src/da.rs','crates/windows-mdm/src/da.rs','crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/recovery-credentials/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',
+        inputs=('hack/test-support/da-delivery-checkpoints.sql','crates/identity-http/*','hack/test-support/identity_http.rs', 'hack/test-support/inventory-pages.sql', 'crates/agent-wire/src/identity.rs', 'apps/da-server/*','crates/apple-mdm/src/da.rs','crates/windows-mdm/src/da.rs','crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/recovery-credentials/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',
                 'crates/agent-wire/src/enroll.rs','crates/agent-wire/src/pki.rs','crates/agent-wire/src/task_trust.rs',
                 'crates/agent-wire/src/runtime.rs','crates/agent-wire/src/device_access.rs','crates/agent-wire/src/platform_sso.rs',
                 'crates/native-protection/*',
@@ -283,7 +283,7 @@ MODULES = {
         prefix='foundation_t2::authorization::', profiles=('shared', 'transaction', 'http_scope'),
         inputs=('crates/agent-wire/src/identity.rs', 'apps/server/src/identity.rs', 'apps/server/src/identity/*', 'apps/server/src/maintenance.rs', 'apps/server/src/authorization_bootstrap.rs', 'apps/server/src/installation/backup/accounts.rs', 'crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
                 'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
-                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs', 'crates/management-http/src/boundary.rs', 'crates/management-http/src/response.rs', 'apps/server/src/assembly/http.rs', 'apps/server/tests/support/host.rs', 'apps/server/tests/foundation/http_scope.rs', 'apps/server/src/diagnostic.rs',
+                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs','crates/identity-http/*','hack/test-support/identity_http.rs', 'crates/management-http/src/boundary.rs', 'crates/management-http/src/response.rs', 'apps/server/src/assembly/http.rs', 'apps/server/tests/support/host.rs', 'apps/server/tests/foundation/http_scope.rs', 'apps/server/src/diagnostic.rs',
                 'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs', 'apps/server/src/administration/user_profiles/*')),
     'foundation.account_recovery': dict(
         prefix='installation::backup::accounts::t2::', profiles=('account_recovery',),

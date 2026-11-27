@@ -39,7 +39,7 @@ pub fn identity_credentials(method: &str, bearer: bool, api_key: bool) -> Vec<Cr
         }
     }
     let mut cookie = Credential {
-        kind: "cookie", owner: "rss-identity-http-axum::authenticate_request",
+        kind: "cookie", owner: "rss-identity-web-credentials::authenticate_request",
         headers: [("cookie".into(), header(serde_json::json!({"type":"string", "description":"Contains exactly one __Host-identity-session cookie"})))].into(),
         required_headers: vec!["cookie"], constraints: vec!["authorization and x-api-key must be absent"],
     };
@@ -59,7 +59,7 @@ pub fn identity_credentials(method: &str, bearer: bool, api_key: bool) -> Vec<Cr
             (
                 "bearer",
                 "authorization",
-                "rss-identity-http-axum::authenticate_bearer_request",
+                "rss-identity-web-credentials::authenticate_bearer_request",
                 "Bearer session credential",
             ),
             (

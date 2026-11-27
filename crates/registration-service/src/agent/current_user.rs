@@ -119,8 +119,8 @@ pub async fn resolve(
                 .recheck(
                     execution,
                     reference,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        std::time::Duration::from_secs(10),
+                    rss_request_context::Deadline::at(
+                        std::time::Instant::now() + std::time::Duration::from_secs(10),
                     ),
                 )
                 .await
@@ -289,7 +289,15 @@ impl Service {
                     }
                     write_stage(*request_id, "identity_session_recheck");
                     if let Some(reference) = reference {
-                        sessions.recheck(device.binding(),reference, rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(10))).await?;
+                        sessions
+                            .recheck(
+                                device.binding(),
+                                reference,
+                                rss_request_context::Deadline::at(
+                                    std::time::Instant::now() + std::time::Duration::from_secs(10),
+                                ),
+                            )
+                            .await?;
                     }
                     if let Some(user) = user {
                         registration_user::initialize_on(profile, c, device.device(), user).await?;

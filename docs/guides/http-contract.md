@@ -5,10 +5,10 @@
 受保护端点的 `authentication` 引用实际管理认证 owner；`alternatives` 为互斥凭据方式，各自包含 header schema、必填 header 和限制。Cookie 的写请求要求 Origin、`X-Identity-Request: 1` 和 session 绑定的 CSRF，GET/HEAD 使用被动认证；Bearer/API key 仅在实际允许的入口出现。`conditional_response_headers` 描述 401 的 `WWW-Authenticate` 条件，不能作为每个 401 都必含该 header 的承诺。描述在最终路径组合后解析，租户管理及自助入口保留实际凭据限制。认证 owner 在 handler 之前可能产生的拒绝响应也合并到端点唯一的 `responses` 集合；客户端按同一契约验证状态、错误体和响应头，认证失效继续交由既有会话 owner 处理。
 
 宿主在认证之前解析租户范围。无效租户标识返回 `400 malformed_request`，不存在或已删除租户返回
-`403 permission_denied`；这些是产品宿主拒绝，包括 Identity SDK 挂载入口。范围查询不可用时，产品入口返回
+`403 permission_denied`；这些是产品宿主拒绝，包括产品身份入口。范围查询不可用时，产品入口返回
 `503 service_unavailable`，Identity 入口保留 `503 identity_unavailable`。错误带服务端生成的 `x-request-id`
 和禁止缓存、安全响应头；管理请求预算耗尽也进入同一错误与审计完成边界，提交未知仍返回 `operation_unknown`。
-产品端点在 `responses` 中声明这些提前拒绝，Identity SDK 的产品宿主拒绝另由 `externalOwners[].ingressResponses` 描述。
+两个宿主从生产注册导出身份端点及其实际准入条件，提前拒绝并入各端点的 `responses`。
 
 原生软件安装任务直接消费发布时冻结的 `/api/v1/software/installations/{id}/package?token=…` 下载 URL。
 下载依据原操作定位租户并核验令牌、当前执行权限和完整内容；它不需要浏览器会话或租户路径参数。
@@ -37,7 +37,7 @@ python3 hack/http_contract_artifact.py --output artifacts/http-contract/http-v1.
 - 每个 schema 描述含 `direction` 与 `schemaId`。`schemas[schemaId]` 是独立的 schema 根；其中 `#/$defs/...` 必须相对于该根解析。请求按 deserialize、响应按 serialize 派生，省略字段与显式 null 不等同。二进制、范围下载、压缩入口、数值编码继续由原传输 owner 执行。
 - `conditions` 表示真实条件挂载。完整导出包含这些条件下的端点全集，包括 `device_access_registration` 条件下的 DA 独立 listener；条件名称不是部署能力探测或版本握手。`agent_listener` 要求产品实际启用 Agent listener；各服务条件仍由生产装配决定。
 - `configuredPath` 描述配置绑定的静态 UUID 路径段。例如 management tenant 路径保留生产中静态路由优先于普通捕获路由的语义，记录配置来源及被覆盖的 operation，不写入某个部署的 UUID。
-- `external` 标记已挂载的 Apple/Windows/软件仓库原生协议入口，`externalOwners` 记录 Identity SDK 边界。平台模块中的自有管理和 Agent 接口仍属于 `endpoints`。原生状态叶子等明确的外部协议数据由其原 owner 校验，不能据此放开核心身份、动作或状态结构。
+- `external` 标记已挂载的 Apple/Windows/软件仓库原生协议入口。平台模块中的自有管理和 Agent 接口仍属于 `endpoints`。原生状态叶子等明确的外部协议数据由其原 owner 校验，不能据此放开核心身份、动作或状态结构。
 
 Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如 Resource 输出、展示元数据、Apple 已验证的原生 status 叶子。它不表示整个响应可接受任意 JSON。动态字段和列表仍由 Inventory/用户 schema 解释。
 

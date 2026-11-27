@@ -62,7 +62,9 @@ impl From<rss_timeseries::Error> for Error {
             | rss_timeseries::Error::Retired
             | rss_timeseries::Error::HistoryExpired => Self::Conflict,
             rss_timeseries::Error::SnapshotInvalidated => Self::SnapshotInvalidated,
-            rss_timeseries::Error::BudgetExceeded => Self::Capacity,
+            rss_timeseries::Error::BudgetExceeded | rss_timeseries::Error::Overloaded => {
+                Self::Capacity
+            }
             rss_timeseries::Error::InvalidInput
             | rss_timeseries::Error::NumericRange
             | rss_timeseries::Error::InvalidCursor => Self::Invalid,

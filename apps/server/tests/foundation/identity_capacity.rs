@@ -1,5 +1,5 @@
 //! Configuration reaches the actual Identity owner, including live quota changes and HTTP feedback.
-use crate::authority_t2_support::{Account, Context, deadline};
+use crate::authority_t2_support::{Account, Context};
 use anyhow::Result;
 use rss_identity_postgres::{AuthenticatedSession, Authority, AuthorityError};
 use rss_mdm_authorization_service::{Permission, credential::RequestCredential};
@@ -16,7 +16,11 @@ async fn actor(
         anyhow::bail!("fixture account requires a real session")
     };
     Ok(authority
-        .inspect_session(c.execution(), secret, deadline())
+        .inspect_session(
+            c.execution(),
+            secret,
+            crate::authority_t2_support::identity_cutoff(),
+        )
         .await?)
 }
 
@@ -29,17 +33,25 @@ async fn configured_source_window_reaches_http_admission() -> Result<()> {
     policy.authentication.source.limit = 2;
     policy.authentication.source.seconds = 90;
     let authority = c.authority_with_policy(&policy).await?;
-    let router = rss_identity_http_axum::router(
+    let origin = url::Url::parse("https://mdm.example.test")?;
+    let webauthn = rss_identity_postgres::WebauthnAuthority::new(
+        authority.clone(),
+        "mdm.example.test".into(),
+        origin,
+    )?;
+    let state = rss_mdm_identity_http::AppState {
         authority,
-        rss_identity_http_axum::HttpConfig::new(
+        config: rss_identity_web_credentials::HttpConfig::new(
             "https://mdm.example.test",
             Duration::from_secs(10),
         )?,
-    )?
-    .layer(axum::Extension(c.execution()))
-    .layer(axum::Extension(rss_identity_postgres::RpGeneration::new(
-        1,
-    )?));
+    };
+    let router = rss_mdm_identity_http::local_routes(Some((&state, &webauthn)))
+        .into_checked_axum(rss_mdm_http_contract::module::Listener::Browser)
+        .layer(axum::Extension(c.execution()))
+        .layer(axum::Extension(rss_identity_postgres::RpGeneration::new(
+            1,
+        )?));
     let send = |ip: &str| {
         let router = router.clone();
         let request = axum::http::Request::builder()
@@ -49,7 +61,7 @@ async fn configured_source_window_reaches_http_admission() -> Result<()> {
             .header("origin", "https://mdm.example.test")
             .header("x-identity-request", "1")
             .header("content-type", "application/json")
-            .extension(rss_identity_http_axum::ClientAddress(ip.parse().unwrap()))
+            .extension(rss_mdm_identity_http::ClientAddress(ip.parse().unwrap()))
             .body(axum::body::Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "login":format!("foundation-{}", account.user.principal_id),
@@ -76,8 +88,8 @@ async fn configured_source_window_reaches_http_admission() -> Result<()> {
     let retry: u32 = response.headers()["retry-after"].to_str()?.parse()?;
     assert!((1..=90).contains(&retry));
     assert!(
-        matches!(response.extensions().get::<rss_identity_http_axum::HttpFailure>(),
-        Some(rss_identity_http_axum::HttpFailure::Authority(AuthorityError::RateLimited { retry_after_seconds })) if retry_after_seconds.get() == retry)
+        matches!(response.extensions().get::<rss_mdm_identity_http::HttpFailure>(),
+        Some(rss_mdm_identity_http::HttpFailure::Authority(AuthorityError::RateLimited { retry_after_seconds })) if retry_after_seconds.get() == retry)
     );
     let body = axum::body::to_bytes(response.into_body(), 65536).await?;
     assert_eq!(
@@ -129,7 +141,7 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
         max_age_seconds: 60,
     };
     let first = ProfileChange {
-        operation_id: Uuid::new_v4(),
+        operation_id: rss_identity_postgres::ProfileOperationId::now(),
         expected_revision: 0,
         value: Some(local.clone()),
     };
@@ -138,12 +150,16 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
             actor(&c, &authority, &account).await?,
             target,
             first.clone(),
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
     assert_eq!(receipt.revision, 1);
     let restored = authority
-        .read_local_profile(&actor(&c, &authority, &account).await?, target, deadline())
+        .read_local_profile(
+            &actor(&c, &authority, &account).await?,
+            target,
+            crate::authority_t2_support::identity_cutoff(),
+        )
         .await?;
     assert_eq!(restored.revision, 1);
     let restored = restored.value.unwrap().extensions.into_value();
@@ -152,7 +168,7 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
     assert_eq!(restored["items"].as_array().unwrap().len(), 1024);
     complete_product_mapping(&c, &authority, &account, &value).await?;
     let second = ProfileChange {
-        operation_id: Uuid::new_v4(),
+        operation_id: rss_identity_postgres::ProfileOperationId::now(),
         expected_revision: 1,
         value: Some(LocalProfile {
             display_name: Some("second".into()),
@@ -165,7 +181,7 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
                 actor(&c, &authority, &account).await?,
                 target,
                 second,
-                deadline()
+                crate::authority_t2_support::identity_cutoff()
             )
             .await?
             .revision,
@@ -178,7 +194,7 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
             actor(&c, &limited, &account).await?,
             target,
             first.clone(),
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
     assert_eq!(
@@ -190,7 +206,7 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
             &actor(&c, &limited, &account).await?,
             target,
             first.operation_id,
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?
         .unwrap();
@@ -199,7 +215,7 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
         (receipt.operation_id, receipt.revision)
     );
     let third = ProfileChange {
-        operation_id: Uuid::new_v4(),
+        operation_id: rss_identity_postgres::ProfileOperationId::now(),
         expected_revision: 2,
         value: Some(local),
     };
@@ -209,7 +225,7 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
                 actor(&c, &limited, &account).await?,
                 target,
                 third.clone(),
-                deadline()
+                crate::authority_t2_support::identity_cutoff()
             )
             .await,
         Err(AuthorityError::ProfileReceiptCapacityReached)
@@ -220,13 +236,17 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
                 &actor(&c, &limited, &account).await?,
                 target,
                 third.operation_id,
-                deadline()
+                crate::authority_t2_support::identity_cutoff()
             )
             .await?
             .is_none()
     );
     let restored = limited
-        .read_local_profile(&actor(&c, &limited, &account).await?, target, deadline())
+        .read_local_profile(
+            &actor(&c, &limited, &account).await?,
+            target,
+            crate::authority_t2_support::identity_cutoff(),
+        )
         .await?;
     assert_eq!(restored.revision, 2);
     assert_eq!(
@@ -256,7 +276,7 @@ async fn complete_product_mapping(
         Password::new("foundation-only-valid-password".into())?,
         rss_identity_postgres::AttemptSource::parse("profile-capacity")?,
         None,
-        deadline(),
+        crate::authority_t2_support::identity_cutoff(),
     ))
     .await?;
     let principal =
@@ -267,7 +287,7 @@ async fn complete_product_mapping(
                 RequestCredential::Cookie(SessionSecret::parse(
                     issued.secret().expose().to_owned(),
                 )?),
-                deadline(),
+                crate::authority_t2_support::identity_cutoff(),
             )
             .await?;
     let backend = Backend {

@@ -119,7 +119,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
                 .installation
                 .execution(tenant, config.expected_epoch)
                 .map_err(|_| invalid())?,
-            deadline(),
+            cutoff,
         )
         .await
         .map_err(crate::identity::failure)?;
@@ -133,7 +133,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
                     key,
                     login,
                     password,
-                    deadline(),
+                    cutoff,
                 )
                 .await
         } else {
@@ -145,7 +145,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
                         .map_err(|_| invalid())?,
                     key,
                     password,
-                    deadline(),
+                    cutoff,
                 )
                 .await
         }

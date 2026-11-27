@@ -37,7 +37,7 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
     )
     .await?;
     sqlx::query(
-        "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
+        "INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
     )
     .bind(management.to_string())
     .execute(&operator)

@@ -171,7 +171,7 @@ fn attest(request: &mut Request) -> Result<(String, IpAddr), ()> {
         .insert(connection.request_origin(origin.clone()));
     request
         .extensions_mut()
-        .insert(rss_identity_http_axum::ClientAddress(source));
+        .insert(rss_mdm_identity_http::ClientAddress(source));
     if let Some(certificate) = certificate {
         request.extensions_mut().insert(certificate);
     }

@@ -350,7 +350,7 @@ pub async fn admit_bearer(
     }
     let Some(address) = request
         .extensions()
-        .get::<rss_identity_http_axum::ClientAddress>()
+        .get::<rss_mdm_identity_http::ClientAddress>()
         .map(|address| address.0)
     else {
         return reject(Error::Forbidden);

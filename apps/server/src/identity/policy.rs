@@ -236,6 +236,10 @@ impl RuntimePolicy {
             instance,
             rss_identity_core::session::SessionPolicy::new(900, 14400).map_err(|_| invalid())?,
             integrity,
+            rss_mdm_audit_integration::budget::identity_write_budget(
+                crate::background::IDENTITY_CONNECTIONS,
+            )
+            .map_err(|_| invalid())?,
         )
         .map_err(super::failure)?
         .with_authentication_policy(self.authentication_policy()?)

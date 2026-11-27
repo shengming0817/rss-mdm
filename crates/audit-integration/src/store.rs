@@ -214,8 +214,14 @@ impl AuditStore {
         .await
     }
     async fn flush(&self, tx: &mut SourceTransaction<'_, '_>) -> Result<(), Error> {
-        for appended in
-            rss_audit_postgres::append_batch_in(tx.inner, &self.integrity, &tx.facts).await?
+        for appended in self
+            .write_budget
+            .append_batch_in(
+                tx.inner,
+                &self.integrity,
+                self.write_budget.try_admit(&tx.facts)?,
+            )
+            .await?
         {
             require_new_business_fact(&appended)?;
         }
@@ -266,7 +272,11 @@ impl AuditStore {
                     .map_err(rss_audit_postgres::Error::from)?)
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        for appended in rss_audit_postgres::append_batch_in(tx, &self.integrity, &prepared).await? {
+        for appended in self
+            .write_budget
+            .append_batch_in(tx, &self.integrity, self.write_budget.try_admit(&prepared)?)
+            .await?
+        {
             require_new_business_fact(&appended)?;
         }
         Ok(())

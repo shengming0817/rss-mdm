@@ -442,11 +442,15 @@ async fn authenticate_inner(
     }
     let activity =
         if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
-            rss_identity_http_axum::SessionActivity::Passive
+            rss_identity_web_credentials::SessionActivity::Passive
         } else {
-            rss_identity_http_axum::SessionActivity::Active
+            rss_identity_web_credentials::SessionActivity::Active
         };
-    let Some(clock) = parts.extensions.get::<Arc<dyn rss_observation::Clock>>() else {
+    if parts
+        .extensions
+        .get::<Arc<dyn rss_observation::Clock>>()
+        .is_none()
+    {
         return Error::Unavailable(Failure::Runtime).into_response();
     };
     match app
@@ -458,15 +462,10 @@ async fn authenticate_inner(
             &app.access,
             parts
                 .extensions
-                .get::<rss_identity_http_axum::ClientAddress>()
+                .get::<rss_mdm_identity_http::ClientAddress>()
                 .map(|address| address.0),
             programmatic_allowed(&path, authorization, management),
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                control
-                    .deadline()
-                    .instant()
-                    .saturating_duration_since(clock.now()),
-            ),
+            control.deadline(),
         )
         .await
     {

@@ -1,0 +1,18 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "rss_ledger.prepare_append",
+      "search_path": "search_path=pg_catalog, rss_ledger"
+    },
+    {
+      "name": "rss_ledger.insert_entries",
+      "search_path": "search_path=pg_catalog, rss_ledger"
+    }
+  ],
+  "external_relations": [
+    "rss_ledger.heads",
+    "rss_ledger.entries"
+  ],
+  "verified_schemas": []
+}

@@ -103,12 +103,12 @@ async fn step_up(
         .step_up_context(&auth.proof)?;
     let actor = s
         .identity
-        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.cutoff())
         .await?;
     let result = s
         .identity
         .webauthn
-        .begin_authentication(actor, s.identity.rp_generation, context, auth.remaining()?)
+        .begin_authentication(actor, s.identity.rp_generation, context, auth.cutoff())
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::TimedChallenge(result)))
@@ -126,12 +126,12 @@ async fn configuration_step_up(
         .step_up_context(&auth.proof)?;
     let actor = s
         .identity
-        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.cutoff())
         .await?;
     let result = s
         .identity
         .webauthn
-        .begin_authentication(actor, s.identity.rp_generation, context, auth.remaining()?)
+        .begin_authentication(actor, s.identity.rp_generation, context, auth.cutoff())
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::TimedChallenge(result)))

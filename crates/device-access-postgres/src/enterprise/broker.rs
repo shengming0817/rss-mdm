@@ -381,6 +381,7 @@ impl Service {
         attempt: Uuid,
         browser: &Secret,
         actor: &AuthenticatedSession,
+        authority: &rss_identity_postgres::Authority,
         token: ExchangeToken,
         admission: &dyn Admission,
         audit: &RequestAudit,
@@ -393,17 +394,20 @@ impl Service {
         self.write_admitted(
             &self.access_audit,
             audit,
-            (self, id, attempt, browser, actor, token, admission, audit),
+            (
+                self, id, attempt, browser, actor, token, admission, audit, authority,
+            ),
             |ctx, c| {
                 Box::pin(async move {
-                    rss_identity_postgres::recheck_authenticated_session_on(c, ctx.4)
+                    ctx.8
+                        .recheck_authenticated_session_on(c, ctx.4)
                         .await
                         .map_err(|_| Error::Unauthorized)
                 })
             },
             |ctx, c| {
                 Box::pin(async move {
-                    let (service, id, attempt, browser, actor, token, admission, audit) = ctx;
+                    let (service, id, attempt, browser, actor, token, admission, audit, _) = ctx;
                     let (mut value, _) = load(c, tenant(audit.binding()?)?, *id, true).await?;
                     browser_matches(&value, browser)?;
                     let now = rss_mdm_webhook_service::events::now_on(c)
@@ -643,7 +647,7 @@ impl Service {
         continuation: Option<&Secret>,
         platform: serde_json::Value,
         admission: &dyn Admission,
-        deadline: rss_transactional_messaging::policy::OperationDeadline,
+        deadline: rss_request_context::Deadline,
     ) -> Result<(Context, Option<Vec<u8>>), Error> {
         use sqlx::{Arguments, Row};
         let mut arguments = sqlx::postgres::PgArguments::default();
@@ -698,7 +702,7 @@ impl Service {
         continuation: &Secret,
         platform: serde_json::Value,
         admission: &dyn Admission,
-        deadline: rss_transactional_messaging::policy::OperationDeadline,
+        deadline: rss_request_context::Deadline,
     ) -> Result<Consumed, Error> {
         let (context, sealed) = self
             .broker_authorized_snapshot(
@@ -745,7 +749,7 @@ impl Service {
         id: Uuid,
         platform: serde_json::Value,
         admission: &dyn Admission,
-        deadline: rss_transactional_messaging::policy::OperationDeadline,
+        deadline: rss_request_context::Deadline,
     ) -> Result<Uuid, Error> {
         let (context, _) = self
             .broker_authorized_snapshot(

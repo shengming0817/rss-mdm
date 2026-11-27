@@ -1,6 +1,6 @@
 //! Real Identity step-up authorizes the exact DA-to-Agent delivery before consumers use it.
 use super::*;
-use crate::authority_t2_support::{Account, deadline};
+use crate::authority_t2_support::Account;
 use rss_mdm_agent_wire::runtime::Secret;
 use rss_mdm_authorization_service::{
     Permission, context::AuthorizedPrincipal, credential::RequestCredential,
@@ -18,7 +18,11 @@ async fn session(
         anyhow::bail!("cookie session required for delivery authorization")
     };
     Ok(c.authority
-        .inspect_session(c.execution(), secret, deadline())
+        .inspect_session(
+            c.execution(),
+            secret,
+            crate::authority_t2_support::identity_cutoff(),
+        )
         .await?)
 }
 
@@ -41,7 +45,7 @@ async fn proof(
             "DA Agent delivery proof".into(),
             false,
             rss_identity_postgres::RegistrationAuthorization::First,
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
     let response = authenticator.do_registration(origin.clone(), registration.options)?;
@@ -51,7 +55,7 @@ async fn proof(
             rss_identity_postgres::RpGeneration::new(1)?,
             registration.id,
             response,
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
     let challenge = webauthn
@@ -59,7 +63,7 @@ async fn proof(
             session(c, account).await?,
             rss_identity_postgres::RpGeneration::new(1)?,
             context,
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
     let response = authenticator.do_authentication(origin, challenge.options)?;
@@ -69,7 +73,7 @@ async fn proof(
             rss_identity_postgres::RpGeneration::new(1)?,
             challenge.id,
             response,
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
     Ok(Secret::parse(grant.expose())?)
@@ -148,8 +152,8 @@ pub(super) async fn authorize(
                 c.execution(),
                 &authorization_store,
                 account.credential()?,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    std::time::Duration::from_secs(8),
+                rss_request_context::Deadline::at(
+                    std::time::Instant::now() + std::time::Duration::from_secs(8),
                 ),
             )
             .await?;
@@ -271,7 +275,12 @@ async fn manager(c: &Context) -> Result<(Account, AuthorizedPrincipal)> {
     let account = c.account(&[Permission::AccountWrite]).await?;
     let store = c.access().for_product(StorageProfile::Da);
     let actor = rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone())
-        .authenticate(c.execution(), &store, account.credential()?, deadline())
+        .authenticate(
+            c.execution(),
+            &store,
+            account.credential()?,
+            crate::authority_t2_support::identity_cutoff(),
+        )
         .await?;
     Ok((account, actor))
 }

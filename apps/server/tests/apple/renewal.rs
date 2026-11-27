@@ -33,7 +33,7 @@ pub(super) async fn state(
         material_roots: Arc::new(vec![]),
         authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
             authority: c.authority.clone(),
-            http: rss_identity_http_axum::HttpConfig::new(
+            http: rss_identity_web_credentials::HttpConfig::new(
                 "https://localhost",
                 Duration::from_secs(8),
             )?,

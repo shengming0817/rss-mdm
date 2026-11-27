@@ -83,10 +83,7 @@ pub async fn download(
                 proof.binding(),
                 &app.authorization,
                 secret,
-                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                    verified.deadline,
-                    &rss_mdm_audit_integration::budget::RuntimeTimer,
-                ),
+                verified.deadline,
             )
             .await?;
         if fresh.actor() != proof.actor()

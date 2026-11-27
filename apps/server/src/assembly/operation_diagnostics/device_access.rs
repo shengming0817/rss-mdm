@@ -15,11 +15,11 @@ impl Diagnostics {
             .authenticate_request(
                 l.auth.proof.binding(),
                 l.headers,
-                rss_identity_http_axum::SessionActivity::Passive,
+                rss_identity_web_credentials::SessionActivity::Passive,
                 &da.authorization,
                 l.address,
                 true,
-                l.auth.remaining()?,
+                l.auth.cutoff(),
             )
             .await
             .map_err(|r| {

@@ -113,8 +113,8 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
             c.execution(),
             &da_access,
             account.credential()?,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(8),
+            rss_request_context::Deadline::at(
+                std::time::Instant::now() + std::time::Duration::from_secs(8),
             ),
         )
         .await?;

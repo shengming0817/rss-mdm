@@ -7,6 +7,7 @@ use sqlx::{PgConnection, PgPool};
 #[derive(Clone)]
 pub struct AuditReadStore {
     pub(crate) adapter: PgAudit,
+    pub(crate) write_budget: rss_audit_postgres::WriteBudget,
     ledger: bool,
 }
 impl AuditReadStore {
@@ -70,8 +71,16 @@ impl AuditReadStore {
         control: &Control<'_, T>,
     ) -> Result<Self, Error> {
         let ledger = matches!(integrity, Integrity::Ledger(_));
+        // Source transactions can stage device and inventory facts together. Share the
+        // admission across all writers borrowing this store and its producer runtimes.
+        let batch_bytes: u32 = 8 * 1024 * 1024;
+        let total = batch_bytes
+            .checked_mul(pool.options().get_max_connections())
+            .ok_or(rss_audit_postgres::Error::WriteLimit)?;
+        let write_budget = rss_audit_postgres::WriteBudget::new(4096, batch_bytes, total)?;
         Ok(Self {
-            adapter: PgAudit::new(pool, integrity, control).await?,
+            adapter: PgAudit::new(pool, integrity, write_budget.clone(), control).await?,
+            write_budget,
             ledger,
         })
     }

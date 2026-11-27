@@ -173,7 +173,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_recovery_credentials::ACCESS_CONTRACT,
     ];
     if matches!(audit, crate::config::AuditConfig::Ledger { .. }) {
-        contracts.push(r#"{"tables":[],"functions":[{"name":"rss_ledger.prepare_append","search_path":"search_path=pg_catalog, rss_ledger"},{"name":"rss_ledger.insert_entry","search_path":"search_path=pg_catalog, rss_ledger"}],"external_relations":["rss_ledger.heads","rss_ledger.entries"],"verified_schemas":[]}"#);
+        contracts.push(rss_mdm_audit_integration::LEDGER_ACCESS_CONTRACT);
     }
     contracts
 }

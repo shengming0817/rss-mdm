@@ -140,9 +140,7 @@ async fn administrator_for(
         LoginKey::parse(&format!("da-{principal}"))?,
         Password::new("foundation-only-valid-password".into())?,
         rss_identity_postgres::AttemptSource::parse("da-foundation")?,
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            Duration::from_secs(10),
-        ),
+        rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10)),
     ))
     .await?;
     Ok(issued.secret().expose().into())
@@ -163,7 +161,7 @@ pub(super) async fn seed_administrator(
     let hash = kdf.hash(Password::new(password.into())?).await?;
     let mut tx = c.seed().await?;
     sqlx::query(
-        "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
+        "INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
     )
     .bind(c.tenant.to_string())
     .execute(&mut *tx)

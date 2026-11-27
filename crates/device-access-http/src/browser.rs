@@ -79,6 +79,17 @@ pub fn router(state: Option<&Arc<Services>>) -> Router<(), impl Declaration + us
     }
     .assemble()
 }
+pub fn with_identity<M: rss_mdm_http_contract::module::Declaration>(
+    state: Option<&Arc<Services>>,
+    identity: Router<(), M>,
+) -> Router<(), impl Declaration + use<M>> {
+    rss_mdm_http_contract::route_module! {struct DaBrowser for [Browser]{product,identity}}
+    DaBrowser {
+        product: router(state),
+        identity,
+    }
+    .assemble()
+}
 fn bearer_allowed(path: &str) -> bool {
     path.starts_with("/api/v1/tenants/{tenant}/da/")
         || path.ends_with("/apple/platform-sso/status")
@@ -118,9 +129,9 @@ async fn authenticate(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD
     ) {
-        rss_identity_http_axum::SessionActivity::Passive
+        rss_identity_web_credentials::SessionActivity::Passive
     } else {
-        rss_identity_http_axum::SessionActivity::Active
+        rss_identity_web_credentials::SessionActivity::Active
     };
     let Some(binding) = request
         .extensions()
@@ -129,10 +140,7 @@ async fn authenticate(
     else {
         return Error::Malformed.into_response();
     };
-    let deadline = rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-        control.deadline(),
-        &rss_mdm_audit_integration::budget::RuntimeTimer,
-    );
+    let deadline = control.deadline();
     let headers = request.headers();
     if headers.contains_key("x-api-key") {
         return Error::Forbidden.into_response();
@@ -148,14 +156,14 @@ async fn authenticate(
         }
         let Some(address) = request
             .extensions()
-            .get::<rss_identity_http_axum::ClientAddress>()
+            .get::<rss_mdm_identity_http::ClientAddress>()
         else {
             return Error::Forbidden.into_response();
         };
         if let Err(e) = s.authorization.require_api_source(address.0).await {
             return Error::from(e).into_response();
         }
-        rss_identity_http_axum::authenticate_bearer_request(
+        rss_identity_web_credentials::authenticate_bearer_request(
             &s.identity.authority,
             &s.identity.http,
             binding,
@@ -165,7 +173,7 @@ async fn authenticate(
         .await
         .map(|(session, _)| session)
     } else {
-        rss_identity_http_axum::authenticate_request(
+        rss_identity_web_credentials::authenticate_request(
             &s.identity.authority,
             &s.identity.http,
             binding,
@@ -178,12 +186,12 @@ async fn authenticate(
     };
     let session = match authenticated {
         Ok(s) => s,
-        Err(response) => return response,
+        Err(error) => return rss_mdm_identity_http::HttpError::from(error).into_response(),
     };
     let audit = request.extensions().get::<RequestAudit>().cloned();
     let deadline = control.deadline().instant();
     let result = tokio::time::timeout_at(deadline.into(), async {
-        let principal = Principal::new(session, binding)?;
+        let principal = Principal::new(&s.identity.authority, session, binding)?;
         let proof = AuthorizedPrincipal::from_identity(&s.authorization, principal)?;
         let audit = audit
             .as_ref()

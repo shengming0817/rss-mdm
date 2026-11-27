@@ -9,6 +9,8 @@ pub mod maintenance;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error("DA HTTP contract: {0:?}")]
+    Contract(Vec<String>),
     #[error("DA configuration rejected")]
     Configuration,
     #[error("DA storage or installation unavailable")]
@@ -29,7 +31,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub mod backup;
 
 pub fn http_contract() -> Result<serde_json::Value> {
-    let mut document = rss_mdm_device_access_http::contract().map_err(|_| Error::Configuration)?;
-    document["externalOwners"] = serde_json::json!([{"owner":"rss-identity-http-axum","entry":"host::assemble","scope":"Identity SDK routers; DA adapters are included in endpoints"}]);
-    Ok(document)
+    rss_mdm_device_access_http::contract().map_err(Error::Contract)
 }

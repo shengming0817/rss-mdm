@@ -31,6 +31,8 @@ pub mod budget;
 pub mod completion;
 
 /// This capability's closed privileges in the shared access connection.
+pub const LEDGER_ACCESS_CONTRACT: &str = include_str!("ledger-access-contract.json");
+
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 #[cfg(unix)]

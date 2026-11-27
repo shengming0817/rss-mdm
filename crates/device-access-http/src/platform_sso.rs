@@ -365,14 +365,6 @@ fn origin(app: &HttpState, h: &HeaderMap) -> Result<(), Error> {
     }
     Ok(())
 }
-fn deadline(
-    control: &rss_axum::RequestControl,
-) -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-        control.deadline(),
-        &rss_mdm_audit_integration::budget::RuntimeTimer,
-    )
-}
 fn identity_error(e: rss_identity_postgres::AuthorityError) -> Error {
     match e {
         rss_identity_postgres::AuthorityError::CommitUnknown(_) => Error::CommitUnknown,
@@ -401,7 +393,7 @@ async fn begin(
             browser.clone(),
             rss_identity_postgres::AttemptSource::parse("mdm-platform-sso")
                 .map_err(|_| Error::Malformed)?,
-            deadline(&control),
+            control.deadline(),
         )
         .await
         .map_err(identity_error)?;
@@ -454,14 +446,17 @@ async fn complete(
             input.nonce,
             secret.into(),
             input.proof.into_bytes(),
-            deadline(&control),
+            control.deadline(),
         )
         .await
         .map_err(identity_error)?;
     if session.assertion.is_some() {
         return Err(Error::Unauthorized);
     }
-    let mut response = rss_identity_http_axum::issued_session_response(session.session);
+    let (body, cookie) = rss_mdm_identity_http::issued_session_parts(&session.session)
+        .map_err(|_| Error::Unavailable)?;
+    let mut response = Json(body).into_response();
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_static(
@@ -683,54 +678,9 @@ impl IntoResponse for IdentityCompletion {
     }
 }
 
-// External owner: rss-identity-http-axum@ee8e578f9ff36750ff88f36f336400110770dcaa.
-// lib.rs::issued_session_response -> handlers.rs::issued/project_session and dto.rs::Issued.
-// The foreign serializer still sends the response; this narrow adapter is drift-checked,
-// not a claim that Identity's private DTOs are proven by this crate's type system.
 impl rss_mdm_http_contract::signature::Output for IdentityCompletion {
     fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
-        use rss_mdm_http_contract::signature::{Direction, Representation, Response, Schema};
-        let mut success = Response::empty(200);
-        success.body = Some(Representation::json(Schema {
-            direction: Direction::Response,
-            value: json!({
-                "type":"object", "required":["identity","session","csrfToken"],
-                "properties":{
-                    "identity":{"type":"object","required":["principalId","hasLocalPassword"],"properties":{
-                        "principalId":{"type":"string"},"hasLocalPassword":{"type":"boolean"}
-                    }},
-                    "session":{"type":"object","required":["id","issuedAt","idleExpiresAt","absoluteExpiresAt"],"properties":{
-                        "id":{"type":"string"},"issuedAt":{"type":"integer","format":"int64"},
-                        "idleExpiresAt":{"type":"integer","format":"int64"},"absoluteExpiresAt":{"type":"integer","format":"int64"}
-                    }},
-                    "csrfToken":{"type":"string"}
-                },
-                "x-rss-owner":"rss-identity-http-axum::issued_session_response"
-            }),
-        }));
-        // The foreign renderer can reject a zero-age or non-cookie issued session.
-        let mut failure = Response::empty(503);
-        failure.body = Some(Representation::json(Schema {
-            direction: Direction::Response,
-            value: json!({
-                "type":"object","required":["code"],"properties":{"code":{"type":"string","const":"identity_unavailable"}},
-                "x-rss-owner":"rss-identity-http-axum::issued_session_response"
-            }),
-        }));
-        for response in [&mut success, &mut failure] {
-            response
-                .headers
-                .insert("set-cookie".into(), Schema::response::<String>());
-            for (name, value) in [
-                ("cache-control", "no-store"),
-                ("referrer-policy", "no-referrer"),
-            ] {
-                let mut schema = Schema::response::<String>();
-                schema.value["const"] = value.into();
-                response.headers.insert(name.into(), schema);
-            }
-        }
-        vec![success, failure]
+        rss_mdm_identity_http::CookieJson::<rss_mdm_identity_http::SessionBody>::responses()
     }
 }
 

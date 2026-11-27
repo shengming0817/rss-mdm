@@ -166,3 +166,14 @@ impl rss_request_context::CancellationObserver for AuditBudget {
         Box::pin(self.cancel.cancelled())
     }
 }
+
+/// Identity emits up to eight full records in one mutation.
+pub fn identity_write_budget(
+    connections: u32,
+) -> Result<rss_audit_postgres::WriteBudget, rss_audit_postgres::Error> {
+    let batch = 8 * rss_audit_core::MAX_RECORD_BYTES as u32;
+    let capacity = batch
+        .checked_mul(connections)
+        .ok_or(rss_audit_postgres::Error::WriteLimit)?;
+    rss_audit_postgres::WriteBudget::new(8, batch, capacity)
+}

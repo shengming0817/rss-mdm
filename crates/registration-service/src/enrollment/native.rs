@@ -301,7 +301,7 @@ pub async fn account(
     id: Uuid,
     authority: Arc<dyn AccountAuthority>,
     challenge: Option<&str>,
-    deadline: rss_transactional_messaging::policy::OperationDeadline,
+    deadline: rss_request_context::Deadline,
 ) -> Result<Admission, Error> {
     let tenant = execution.tenant().to_string();
     let mut tx = store.begin(&tenant).await?;
@@ -709,7 +709,7 @@ impl Admission {
     pub async fn recheck_entra(
         self,
         authority: &rss_mdm_authorization_service::entra::EntraAuthority,
-        deadline: rss_transactional_messaging::policy::OperationDeadline,
+        deadline: rss_request_context::Deadline,
     ) -> Result<Self, Error> {
         let Self { data, basis } = self;
         match basis {

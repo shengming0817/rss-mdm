@@ -311,6 +311,7 @@ impl Config {
             | Storage::TimescaleDedicated { prepare, .. } => {
                 let (max_prepare_batches, max_prepare_bytes) = prepare.limits()?;
                 let limits = rss_timeseries_postgres::Limits {
+                    max_prepare_waiters: max_prepare_batches.get(),
                     max_prepare_batches,
                     max_prepare_bytes,
                     max_points: limits.max_points,

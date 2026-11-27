@@ -16,6 +16,10 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
 
+pub fn identity_cutoff() -> rss_request_context::Deadline {
+    rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10))
+}
+
 pub fn deadline() -> OperationDeadline {
     OperationDeadline::from_remaining(Duration::from_secs(10))
 }
@@ -148,7 +152,7 @@ impl Context {
             InstanceId::parse(&inputs.installation.instance_id)?,
         )
         .await?;
-        sqlx::query("INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
             .bind(tenant.to_string()).execute(&operator).await?;
         Self::connect(
             profile,
@@ -204,7 +208,7 @@ impl Context {
                 rss_mdm_install_support::StorageProfile::Mdm,
                 &inputs.installation.instance_id,
             )?),
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
         Ok(Self {
@@ -248,7 +252,7 @@ impl Context {
                 rss_mdm_install_support::StorageProfile::Mdm,
                 &self.inputs.installation.instance_id,
             )?),
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?)
     }
@@ -275,7 +279,7 @@ impl Context {
                 Password::new(password.into())?,
                 AttemptSource::parse("foundation-t2")?,
                 None,
-                deadline(),
+                crate::authority_t2_support::identity_cutoff(),
             )
             .await?;
         Ok(Account {
@@ -294,7 +298,7 @@ impl Context {
                     self.execution(),
                     &self.access(),
                     account.credential()?,
-                    deadline(),
+                    crate::authority_t2_support::identity_cutoff(),
                 )
                 .await?,
         )
@@ -419,7 +423,7 @@ pub async fn seed_tenant(pool: &PgPool, tenant: TenantId) -> Result<()> {
     .bind(tenant.to_string())
     .execute(&mut *tx)
     .await?;
-    sqlx::query("INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid)")
+    sqlx::query("INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid)")
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
@@ -436,7 +440,7 @@ pub async fn seed_account(
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
+        "INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
     )
     .bind(tenant.to_string())
     .execute(&mut *tx)

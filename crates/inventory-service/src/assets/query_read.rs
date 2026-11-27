@@ -201,7 +201,13 @@ impl AssetService {
             if !devices.is_empty() {
                 let users = self
                     .users
-                    .read(binding, &devices, crate::transaction::deadline())
+                    .read(
+                        binding,
+                        &devices,
+                        rss_request_context::Deadline::at(
+                            std::time::Instant::now() + tx.deadline().timeout(),
+                        ),
+                    )
                     .await?;
                 for u in users {
                     let device = crate::database::device_id(u.device)?;

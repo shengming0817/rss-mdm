@@ -32,6 +32,13 @@ fn binding(
     (method, resource, operations, contract, handler)
 }
 impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
+    /// Override Axum's implicit HEAD for a GET that consumes a one-use callback.
+    pub fn reject_head(mut self) -> Self {
+        self.inner = self
+            .inner
+            .head(|| async { axum::http::StatusCode::METHOD_NOT_ALLOWED });
+        self
+    }
     pub fn with_state<S2>(self, state: S) -> MethodRouter<S2> {
         MethodRouter {
             inner: self.inner.with_state(state),

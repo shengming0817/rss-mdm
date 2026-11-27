@@ -268,7 +268,7 @@ pub mod identity;
 pub mod platform_sso;
 
 pub mod administration;
-mod identity_contract;
+use rss_mdm_identity_http::challenge as identity_contract;
 pub struct Business {
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     pub evidence: Arc<rss_mdm_device_access_postgres::evidence::Authorities>,
@@ -281,23 +281,19 @@ pub mod exports;
 pub mod pki;
 
 /// Offline projection from the exact DA production declarations.
-pub fn contract() -> Result<serde_json::Value, Error> {
+pub fn contract() -> Result<serde_json::Value, Vec<String>> {
+    use rss_mdm_http_contract::module::Listener;
     let routes = router(None);
-    let browser = browser::router(None);
-    if !routes
-        .validate(rss_mdm_http_contract::module::Listener::Da)
-        .is_empty()
-        || !browser
-            .validate(rss_mdm_http_contract::module::Listener::Browser)
-            .is_empty()
-    {
-        return Err(Error::Unavailable);
+    let browser = browser::with_identity(None, identity::routes(None, true));
+    let mut errors = routes.validate(Listener::Da);
+    errors.extend(browser.validate(Listener::Browser));
+    if !errors.is_empty() {
+        return Err(errors);
     }
     rss_mdm_http_contract::artifact::document([
         ("da", routes.into_endpoints()),
         ("browser", browser.into_endpoints()),
     ])
-    .map_err(|_| Error::Unavailable)
 }
 
 mod vault;

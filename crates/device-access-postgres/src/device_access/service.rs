@@ -429,7 +429,7 @@ impl Service {
             (actor, device, id, input, admission, audit, proof, &context, idp_fingerprints, expected_epoch, &hash),
             |ctx, c| Box::pin(async move {
                 let proof = ctx.6.ok_or(Error::Unauthorized)?;
-                rss_identity_postgres::consume_step_up_on(c, ctx.0.session()?, ctx.7, proof.expose())
+                ctx.0.session_authority()?.consume_step_up_on(c, ctx.0.session()?, ctx.7, proof.expose())
                     .await.map_err(|error| match error.kind() {
                         rss_transactional_messaging::error::MessagingErrorKind::Conflict => Error::Unauthorized,
                         rss_transactional_messaging::error::MessagingErrorKind::DeadlineElapsed => Error::Deadline,
@@ -706,7 +706,9 @@ pub(crate) async fn admit_session(
     c: &mut PgConnection,
     actor: &AuthorizedPrincipal,
 ) -> Result<(), Error> {
-    rss_identity_postgres::recheck_authenticated_session_on(c, actor.session()?)
+    actor
+        .session_authority()?
+        .recheck_authenticated_session_on(c, actor.session()?)
         .await
         .map_err(|error| match error.kind() {
             rss_transactional_messaging::error::MessagingErrorKind::Conflict => Error::Unauthorized,

@@ -16,8 +16,8 @@ use rss_mdm_device_access_postgres::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(10))
+pub fn deadline() -> rss_request_context::Deadline {
+    rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10))
 }
 struct Key {
     private: PKey<Private>,

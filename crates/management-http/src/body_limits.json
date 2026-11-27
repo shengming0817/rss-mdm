@@ -16,7 +16,7 @@
     {"method": "PUT", "path": "/api/v1/tenants/{tenant}/asset-fields/{field}", "bytes": 8388608, "mode": "buffered"},
     {"method": "POST", "path": "/api/v1/tenants/{tenant}/telemetry/aggregate", "bytes": 262144, "mode": "buffered"},
     {"method": "POST", "path": "/api/v1/tenants/{tenant}/telemetry/maintenance", "bytes": 4194304, "mode": "buffered"},
-    {"method": "PUT", "path": "/api/v1/identity/tenants/{tenant}/accounts/{principal}/profile", "bytes": 98304, "mode": "sdk"},
+    {"method": "PUT", "path": "/api/v1/identity/tenants/{tenant}/accounts/{principal}/profile", "bytes": 98304, "mode": "handler"},
     {"method": "POST", "path": "/api/v1/tenants/{tenant}/devices/{device}/operations", "bytes": 16777216, "mode": "buffered"},
     {"method": "POST", "path": "/api/v1/tenants/{tenant}/pki/signing/recover", "bytes": 262144, "mode": "buffered"},
     {"method": "POST", "path": "/api/v1/tenants/{tenant}/agent-issuances/{id}/recover", "bytes": 262144, "mode": "buffered"},

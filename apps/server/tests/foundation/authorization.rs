@@ -59,8 +59,8 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
                     context.inputs.installation.execution(other, 1)?,
                     &context.access(),
                     reader.credential()?,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        std::time::Duration::from_secs(8)
+                    rss_request_context::Deadline::at(
+                        std::time::Instant::now() + std::time::Duration::from_secs(8)
                     )
                 )
                 .await,
@@ -195,13 +195,15 @@ async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -
             .inspect_session(
                 c.execution(),
                 secret,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    std::time::Duration::from_secs(3),
+                rss_request_context::Deadline::at(
+                    std::time::Instant::now() + std::time::Duration::from_secs(3),
                 ),
             )
             .await?;
-        let bound =
-            AuthorizedPrincipal::from_identity(&da, Principal::new(authenticated, c.execution())?)?;
+        let bound = AuthorizedPrincipal::from_identity(
+            &da,
+            Principal::new(&c.authority, authenticated, c.execution())?,
+        )?;
         assert_eq!(bound.profile(), StorageProfile::Da);
         assert_eq!(bound.authority_profile(), StorageProfile::Mdm);
         da.require_tenant_purpose(&bound, false).await?;
@@ -223,13 +225,13 @@ async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -
         };
         let revoked = c
             .authority
-            .inspect_session(c.execution(), secret, request.remaining()?)
+            .inspect_session(c.execution(), secret, request.cutoff())
             .await?;
         c.authority
             .revoke_current_session(
                 revoked,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    std::time::Duration::from_secs(3),
+                rss_request_context::Deadline::at(
+                    std::time::Instant::now() + std::time::Duration::from_secs(3),
                 ),
             )
             .await?;
@@ -268,7 +270,10 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
                 rp_generation: rss_identity_postgres::RpGeneration::new(1)?,
                 authority: c.authority.clone(),
                 webauthn,
-                http: rss_identity_http_axum::HttpConfig::new(origin, Duration::from_secs(8))?,
+                http: rss_identity_web_credentials::HttpConfig::new(
+                    origin,
+                    Duration::from_secs(8),
+                )?,
             }),
             access: Arc::new(c.access().for_product(StorageProfile::Da)),
         });
@@ -403,7 +408,11 @@ async fn session_authentication_uses_the_current_execution_binding() -> anyhow::
     let stale = ExecutionBinding::new(binding.storage(), c.tenant, Epoch::new(2)?);
     assert!(
         c.authority
-            .inspect_session(stale, credential(), crate::authority_t2_support::deadline())
+            .inspect_session(
+                stale,
+                credential(),
+                crate::authority_t2_support::identity_cutoff()
+            )
             .await
             .is_err()
     );
@@ -417,7 +426,7 @@ async fn session_authentication_uses_the_current_execution_binding() -> anyhow::
             .inspect_session(
                 foreign,
                 credential(),
-                crate::authority_t2_support::deadline()
+                crate::authority_t2_support::identity_cutoff()
             )
             .await
             .is_err()
@@ -427,7 +436,7 @@ async fn session_authentication_uses_the_current_execution_binding() -> anyhow::
         .inspect_session(
             binding,
             credential(),
-            crate::authority_t2_support::deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
     assert_eq!(live.account().tenant, c.tenant);

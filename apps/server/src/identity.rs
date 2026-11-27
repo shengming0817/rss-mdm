@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{
     Router,
-    extract::{MatchedPath, Request, State},
+    extract::{Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -24,24 +24,6 @@ use rss_transactional_messaging::{
 use rss_transactional_messaging_postgres::{PgConfig, PgError, PgPassword, PgPrivateCa, PgRuntime};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
-// MDM owns attribute visibility. The component's raw observation endpoint must
-// not bypass that projection; account-local authority management remains available.
-async fn product_profile_boundary(request: Request, next: Next) -> Response {
-    if request
-        .extensions()
-        .get::<MatchedPath>()
-        .is_some_and(|path| path.as_str() == "/api/v1/identity/tenants/{tenant}/profile")
-    {
-        return (
-            StatusCode::NOT_FOUND,
-            [("cache-control", "no-store")],
-            axum::Json(serde_json::json!({"code":"not_found"})),
-        )
-            .into_response();
-    }
-    next.run(request).await
-}
-
 pub(crate) fn deadline() -> OperationDeadline {
     OperationDeadline::from_remaining(Duration::from_secs(10))
 }
@@ -56,14 +38,6 @@ pub(crate) fn failure(error: AuthorityError) -> Error {
         _ => Error::Unavailable(Failure::IdentityStorage),
     }
 }
-/// Only this owner can introduce Identity's external SDK surface into the browser host.
-pub(crate) struct IdentityRoutes(Router);
-impl IdentityRoutes {
-    pub(crate) fn merge(self, product: Router) -> Router {
-        product.merge(self.0)
-    }
-}
-
 #[derive(Clone)]
 struct HttpExecution {
     storage: crate::owner_storage::StorageBinding,
@@ -119,7 +93,7 @@ impl ScopeFailure {
         if matches!(self, Self::Deadline) && self.identity(path) {
             response
                 .extensions_mut()
-                .insert(rss_identity_http_axum::HttpFailure::RequestTimeout);
+                .insert(rss_mdm_identity_http::HttpFailure::RequestTimeout);
         }
         let request_id = uuid::Uuid::new_v4();
         let failure = match self {
@@ -145,6 +119,9 @@ pub(crate) fn scope_rejections(
     _: &str,
     path: &str,
 ) -> Vec<rss_mdm_http_contract::signature::Response> {
+    if path == "/api/v1/identity/oidc/callback" {
+        return Vec::new();
+    }
     let mut responses = vec![
         ScopeFailure::Unavailable.contract(path),
         ScopeFailure::Deadline.contract(path),
@@ -161,7 +138,7 @@ pub(crate) fn scope_rejections(
     }
     responses
 }
-// Product-installed coordinates select the SDK scope. The route only identifies which
+// Product-installed coordinates select the Identity execution scope. The route only identifies which
 // installed product context is requested; it cannot author storage, lineage or epoch.
 async fn execution_scope(
     State(scope): State<HttpExecution>,
@@ -236,16 +213,13 @@ async fn execution_scope(
                 || path.ends_with("/session/security"))
             && let Some(federation) = &scope.federation
             && let Err(error) = federation
-                .reconcile_assurance_profiles(
-                    binding,
-                    OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer),
-                )
+                .reconcile_assurance_profiles(binding, cutoff)
                 .await
         {
             let mut response = ScopeFailure::Unavailable.response(path);
             response
                 .extensions_mut()
-                .insert(rss_identity_http_axum::HttpFailure::Authority(error));
+                .insert(rss_mdm_identity_http::HttpFailure::Authority(error));
             return response;
         }
     }
@@ -274,9 +248,7 @@ pub(crate) struct Identity {
     pub(crate) management_tenant: TenantId,
     pub(crate) tenant_administration: Option<Arc<crate::administration::tenants::service::Service>>,
     pub(crate) federation: Option<rss_identity_postgres::Federation>,
-    routes: Router,
-    bearer_routes: Router,
-    http: rss_identity_http_axum::HttpConfig,
+    http: rss_identity_web_credentials::HttpConfig,
     request_timeout: Duration,
     pub(crate) request_budget: rss_axum::RequestBudget,
     pub(crate) profile_source_page_size: u16,
@@ -284,7 +256,8 @@ pub(crate) struct Identity {
 impl Identity {
     pub(crate) fn da_browser(&self) -> Arc<rss_mdm_device_access_http::identity::Identity> {
         Arc::new(rss_mdm_device_access_http::identity::Identity {
-            federated_routes: self.federation.as_ref().map(|_| self.routes.clone()),
+            federation: self.federation.clone(),
+            excluded_federation_tenant: Some(self.management_tenant),
             enterprise_clients: self.enterprise_clients.clone(),
             enterprise_administrators: self.enterprise_administrators.clone(),
             authority: self.authority.clone(),
@@ -348,6 +321,9 @@ impl Identity {
             timeout: compiled.drain,
         }));
         let mut options = compiled.authority.clone();
+        if let Some(c) = &config.identity.oidc {
+            options = options.with_oidc(Arc::new(c.transport(compiled.transport)?));
+        }
         let mut enterprise_clients: BTreeMap<
             String,
             Arc<dyn rss_mdm_device_access_postgres::enterprise::broker::Client>,
@@ -363,7 +339,8 @@ impl Identity {
             }
             let transport = compiled.transport;
             for input in &deployment.clients {
-                let client = enterprise::Backend::load(input, transport).map_err(|_| invalid())?;
+                let client =
+                    enterprise::Backend::load(input, instance, transport).map_err(|_| invalid())?;
                 if enterprise_clients
                     .insert(input.target.id.clone(), Arc::new(client))
                     .is_some()
@@ -457,7 +434,7 @@ impl Identity {
             options,
             binding,
             policy.clone(),
-            OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer),
+            cutoff,
         )
         .await
         .map_err(failure)?;
@@ -476,39 +453,18 @@ impl Identity {
             ));
         }
         let http =
-            rss_identity_http_axum::HttpConfig::new(&config.product_origin, compiled.request)
+            rss_identity_web_credentials::HttpConfig::new(&config.product_origin, compiled.request)
                 .map_err(|_| invalid())?;
         let origin = url::Url::parse(&config.product_origin).map_err(|_| invalid())?;
         let rp = origin.host_str().ok_or_else(invalid)?.to_owned();
         let webauthn = rss_identity_postgres::WebauthnAuthority::new(authority.clone(), rp, origin)
             .map_err(failure)?;
-        let mut routes = rss_identity_http_axum::router(authority.clone(), http.clone())
-            .map_err(failure)?
-            .merge(
-                rss_identity_http_axum::webauthn_router(webauthn.clone(), http.clone())
-                    .map_err(failure)?,
-            )
-            .route_layer(axum::middleware::from_fn(product_profile_boundary));
-        let bearer_routes = rss_identity_http_axum::bearer_router(authority.clone(), http.clone())
-            .map_err(failure)?;
-        let mut configured_federation = None;
-        if let Some(oidc) = &config.identity.oidc {
-            let federation = oidc.federation(
-                authority.clone(),
-                &config.product_origin,
-                instance,
-                compiled.transport,
-            )?;
-            configured_federation = Some(federation.clone());
-            routes = routes.merge(
-                rss_identity_http_axum::federated_router(federation, http.clone())
-                    .map_err(failure)?
-                    .route_layer(axum::middleware::from_fn_with_state(
-                        management_tenant.to_string(),
-                        business_federation,
-                    )),
-            );
-        }
+        let configured_federation = config
+            .identity
+            .oidc
+            .as_ref()
+            .map(|oidc| oidc.federation(authority.clone(), &config.product_origin, instance))
+            .transpose()?;
         Ok(Self {
             profile_source_page_size: config.identity.runtime.profile.source_page_size,
             enterprise_platform,
@@ -526,8 +482,6 @@ impl Identity {
             rp_generation,
             tenant_administration,
             federation: configured_federation,
-            routes,
-            bearer_routes,
             http,
             request_timeout: compiled.request,
             request_budget: rss_axum::RequestBudget::new(compiled.request)
@@ -539,19 +493,19 @@ impl Identity {
         &self,
         admission: Arc<rss_mdm_management_http::api_access::BearerAdmission>,
         mut envelope: rss_mdm_management_http::boundary::Envelope,
-    ) -> IdentityRoutes {
+    ) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>>
+    {
         envelope.request_timeout = self.request_timeout;
-        let bearer = self
-            .bearer_routes
-            .clone()
-            .route_layer(axum::middleware::from_fn_with_state(
+        rss_mdm_management_http::identity::routes(
+            Some(rss_mdm_management_http::identity::Mount {
+                identity: &self.browser(),
+                federation: self.federation.as_ref(),
+                management_tenant: self.management_tenant,
                 admission,
-                rss_mdm_management_http::api_access::admit_bearer,
-            ));
-        IdentityRoutes(rss_mdm_management_http::authentication_routes(
-            self.routes.clone().merge(bearer),
-            envelope,
-        ))
+                envelope,
+            }),
+            self.federation.is_some(),
+        )
     }
     pub(crate) fn scope_browser(&self, router: Router, management_timeout: Duration) -> Router {
         router.layer(axum::middleware::from_fn_with_state(
@@ -719,23 +673,11 @@ impl OidcConfig {
         authority: Authority,
         origin: &str,
         instance: InstanceId,
-        policy: rss_identity_oidc::TransportPolicy,
-    ) -> Result<rss_identity_postgres::Federation, Error> {
-        let oidc = self.transport(policy)?;
-        self.federation_using(authority, origin, instance, Arc::new(oidc))
-    }
-    fn federation_using(
-        &self,
-        authority: Authority,
-        origin: &str,
-        instance: InstanceId,
-        oidc: Arc<dyn rss_identity_core::federation::UpstreamOidc>,
     ) -> Result<rss_identity_postgres::Federation, Error> {
         rss_identity_postgres::Federation::new(
             rss_identity_core::groups::GroupFactsMaxAge::new(self.group_facts_max_age_seconds)
                 .map_err(|_| invalid())?,
             authority,
-            oidc,
             rss_identity_postgres::StateSigner::new(
                 *key(&self.state_key_file)?,
                 &instance.to_string(),
@@ -760,21 +702,6 @@ impl OidcConfig {
         )
         .map_err(failure)
     }
-}
-async fn business_federation(
-    State(tenant): State<String>,
-    request: Request,
-    next: Next,
-) -> Response {
-    if let Some(path) = request
-        .uri()
-        .path()
-        .strip_prefix("/api/v1/identity/tenants/")
-        && path.split('/').next() == Some(tenant.as_str())
-    {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    next.run(request).await
 }
 pub(crate) fn key(path: &std::path::Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     let text = config::secret(path)?;

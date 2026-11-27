@@ -243,6 +243,7 @@ impl Context {
                 rss_identity_core::InstanceId::parse(&inputs.installation.instance_id)?,
                 rss_identity_core::session::SessionPolicy::new(900, 14400)?,
                 rss_audit_postgres::Integrity::Plain,
+                rss_mdm_audit_integration::budget::identity_write_budget(4)?,
             )?
             .with_platform(platform.clone()),
             binding,
@@ -252,9 +253,7 @@ impl Context {
                     &inputs.installation.instance_id,
                 )?,
             ),
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                Duration::from_secs(10),
-            ),
+            rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10)),
         )
         .await?;
         let sessions = Arc::new(

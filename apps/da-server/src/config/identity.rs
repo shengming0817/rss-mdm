@@ -116,6 +116,8 @@ impl IdentityPolicy {
             rss_identity_core::session::SessionPolicy::new(900, 14400)
                 .map_err(|_| Error::Configuration)?,
             integrity,
+            rss_mdm_audit_integration::budget::identity_write_budget(4)
+                .map_err(|_| Error::Configuration)?,
         )
         .map_err(bad)?
         .with_authentication_policy(authentication)

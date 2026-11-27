@@ -41,14 +41,6 @@ pub use router::{
 
 pub mod boundary;
 
-/// Apply the browser request boundary to the closed Identity SDK router.
-pub fn authentication_routes(router: axum::Router, envelope: boundary::Envelope) -> axum::Router {
-    router.layer(axum::middleware::from_fn_with_state(
-        envelope,
-        boundary::authentication,
-    ))
-}
-
 pub mod certificate_archive;
 pub mod device_views;
 pub mod timeline;

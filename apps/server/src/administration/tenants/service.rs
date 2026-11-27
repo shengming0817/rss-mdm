@@ -113,7 +113,7 @@ impl Service {
             let provisioning_audit = audit.on_runtime(provisioning_runtime.clone(), probe, &budget.control()).await?;
             let provisioner = rss_identity_postgres::AccountProvisioner::connect(
                 provisioning_runtime.clone(), kdf, identity_policy, probe, management, policy,
-                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer),
+                cutoff,
             ).await.map_err(crate::identity::failure)?;
             let this = Self { pool: pool.clone(), source_runtime: source_runtime.clone(), audit,
                 provisioning_runtime: provisioning_runtime.clone(), provisioner, provisioning_audit,

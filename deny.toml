@@ -16,7 +16,7 @@ exceptions = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://dev.azure.com/shengming0923/rss/_git/rss", "https://dev.azure.com/shengming0923/rss/_git/rss-identity", "https://dev.azure.com/shengming0923/rss/_git/rss-audit"]
+allow-git = ["https://dev.azure.com/shengming0923/rss/_git/rss"]
 # Full revisions and exact package sets are enforced in hack/ci.py.
 [advisories]
 # #3196: Windows XSD validation requires xsd-schema, which brings in chrono for unused XSD 1.1 code.

@@ -85,7 +85,7 @@ pub fn browser(
          next: axum::middleware::Next| async move {
             request
                 .extensions_mut()
-                .insert(rss_identity_http_axum::ClientAddress(
+                .insert(rss_mdm_identity_http::ClientAddress(
                     info.socket_peer().ip(),
                 ));
             next.run(request).await

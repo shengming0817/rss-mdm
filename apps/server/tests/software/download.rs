@@ -214,7 +214,7 @@ async fn final_router_serves_only_current_signed_native_content() -> Result<()> 
     store.close().await;
     let management = config.identity.management_tenant;
     sqlx::query(
-        "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
+        "INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
     )
     .bind(management.to_string())
     .execute(&c.operator)

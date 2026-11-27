@@ -281,7 +281,7 @@ impl Service {
         }
         let outcome=self.write_admitted(&self.access_audit,audit,(actor,input,target_fingerprint,proof,&context,&digest,audit),
             |ctx,c|Box::pin(async move {
-                rss_identity_postgres::consume_step_up_on(c,ctx.0.session()?,ctx.4,ctx.3.ok_or(Error::Unauthorized)?.expose()).await
+                ctx.0.session_authority()?.consume_step_up_on(c,ctx.0.session()?,ctx.4,ctx.3.ok_or(Error::Unauthorized)?.expose()).await
                     .map_err(|e|if e.kind()==rss_transactional_messaging::error::MessagingErrorKind::Conflict {Error::Unauthorized}else{Error::Storage})?;Ok(())
             }),|ctx,c|Box::pin(async move {
                 let (actor,input,fingerprint,_,_,digest,audit)=ctx;

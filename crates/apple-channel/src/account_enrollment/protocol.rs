@@ -206,10 +206,7 @@ async fn profile(
         id,
         app.account_authority.clone(),
         None,
-        rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-            cutoff,
-            &rss_mdm_audit_integration::budget::RuntimeTimer,
-        ),
+        cutoff,
     )
     .await?;
     admission.bind_audit(audit)?;

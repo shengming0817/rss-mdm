@@ -192,10 +192,7 @@ async fn initialize_owned(
                 .execution(tenant, config.expected_epoch)
                 .map_err(|_| invalid())?,
             policy,
-            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                cutoff,
-                &crate::lifecycle::RuntimeTimer,
-            ),
+            cutoff,
         )
         .await
         .map_err(identity::failure)?;

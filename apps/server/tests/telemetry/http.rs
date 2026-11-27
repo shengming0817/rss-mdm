@@ -52,7 +52,7 @@ impl Http {
                 "localhost".into(),
                 url::Url::parse(&origin)?,
             )?,
-            http: rss_identity_http_axum::HttpConfig::new(&origin, Duration::from_secs(8))?,
+            http: rss_identity_web_credentials::HttpConfig::new(&origin, Duration::from_secs(8))?,
         };
         rss_mdm_http_contract::route_module! {struct Mounted for [Browser]{telemetry at "/api/v1/tenants/{tenant}"}}
         let mounted = Mounted {

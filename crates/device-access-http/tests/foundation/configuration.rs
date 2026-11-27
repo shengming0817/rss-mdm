@@ -108,8 +108,8 @@ pub async fn reject_account_change(
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(token)?,
             ),
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(10),
+            rss_request_context::Deadline::at(
+                std::time::Instant::now() + std::time::Duration::from_secs(10),
             ),
         )
         .await?;

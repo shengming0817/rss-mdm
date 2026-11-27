@@ -1,5 +1,5 @@
 //! Original owner reads through real HTTP authentication, independently of the audit index.
-use crate::authority_t2_support::{Context, deadline};
+use crate::authority_t2_support::Context;
 use anyhow::Result;
 use rss_mdm_authorization_service::{self as access, Change, Permission, Rule, Scope, Subject};
 use rss_mdm_management_http::operation_diagnostics::Services;
@@ -457,7 +457,7 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
                 rp_generation: rss_identity_postgres::RpGeneration::new(1)?,
                 authority: c.authority.clone(),
                 webauthn,
-                http: rss_identity_http_axum::HttpConfig::new(
+                http: rss_identity_web_credentials::HttpConfig::new(
                     "https://localhost",
                     Duration::from_secs(8),
                 )?,
@@ -583,10 +583,14 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
     };
     let session = c
         .authority
-        .inspect_session(c.execution(), revoke_secret, deadline())
+        .inspect_session(
+            c.execution(),
+            revoke_secret,
+            crate::authority_t2_support::identity_cutoff(),
+        )
         .await?;
     c.authority
-        .revoke_current_session(session, deadline())
+        .revoke_current_session(session, crate::authority_t2_support::identity_cutoff())
         .await?;
     assert_eq!(send(path).await?.0, 401);
     drop(router);

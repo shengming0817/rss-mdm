@@ -182,11 +182,11 @@ impl Credentials {
                                     let (service, principal, device, id, version, _, _, access, replay, _) = context;
                                     let grant_expiry = match (*access, *replay) {
                                         (Some(_), true) => {
-                                            rss_identity_postgres::recheck_authenticated_session_on(c, principal.session()?).await.map_err(|_|Error::Unauthorized)?;
+                                            principal.session_authority()?.recheck_authenticated_session_on(c,principal.session()?).await.map_err(|_|Error::Unauthorized)?;
                                             None
                                         }
                                         (Some(input), false) => {
-                                            let grant = rss_identity_postgres::consume_step_up_on(
+                                            let grant = principal.session_authority()?.consume_step_up_on(
                                                 c, principal.session()?, &input.context(principal,device,*id,*version)?,
                                                 input.proof.as_ref().ok_or(Error::Unauthorized)?.expose(),
                                             ).await.map_err(|e| match e.kind() {

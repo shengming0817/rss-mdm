@@ -83,7 +83,12 @@ impl Refresh {
         };
         let providers = match &self.federation {
             Some(f) => f
-                .login_options(binding, crate::identity::deadline())
+                .login_options(
+                    binding,
+                    rss_request_context::Deadline::at(
+                        std::time::Instant::now() + std::time::Duration::from_secs(10),
+                    ),
+                )
                 .await
                 .map_err(invalid)?
                 .into_iter()
@@ -124,7 +129,13 @@ impl Refresh {
     ) -> Result<()> {
         let subjects = self
             .users
-            .read(binding, devices, crate::identity::deadline())
+            .read(
+                binding,
+                devices,
+                rss_request_context::Deadline::at(
+                    std::time::Instant::now() + std::time::Duration::from_secs(10),
+                ),
+            )
             .await
             .map_err(invalid)?;
         let ids: Vec<_> = subjects

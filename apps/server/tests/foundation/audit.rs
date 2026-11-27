@@ -306,7 +306,8 @@ async fn verify_full_identity_restore(
             (&integrity, &prepared),
             |(integrity, prepared), tx| {
                 Box::pin(async move {
-                    rss_audit_postgres::append_in(tx, integrity, prepared)
+                    rss_mdm_audit_integration::budget::identity_write_budget(1)?
+                        .append_in(tx, integrity, prepared)
                         .await
                         .map_err(Into::into)
                 })

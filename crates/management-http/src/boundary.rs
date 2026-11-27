@@ -236,7 +236,7 @@ async fn admit(
     secure(response, id)
 }
 /// Identity commits its own security event. Transport diagnostics must never replace
-/// a settled SDK response (which may contain a rotated session credential).
+/// a settled authentication response (which may contain a rotated session credential).
 pub async fn authentication(
     State(envelope): State<Envelope>,
     mut request: Request,
@@ -400,7 +400,7 @@ async fn body(request: Request, next: Next, bytes: Arc<tokio::sync::Semaphore>) 
     let policy = crate::body_policy::for_route(route, request.method());
     let limit = match policy {
         BodyPolicy::Streaming => return next.run(request).await,
-        BodyPolicy::Buffered(limit) | BodyPolicy::Sdk(limit) => limit,
+        BodyPolicy::Buffered(limit) | BodyPolicy::Handler(limit) => limit,
     };
     let normal = crate::body_limits().default_bytes();
     // Keep one default-size request available while a larger wire body is resident.
@@ -426,7 +426,7 @@ async fn body(request: Request, next: Next, bytes: Arc<tokio::sync::Semaphore>) 
                 .expect("reserved small-request headroom"),
         );
     }
-    if matches!(policy, BodyPolicy::Sdk(_)) {
+    if matches!(policy, BodyPolicy::Handler(_)) {
         return next.run(request).await;
     }
     match crate::body_policy::buffer(request, limit).await {

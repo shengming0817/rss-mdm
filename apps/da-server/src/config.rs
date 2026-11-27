@@ -319,7 +319,6 @@ impl Oidc {
         authority: rss_identity_postgres::Authority,
         origin: &str,
         instance: rss_identity_core::InstanceId,
-        policy: rss_identity_oidc::TransportPolicy,
     ) -> Result<rss_identity_postgres::Federation> {
         let key = |p: &Path| -> Result<[u8; 32]> {
             read(p, 32, true)
@@ -335,18 +334,10 @@ impl Oidc {
             .map(|(id, p)| Ok((id.clone(), key(p)?)))
             .collect::<Result<Vec<_>>>()?;
 
-        let transport = rss_mdm_device_access_runtime::oidc::transport(
-            &self.assurance_profiles,
-            &self.private_providers,
-            policy,
-        )
-        .map_err(|_| Error::Configuration)?;
-
         rss_identity_postgres::Federation::new(
             rss_identity_core::groups::GroupFactsMaxAge::new(self.group_facts_max_age_seconds)
                 .map_err(|_| Error::Configuration)?,
             authority,
-            Arc::new(transport),
             rss_identity_postgres::StateSigner::new(
                 key(&self.state_key_file)?,
                 &instance.to_string(),
