@@ -395,13 +395,17 @@ async fn mixed_page(
         ("configuration-reports", serde_json::to_value(&application)?),
         ("status-reports", serde_json::to_value(&large)?),
     ] {
-        material::success::<serde_json::Value>(
-            peer.post(format!("{base}/{route}"))
-                .json(&wire)
-                .send()
-                .await?,
-        )
-        .await?;
+        let request = peer.post(format!("{base}/{route}")).json(&wire).build()?;
+        let bytes = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .context("buffered report")?
+            .len();
+        material::success::<serde_json::Value>(peer.execute(request).await?).await?;
+        eprintln!(
+            "da_report_wire route={route} sequence={} bytes={bytes}",
+            wire["sequence"]
+        );
     }
     gate.commit().await?;
     tokio::time::timeout(Duration::from_secs(25), async {

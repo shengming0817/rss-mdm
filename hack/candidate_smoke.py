@@ -366,7 +366,8 @@ def installed_capacity_report(deployed, path, binding, call):
     require(set(ids)=={v['reportId'] for v in inputs} and ids.index(inputs[0]['reportId'])<ids.index(inputs[2]['reportId']),'mixed report sequence')
     require(all(r[3]>0 for r in rows),'canonical Observation sizes')
     deployed.sql("DROP TRIGGER t2_inventory_page ON rss_projection.checkpoints; DROP FUNCTION public.t2_inventory_page(); DROP TABLE public.t2_inventory_pages")
-    print(json.dumps(dict(mdm_formal_mixed_pages=rows,checkpoint_base=before,input_bytes=size)))
+    input_sizes={v['reportId']:len(json.dumps(v,separators=(',',':')).encode()) for v in inputs}
+    print(json.dumps(dict(mdm_formal_mixed_pages=rows,checkpoint_base=before,input_bytes=size,input_sizes=input_sizes)))
     return 'installed_near_limit_inventory_report'
 
 def native_pki_journey(deployed,browser,inventory_report=None):
