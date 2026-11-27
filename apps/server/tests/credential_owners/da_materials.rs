@@ -80,7 +80,7 @@ pub(super) async fn seed_windows_binding(
     da: &DaRegistration,
     person: Uuid,
     target: access::account_delivery::Target,
-) -> Result<(rss_mdm_agent_wire::da::Publication, access::Binding)> {
+) -> Result<access::Binding> {
     let account = w::AccessAccount::Windows {
         sid: SID.into(),
         authority: w::AccessWindowsAuthority::Local,
@@ -144,7 +144,7 @@ pub(super) async fn seed_windows_binding(
     )
     .await?;
     access::storage::insert_in(tx, &binding).await?;
-    Ok((publication, binding))
+    Ok(binding)
 }
 
 #[expect(
@@ -160,7 +160,7 @@ pub(super) async fn verify(
 ) -> Result<()> {
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
     let mut tx = seed(c).await?;
-    let (publication, mut binding) = seed_windows_binding(
+    let mut binding = seed_windows_binding(
         &mut tx,
         tenant,
         agent.installation(),

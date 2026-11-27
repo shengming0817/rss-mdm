@@ -29,16 +29,8 @@ pub fn routes(state: Option<&AppState>) -> Router<(), impl Declaration + use<>> 
     .assemble();
     crate::browser(routes, state, 98304).bind_with(state, Clone::clone)
 }
-pub fn raw_profile_route(state: Option<&AppState>) -> Router<(), impl Declaration + use<>> {
-    route_module! { struct CurrentProfile for [Browser] { current } }
-    let routes = CurrentProfile {
-        current: Route::new(
-            "/api/v1/identity/tenants/{tenant}/profile",
-            get(current, &IDENTITY, ACTION),
-        ),
-    }
-    .assemble();
-    crate::browser(routes, state, 98304).bind_with(state, Clone::clone)
+pub fn current_profile_method() -> rss_mdm_http_contract::routing::MethodRouter<AppState> {
+    get(current, &IDENTITY, ACTION)
 }
 
 fn target(t: &str, p: &str) -> Result<AccountKey, Error> {

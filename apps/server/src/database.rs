@@ -144,6 +144,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_content_service::connections::ACCESS_CONTRACT,
         rss_mdm_webhook_service::ACCESS_CONTRACT,
         rss_mdm_authorization_service::ACCESS_CONTRACT,
+        rss_mdm_authorization_service::session::PLATFORM_SUBJECT_ACCESS,
         rss_mdm_registration_service::ACCESS_CONTRACT,
         rss_mdm_software_service::agent_packages::ACCESS_CONTRACT,
         rss_mdm_software_service::source_snapshots::ACCESS_CONTRACT,

@@ -1,0 +1,19 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "identity_authority.share_host_tenant",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "identity_authority.share_provider",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "identity_authority.share_subject",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

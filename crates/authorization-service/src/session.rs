@@ -1,3 +1,5 @@
+/// Fixed RSS lock ports granted by grant_platform_subject_admission to the product role.
+pub const PLATFORM_SUBJECT_ACCESS: &str = include_str!("platform-subject-access.json");
 use crate::credential::RequestCredential;
 use crate::{
     Error, Store,

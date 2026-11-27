@@ -180,6 +180,7 @@ pub fn access_contracts() -> Vec<&'static str> {
     vec![
         rss_mdm_registration_service::identity_access_contract(DA),
         rss_mdm_authorization_service::access_contract(DA),
+        rss_mdm_authorization_service::session::PLATFORM_SUBJECT_ACCESS,
         rss_mdm_task_trust::access_contract(DA),
         rss_mdm_pki_service::access_contract(DA),
         rss_mdm_policy_postgres::device_access::ACCESS_CONTRACT,

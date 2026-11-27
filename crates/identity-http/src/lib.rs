@@ -10,7 +10,7 @@ pub use challenge::TimedChallenge;
 pub use dto::SessionBody;
 pub use oidc::AuthorizationUrl;
 pub use oidc::{authorization_redirect, callback_route, federation_routes, operation_actor};
-pub use profiles::raw_profile_route;
+pub use profiles::current_profile_method;
 pub use session::{issued_session_parts, local_routes};
 pub use transport::CookieJson;
 mod dto;
@@ -123,7 +123,7 @@ static IDENTITY: Resource = Resource {
 };
 const ACTION: &[Operation] = &[Operation::Action];
 
-fn browser<S: Clone + Send + Sync + 'static, M: Declaration>(
+pub fn browser<S: Clone + Send + Sync + 'static, M: Declaration>(
     routes: Router<S, M>,
     state: Option<&AppState>,
     limit: usize,
@@ -161,6 +161,5 @@ mod contract_tests {
         check(bearer_routes(None), 2);
         check(federation_routes(None), 10);
         check(callback_route(None), 1);
-        check(raw_profile_route(None), 1);
     }
 }

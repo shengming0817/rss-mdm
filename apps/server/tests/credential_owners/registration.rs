@@ -303,7 +303,7 @@ async fn embedded_step_up(
     )
     .await?;
     let installation = Uuid::parse_str(&c.inputs.installation.instance_id)?;
-    let (_, binding) = super::da_materials::seed_windows_binding(
+    let binding = super::da_materials::seed_windows_binding(
         &mut tx,
         Uuid::parse_str(&tenant)?,
         installation,

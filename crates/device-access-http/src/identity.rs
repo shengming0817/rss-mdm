@@ -111,6 +111,16 @@ pub fn routes(
         authority: s.authority.clone(),
         config: s.http.clone(),
     });
+    rss_mdm_http_contract::route_module! {struct DaCurrentProfile for [Browser]{current}}
+    let profile = DaCurrentProfile {
+        current: rss_mdm_http_contract::module::Route::new(
+            "/api/v1/identity/tenants/{tenant}/profile",
+            shared::current_profile_method(),
+        ),
+    }
+    .assemble();
+    let profile =
+        shared::browser(profile, local.as_ref(), 98_304).bind_with(local.as_ref(), Clone::clone);
     let federation = state
         .and_then(|s| s.federation.as_ref())
         .zip(local.as_ref());
@@ -118,7 +128,7 @@ pub fn routes(
     DaIdentity {
         local: shared::local_routes(local.as_ref().zip(state.map(|s| &s.webauthn))),
         bearer: shared::bearer_routes(local.as_ref()),
-        profile: shared::raw_profile_route(local.as_ref()),
+        profile,
         tenants: shared::federation_routes(federation).when("oidc", oidc),
         callback: shared::callback_route(federation).when("oidc", oidc),
     }
