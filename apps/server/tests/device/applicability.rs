@@ -16,11 +16,11 @@ struct Http {
 impl Http {
     fn open(a: &Fixture) -> Result<Self> {
         let reads = Arc::new(crate::assembly::device_reads::Devices {
-            snapshot: a.policy_task_reads.snapshot.clone(),
-            software: a.policy_task_reads.software.clone(),
-            device_control: a.policy_task_reads.device_control.clone(),
+            snapshot: a.snapshot.clone(),
+            software: a.software.clone(),
+            device_control: a.device_control.clone(),
             content_available: a.resources.config.content.is_some(),
-            recovery_enabled: a.policy_task_reads.recovery_enabled,
+            recovery_enabled: false,
             devices: a.devices.clone(),
             windows: true,
             apple: true,
@@ -398,7 +398,7 @@ async fn snapshot_revalidates_authority_and_registration_before_return() -> Resu
         let p=Arc::new(c.authenticate(&account).await?);
         for change_registration in [true,false] {
             let request=c.read_auth(p.clone());
-            let result=a.policy_task_reads.snapshot.read_registered(&request,(&c,&n,&account),move |args,connection,_,_,registration| Box::pin(async move {
+            let result=a.snapshot.read_registered(&request,(&c,&n,&account),move |args,connection,_,_,registration| Box::pin(async move {
                 let (c,n,account)=*args;
                 *registration=Some((n.device,endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm,connection,&c.tenant.to_string(),&n.device,rss_mdm_inventory::Channel::Mdm).await?));
                 // A second real connection commits while the first retains its RR snapshot.

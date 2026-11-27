@@ -7,6 +7,84 @@ use rss_mdm_management_http::operation_reads::{Reads, SCHEMA};
 use rss_mdm_query::cursor::CursorCodec;
 
 #[tokio::test]
+#[ignore = "T2: real browser listeners bind the operation directory and Policy history to the same original run"]
+async fn mounted_directory_links_to_policy_history() -> Result<()> {
+    use rss_mdm_authorization_service::credential::RequestCredential;
+    let h = Harness::open_in("operations_http_host").await?;
+    let prepared = async {
+        let (policy, version) = h.policy("mounted-history").await?;
+        let run = h.run(version, "mounted-history", now() + 300).await?;
+        let account =
+            h.c.account(&[Permission::OperationRead, Permission::PolicyRead])
+                .await?;
+        let RequestCredential::Cookie(secret) = account.credential()? else {
+            anyhow::bail!("expected a browser session");
+        };
+        let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+        let config = crate::host_t2_support::configuration(
+            &h.c.inputs,
+            &h.c.profile,
+            address,
+            Uuid::new_v4(),
+        )
+        .await?;
+        Ok::<_, anyhow::Error>((
+            config,
+            h.c.tenant,
+            policy,
+            run,
+            format!("__Host-identity-session={}", secret.expose()),
+        ))
+    }
+    .await;
+    h.close().await?;
+    let (config, tenant, policy, run, cookie) = prepared?;
+    crate::host_t2_support::run(config, |client, base| async move {
+        let prefix = format!("/api/v1/tenants/{tenant}");
+        let get = |path: &str| {
+            client
+                .get(format!("{base}{path}"))
+                .header("cookie", &cookie)
+        };
+        let directory: Value = get(&format!("{prefix}/operations"))
+            .query(&[("filter", format!("id=={run}"))])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let rows = directory["items"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], run.to_string());
+        let history_path = format!("{prefix}/policies/{policy}/runs");
+        let detail_path = rows[0]["detailUrl"].as_str().unwrap();
+        assert_eq!(detail_path, format!("{history_path}/{run}"));
+        let history: Value = get(&history_path)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            history["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["taskId"] == run.to_string())
+        );
+        let detail: Value = get(detail_path)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(detail["taskId"], run.to_string());
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
 #[ignore = "T2: real native directory reads preserve nested owners and match the mounted HTTP schema"]
 async fn native_directory_serializes_the_actual_owner_and_respects_projection() -> Result<()> {
     let mut h = Harness::open().await?;
@@ -19,10 +97,10 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
                 protection: h.a.resources.protection.clone(),
             }),
-            snapshot: h.a.policy_task_reads.snapshot.clone(),
-            configuration: h.a.policy_task_reads.configuration.clone(),
-            software: h.a.policy_task_reads.software.clone(),
-            device_control: h.a.policy_task_reads.device_control.clone(),
+            snapshot: h.a.snapshot.clone(),
+            configuration: h.a.configuration.clone(),
+            software: h.a.software.queries.clone(),
+            device_control: h.a.device_queries.clone(),
             registration: h.a.registration.native.clone(),
             recovery: None,
         };
@@ -148,7 +226,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         let operations=Arc::new(crate::assembly::operation_reads::Operations {
             budgets: Default::default(),
             apple:Arc::new(rss_mdm_apple_channel::flow_store::Store{protection:h.a.resources.protection.clone()}),
-            snapshot: h.a.policy_task_reads.snapshot.clone(), configuration: h.a.policy_task_reads.configuration.clone(), software: h.a.policy_task_reads.software.clone(), device_control: h.a.policy_task_reads.device_control.clone(),registration:h.a.registration.native.clone(),recovery:None,
+            snapshot: h.a.snapshot.clone(), configuration: h.a.configuration.clone(), software: h.a.software.queries.clone(), device_control: h.a.device_queries.clone(),registration:h.a.registration.native.clone(),recovery:None,
         });
         for (owner,id,device) in [(rss_mdm_audit_integration::operation::OperationOwner::Script,script,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,collection,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,native,&native_object.members[0].device)] {
             let locator=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(*device),..Default::default()};
@@ -311,7 +389,7 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
             committed.send(()).unwrap();
             Ok::<_, anyhow::Error>(())
         };
-        let reader = h.a.policy_task_reads.snapshot.read(&request, (tenant.clone(), Some(observed), Some(wait_committed)), |state, c, _, _| Box::pin(async move {
+        let reader = h.a.snapshot.read(&request, (tenant.clone(), Some(observed), Some(wait_committed)), |state, c, _, _| Box::pin(async move {
             let before: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::query_snapshot::sql)?;
             state.1.take().unwrap().send(()).unwrap();
             state.2.take().unwrap().await.unwrap();
@@ -325,7 +403,7 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
         let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) = account.credential()? else { unreachable!() };
         let session = h.c.authority.inspect_session(h.c.execution(), secret, request.remaining()?).await?;
         let mut revoked = false;
-        let rejected = h.a.policy_task_reads.snapshot.read(&request, (&h.c.authority, Some(session), &mut revoked), |state, _, _, _| Box::pin(async move {
+        let rejected = h.a.snapshot.read(&request, (&h.c.authority, Some(session), &mut revoked), |state, _, _, _| Box::pin(async move {
             state.0.revoke_current_session(state.1.take().unwrap(), rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(3))).await.expect("Identity revocation must commit before testing the response tail");
             *state.2 = true;
             Ok(())
@@ -367,7 +445,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         let expected=std::collections::BTreeMap::from([(device,true),(manual,true),(empty,false)]);
         let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(h.c.database.registration(), h.c.audit.clone()));
         let reads = Arc::new(crate::assembly::device_reads::Devices {
-            snapshot: h.a.policy_task_reads.snapshot.clone(), software: h.a.policy_task_reads.software.clone(), device_control: h.a.policy_task_reads.device_control.clone(), content_available: h.a.resources.config.content.is_some(), recovery_enabled: h.a.policy_task_reads.recovery_enabled,
+            snapshot: h.a.snapshot.clone(), software: h.a.software.queries.clone(), device_control: h.a.device_queries.clone(), content_available: h.a.resources.config.content.is_some(), recovery_enabled: false,
             devices: devices.clone(),
             windows: true,
             apple: false,

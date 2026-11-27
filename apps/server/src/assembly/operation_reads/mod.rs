@@ -90,7 +90,8 @@ impl Operations {
         redacted: bool,
     ) -> Result<Detail, Error> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
-        let owner = super::native_ownership::on(c, proof.binding().tenant(), id).await?;
+        let owner =
+            super::native_ownership::on_device(c, proof.binding().tenant(), device, id).await?;
         self.detail_owned_on(c, proof, grant, now, device, id, redacted, owner)
             .await
     }

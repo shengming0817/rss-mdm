@@ -78,8 +78,10 @@ async fn confirm_and_cancel(
         c.tenant, device
     );
     let receipt = create_confirmed(c, client, account, &path, id).await?;
+    verify_device_scope(c, client, base, id).await?;
+    let current = reauthorize_live(client, account, &path, id, &receipt).await?;
     let change =
-        serde_json::json!({"requestId":Uuid::new_v4(),"expectedRevision":receipt["revision"]});
+        serde_json::json!({"requestId":Uuid::new_v4(),"expectedRevision":current["revision"]});
 
     assert_eq!(
         post(
@@ -97,7 +99,7 @@ async fn confirm_and_cancel(
     assert_eq!(changed["operationId"], id.to_string());
     assert_eq!(
         changed["revision"].as_i64(),
-        receipt["revision"].as_i64().map(|value| value + 1)
+        current["revision"].as_i64().map(|value| value + 1)
     );
     let reauthorize = |confirmation: serde_json::Value| {
         serde_json::json!({
@@ -131,6 +133,93 @@ async fn confirm_and_cancel(
     .await?;
     assert_eq!(stored, (device.into_uuid(), "cancelled".to_owned()));
     Ok(())
+}
+
+async fn verify_device_scope(
+    c: &Context,
+    client: &reqwest::Client,
+    base: &str,
+    other_id: Uuid,
+) -> Result<()> {
+    use rss_mdm_authorization_service::{
+        Grant, Permission, Rule, Scope, Subject, credential::RequestCredential,
+    };
+    let allowed = crate::planning_t2_support::endpoint(c).await?.members[0].device;
+    let account = c.account(&[Permission::OperationRead]).await?;
+    let rule = Rule {
+        subject: Subject::User {
+            user: account.user.clone(),
+        },
+        grants: vec![Grant {
+            operation: Permission::OperationRead,
+            scope: Scope::Device { id: allowed },
+        }],
+    };
+    sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&c.operator).await?;
+    let RequestCredential::Cookie(cookie) = account.credential()? else {
+        anyhow::bail!("expected a browser session");
+    };
+    let directory = format!(
+        "{base}/api/v1/tenants/{}/devices/{allowed}/operations",
+        c.tenant
+    );
+    for id in [other_id, Uuid::new_v4()] {
+        let resource = format!("{directory}/{id}");
+        let response = client
+            .get(&resource)
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", cookie.expose()),
+            )
+            .send()
+            .await?;
+        assert_eq!(response.status(), 404);
+        let change = serde_json::json!({"requestId": Uuid::new_v4(), "expectedRevision": 1});
+        assert_eq!(
+            post(client, &account, &format!("{resource}/cancel"), change)
+                .await?
+                .0,
+            404
+        );
+        let renew = serde_json::json!({"requestId": Uuid::new_v4(), "expectedRevision": 1, "confirmation":{"confirmed":true}});
+        assert_eq!(
+            post(client, &account, &format!("{resource}/reauthorize"), renew)
+                .await?
+                .0,
+            404
+        );
+    }
+    Ok(())
+}
+
+async fn reauthorize_live(
+    client: &reqwest::Client,
+    account: &crate::authority_t2_support::Account,
+    path: &str,
+    id: Uuid,
+    receipt: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let url = format!("{path}/{id}/reauthorize");
+    let revision = receipt["revision"].as_i64().unwrap();
+    let request = |confirmation| {
+        serde_json::json!({
+            "requestId": Uuid::new_v4(), "expectedRevision": revision, "confirmation": confirmation
+        })
+    };
+    let (status, _) = post(client, account, &url, request(serde_json::Value::Null)).await?;
+    assert_eq!(status, 409);
+    let (status, refreshed) = post(
+        client,
+        account,
+        &url,
+        request(serde_json::json!({"confirmed":true})),
+    )
+    .await?;
+    assert_eq!(status, 200, "{refreshed}");
+    assert_eq!(refreshed["operationId"], id.to_string());
+    assert_eq!(refreshed["revision"], revision + 1);
+    Ok(refreshed)
 }
 
 async fn create_confirmed(

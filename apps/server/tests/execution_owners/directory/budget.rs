@@ -445,10 +445,10 @@ fn directory(h: &Harness, budgets: Budgets) -> Operations {
         apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: h.a.resources.protection.clone(),
         }),
-        snapshot: h.a.policy_task_reads.snapshot.clone(),
-        configuration: h.a.policy_task_reads.configuration.clone(),
-        software: h.a.policy_task_reads.software.clone(),
-        device_control: h.a.policy_task_reads.device_control.clone(),
+        snapshot: h.a.snapshot.clone(),
+        configuration: h.a.configuration.clone(),
+        software: h.a.software.queries.clone(),
+        device_control: h.a.device_queries.clone(),
         registration: h.a.registration.native.clone(),
         recovery: None,
     }

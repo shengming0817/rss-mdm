@@ -142,7 +142,7 @@ impl rss_mdm_management_http::device_control::Changes for Changes {
                             rss_mdm_authorization_service::Permission::OperationRead,
                             Some(d),
                         )?;
-                        super::native_ownership::on(c, p.binding().tenant(), id)
+                        super::native_ownership::on_device(c, p.binding().tenant(), d, id)
                             .await
                             .map_err(Into::into)
                     })
