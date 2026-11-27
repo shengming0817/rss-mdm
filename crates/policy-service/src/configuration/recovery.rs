@@ -1,11 +1,6 @@
 //! Configuration work shares the Policy runner budget and preserves owner-local command decoding.
 use super::*;
-use rss_mdm_audit_integration::budget::RuntimeTimer;
 use rss_mdm_audit_integration::{Fact, activity::*};
-use rss_request_context::Deadline;
-use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
-use rss_transactional_messaging::policy::OperationDeadline;
-use rss_transactional_messaging_postgres::PgOutboxStore;
 pub(crate) fn owns_entity(entity: &str) -> bool {
     entity == "configuration-inputs"
         || entity
@@ -236,135 +231,61 @@ impl Transactions {
         })).await?;
         Ok(())
     }
-    pub async fn claim_relay(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        limit: std::num::NonZeroUsize,
-        budget: std::time::Duration,
-    ) -> std::result::Result<
-        Vec<(
-            rss_mdm_recovery_observation::RelayMessage,
-            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
-        )>,
-        Error,
-    > {
-        let cutoff = Deadline::from_timeout(&RuntimeTimer, budget)
-            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-        // Claim and business work share the earlier cutoff. A late Retry or
-        // Published settlement still has one quarter of the original window.
-        let operation = Deadline::at(cutoff.instant() - budget / 4);
-        let claims = self
-            .outbox
-            .claim_partition_heads(
-                binding,
-                limit,
-                OperationDeadline::from_cutoff(operation, &RuntimeTimer),
-            )
-            .await
-            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-        Ok(claims
-            .into_iter()
-            .map(|claim| {
-                let id = rss_mdm_recovery_observation::RelayMessage::from(
-                    PgOutboxStore::<()>::message(&claim),
-                );
-                (id, self.relay_claim(binding, claim, operation, cutoff))
-            })
-            .collect())
-    }
-    async fn relay_claim(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        claim: rss_transactional_messaging_postgres::PgOutboxClaim,
-        operation: Deadline,
-        cutoff: Deadline,
-    ) -> std::result::Result<(), Error> {
-        let message = PgOutboxStore::<()>::message(&claim);
-        let id = message
-            .message_id()
-            .as_str()
-            .strip_prefix("dispatch.")
-            .and_then(|v| Uuid::parse_str(v).ok())
-            .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-        let fingerprint = message.fingerprint().as_bytes().to_vec();
-        let result = self
-            .accept_dispatch(
-                binding,
-                id,
-                fingerprint,
-                OperationDeadline::from_cutoff(operation, &RuntimeTimer),
-            )
-            .await;
-        if matches!(
-            result,
-            Err(Error::Unavailable(
-                Failure::CommandInvariant | Failure::NativeInputIntegrity
-            ))
-        ) {
-            return result;
-        }
-        let settlement = if result.is_ok() {
-            OutboxSettlement::Published(())
-        } else {
-            OutboxSettlement::Retry
-        };
-        self.outbox
-            .settle(
-                claim,
-                settlement,
-                OperationDeadline::from_cutoff(cutoff, &RuntimeTimer),
-            )
-            .await
-            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-        result
-    }
-    async fn accept_dispatch(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        id: Uuid,
-        fingerprint: Vec<u8>,
-        budget: rss_transactional_messaging::policy::OperationDeadline,
-    ) -> std::result::Result<(), Error> {
-        let audit = RequestAudit::new(
-            rss_mdm_audit_integration::Origin::Background,
+    pub async fn project_native_in(
+        tx: &mut PgTransaction<'_>,
+        dispatch: &rss_mdm_work_page::relay::Dispatch,
+        store: &rss_mdm_audit_integration::AuditStore,
+        protection: &rss_mdm_native_protection::Protector,
+    ) -> Result<bool> {
+        use rss_mdm_audit_integration::operation::OperationOwner;
+        let id = dispatch.id;
+        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            binding,
-            "command_dispatch",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        audit.identify_service("configuration-dispatch");
-        audit.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::Configuration,
+            dispatch.binding,
+            OperationOwner::Configuration,
             id,
-            "command_dispatch",
-            rss_mdm_audit_integration::AuditIntent::Management,
+            "configuration-dispatch",
         );
-        let result=run_budget(&self.audit_store,&self.runtime,binding,&audit,budget,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
-            let (service,id,fingerprint,audit)=ctx;service.audit_store.prepare_in(tx,audit,&[]).await?;
-            let tenant=tx.tenant_id().to_string();let operation=*id;let fingerprint=fingerprint.clone();
-            let old=tx.with_connection(move|c|Box::pin(async move{
-                let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(operation).bind(fingerprint).fetch_optional(&mut *c).await?;
-                if old==Some(false){sqlx::query("UPDATE mdm_planning.configuration_operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(operation).execute(c).await?;}
-                Ok(old)
-            })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-            if !old{
-                let op=storage::load(tx,&service.protection,*id).await?;
-                let mut dispatched = activity(&op,service.required_command(tx,&op).await?.status(),ActivityPhase::Dispatched);
-                dispatched.delivery=Some(ActivityDelivery::Dispatched);
-                let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::Configuration,&format!("command:{}:dispatch",op.id),200,"success",None)?.with_activity(&dispatched)?;
-                service.audit_store.append_in(tx,&fact).await?;
-                // Channel consumers retain their existing durable candidate scans.
-                tx.with_connection(|c|Box::pin(async move{sqlx::query("SELECT pg_notify('mdm_work','apple'),pg_notify('mdm_work','windows_push')").execute(c).await?;Ok(())})).await?;
-            }else{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            Ok(())
-        })).await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        store.bind_in(tx).await?;
+        if !dispatch.accept_in(tx, "UPDATE mdm_planning.configuration_operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted").await? {
+            audit.finalize(None);
+            return Ok(false);
+        }
+        let operation = match storage::load(tx, protection, id).await {
+            Err(crate::transaction::Fault::Request(Error::Unavailable(Failure::CommandInvariant | Failure::NativeInputIntegrity))) => return Ok(false),
+            other => other?,
+        };
+        let stored = dispatch.native_status_in(tx).await?;
+        let Ok(status) = dc::Status::restore(&stored) else { return Ok(false); };
+        let mut activity = activity(
+            &operation,
+            status,
+            rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
-        result
+        activity.delivery = Some(ActivityDelivery::Dispatched);
+        let fact = Fact::business(
+            &audit,
+            OperationOwner::Configuration,
+            &format!("command:{id}:dispatch"),
+            200,
+            "success",
+            None,
+        )?
+        .with_activity(&activity)?;
+        store.append_in(tx, &fact).await?;
+        tx.with_connection(|c| {
+            Box::pin(async move {
+                sqlx::query(
+                    "SELECT pg_notify('mdm_work','apple'),pg_notify('mdm_work','windows_push')",
+                )
+                .execute(c)
+                .await?;
+                Ok(())
+            })
+        })
+        .await?;
+        audit.finalize(None);
+        Ok(true)
     }
 }
 

@@ -12,10 +12,7 @@ pub async fn bind_command_in(
     clock: rss_device_command_postgres::CommandClock,
     supersede_batch: rss_device_command::BatchLimit,
 ) -> std::result::Result<
-    (
-        Arc<PgOutboxStore<()>>,
-        rss_device_command_postgres::PgStore<()>,
-    ),
+    rss_device_command_postgres::PgStore<()>,
     PgError,
 > {
     runtime.validate_transaction(tx)?;
@@ -34,13 +31,13 @@ pub async fn bind_command_in(
     .map_err(|_| PgError::from(sqlx::Error::Protocol("command caller declaration".into())))?;
     let store = rss_device_command_postgres::PgStore::new(
         tx,
-        outbox.clone(),
+        outbox,
         clock,
         &callers,
         supersede_batch,
     )
     .await?;
-    Ok((outbox, store))
+    Ok(store)
 }
 
 pub struct Operation {

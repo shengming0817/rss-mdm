@@ -21,7 +21,7 @@ pub(crate) async fn assemble(
     let probe = config.management_binding()?;
     let supersede_batch = storage.command_supersede_batch;
     let caller = storage.runtime.clone();
-    let (outbox, store) = storage
+    let store = storage
         .runtime
         .local_tx(probe, deadline(), move |tx| {
             Box::pin(super::host_storage::bind_command_in(
@@ -96,7 +96,6 @@ pub(crate) async fn assemble(
             ),
             audit_store: storage.audit.clone(),
             runtime: storage.runtime.clone(),
-            outbox,
             store,
             reconcile: storage.reconcile.clone(),
             reconcile_messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(

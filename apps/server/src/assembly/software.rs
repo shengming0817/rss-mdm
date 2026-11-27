@@ -1,6 +1,6 @@
 //! Software owner assembly; participants bind to the caller's runtime.
 use rss_mdm_software_service::deployment as owner;
-use rss_transactional_messaging_postgres::{PgOutboxStore, PgRuntime};
+use rss_transactional_messaging_postgres::PgRuntime;
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
 pub(crate) struct Assembly {
@@ -95,23 +95,11 @@ pub(crate) async fn assemble(
             .await
             .map_err(super::owner_errors::software)?,
     );
-    let delivery = rss_transactional_messaging::policy::DeliveryBudget::new(
-        Duration::from_secs(60),
-        Duration::from_secs(6),
-        Duration::from_secs(6),
-        Duration::from_secs(6),
-    )
-    .map_err(|_| crate::Error::Malformed)?;
-    let outbox = Arc::new(
-        PgOutboxStore::new(runtime, owner::messaging_domain(), delivery)
-            .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandStorage))?,
-    );
     let service = Arc::new(owner::SoftwareService::new(
         discovery_pool.clone(),
         probe.storage(),
         transactions.clone(),
         sessions,
-        outbox,
         reconcile,
         budget,
         background.command_recovery_batch,

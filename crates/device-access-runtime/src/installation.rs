@@ -203,6 +203,10 @@ pub fn standalone_units(ledger: bool) -> Vec<Unit> {
             "messaging-v1",
             rss_transactional_messaging_postgres::MIGRATION_SQL,
         ),
+        (
+            "command-relay-catalog-v1",
+            rss_mdm_work_page::relay::DISCOVERY_SQL,
+        ),
         ("identity-v1", rss_identity_postgres::MIGRATION_SQL),
     ]);
     result.extend(units());

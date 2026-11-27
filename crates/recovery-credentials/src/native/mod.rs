@@ -59,7 +59,7 @@ pub struct Service {
     pub(crate) read_pool: sqlx::PgPool,
     pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
     pub(crate) transactions: Transactions,
-    pub(crate) outbox: Arc<PgOutboxStore<()>>,
+
     pub(crate) reconcile: rss_mdm_work_page::scheduler::Scheduler,
     pub(crate) worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
@@ -70,7 +70,7 @@ impl Service {
         read_pool: sqlx::PgPool,
         storage: rss_transactional_messaging::fence::StorageIdentity,
         transactions: Transactions,
-        outbox: Arc<PgOutboxStore<()>>,
+
         reconcile: rss_mdm_work_page::scheduler::Scheduler,
         worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
         recovery_batch: rss_device_command::BatchLimit,
@@ -80,7 +80,6 @@ impl Service {
             read_pool,
             storage,
             transactions,
-            outbox,
             reconcile,
             worker_budget,
             recovery_batch,
@@ -131,7 +130,6 @@ impl Transactions {
                         supersede_batch,
                     )
                     .await
-                    .map(|(_, store)| store)
                 })
             })
             .await

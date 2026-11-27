@@ -37,7 +37,7 @@ impl Transactions {
         let audit = audit_store.clone();
         let access = channels.clone();
         let fingerprint_id = protection.fingerprint_id().to_owned();
-        let (outbox, store) = runtime
+        let store = runtime
             .local_tx(probe, deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
@@ -95,13 +95,13 @@ impl Transactions {
                     .map_err(|_| sqlx::Error::Protocol("configuration caller profile".into()))?;
                     let store = rss_device_command_postgres::PgStore::new(
                         tx,
-                        outbox.clone(),
+                        outbox,
                         rss_device_command_postgres::CommandClock::Postgres,
                         &roles,
                         supersede_batch,
                     )
                     .await?;
-                    Ok((outbox, store))
+                    Ok(store)
                 })
             })
             .await
@@ -122,7 +122,6 @@ impl Transactions {
         .map_err(|_| Error::Unavailable(Failure::PolicyAdmission))?;
         Ok(Self {
             recovery_batch,
-            outbox,
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),

@@ -1,6 +1,6 @@
 //! Enrollment and bootstrap share Registration ownership, with separate durable work scopes.
 use rss_mdm_registration_service::{enrollment::tasks, installation as native};
-use rss_transactional_messaging_postgres::{PgOutboxStore, PgRuntime};
+use rss_transactional_messaging_postgres::PgRuntime;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 #[derive(Clone)]
 pub(crate) struct Assembly {
@@ -83,22 +83,10 @@ pub(crate) async fn assemble(
         native::Transactions::bind(runtime.clone(), probe, audit, native_materials.clone())
             .await
             .map_err(super::owner_errors::installation)?;
-    let delivery = rss_transactional_messaging::policy::DeliveryBudget::new(
-        Duration::from_secs(60),
-        Duration::from_secs(6),
-        Duration::from_secs(6),
-        Duration::from_secs(6),
-    )
-    .map_err(|_| crate::Error::Malformed)?;
-    let outbox = Arc::new(
-        PgOutboxStore::new(runtime, native::messaging_domain(), delivery)
-            .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandStorage))?,
-    );
     let native = Arc::new(native::Service::new(
         discovery_pool.clone(),
         probe.storage(),
         transactions,
-        outbox,
         reconcile,
         budget,
         background.command_recovery_batch,

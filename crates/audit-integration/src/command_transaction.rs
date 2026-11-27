@@ -175,3 +175,28 @@ impl<F: CommandFault> Transaction<F> {
         )
     }
 }
+
+/// Background admission evidence is appended by the owner on the projection transaction.
+pub fn dispatch_audit(
+    profile: crate::StorageProfile,
+    binding: ExecutionBinding,
+    owner: crate::operation::OperationOwner,
+    id: uuid::Uuid,
+    actor: &'static str,
+) -> RequestAudit {
+    let audit = RequestAudit::new(
+        crate::Origin::Background,
+        profile,
+        binding,
+        "command_dispatch",
+        crate::AuditIntent::Management,
+    );
+    audit.owned_operation(
+        owner,
+        id,
+        "command_dispatch",
+        crate::AuditIntent::Management,
+    );
+    audit.identify_service(actor);
+    audit
+}

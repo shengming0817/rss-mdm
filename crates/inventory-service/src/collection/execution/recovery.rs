@@ -76,48 +76,39 @@ pub async fn audit_recovery(
 }
 
 impl CollectionService {
-    pub async fn accept_action_dispatch(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        id: Uuid,
-        fingerprint: Vec<u8>,
-    ) -> std::result::Result<(), Error> {
-        let audit = rss_mdm_audit_integration::RequestAudit::new(
-            rss_mdm_audit_integration::Origin::Background,
+    pub async fn project_action_in(
+        tx: &mut PgTransaction<'_>,
+        dispatch: &rss_mdm_work_page::relay::Dispatch,
+        store: &rss_mdm_audit_integration::AuditStore,
+        messaging: &rss_reconcile_postgres::PgMessagingStore,
+    ) -> Result<bool> {
+        use rss_mdm_audit_integration::operation::OperationOwner;
+        let id = dispatch.id;
+        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            binding,
-            "command_dispatch",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        audit.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,
+            dispatch.binding,
+            OperationOwner::CollectionExecution,
             id,
-            "command_dispatch",
-            rss_mdm_audit_integration::AuditIntent::Management,
+            "collection-dispatch",
         );
-        audit.identify_service("collection-dispatch");
         audit.target(&id.to_string());
-        let result = crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,binding,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
-            let (service,id,fingerprint,audit)=ctx;
-            service.transactions.audit_store.prepare_in(tx,audit,&[]).await?;
-            let tenant=tx.tenant_id().to_string();let id=*id;let fingerprint=fingerprint.clone();
-            let old=tx.with_connection(move|c|Box::pin(async move {
-                let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(id).bind(&fingerprint).fetch_optional(&mut *c).await?;
-                if old==Some(false){sqlx::query("UPDATE mdm_inventory.collection_tasks SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).execute(c).await?;}
-                Ok(old)
-            })).await?.ok_or(Error::Unavailable(crate::Failure::PlanningStorage))?;
-            if old { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
-            else { service.transactions.audit_store.append_in(tx,&Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,&format!("collection:{id}:dispatch"),200,"success",None)?).await?; }
-            super::wake::run_in(&service.transactions.reconcile_messaging,tx,id).await?;
-            Ok(())
-        }),crate::transaction::TransactionOwner::Collections).await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        result
+        store.bind_in(tx).await?;
+        if !dispatch.accept_in(tx, "UPDATE mdm_inventory.collection_tasks SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted").await? {
+            audit.finalize(None);
+            return Ok(false);
+        }
+        let fact = Fact::business(
+            &audit,
+            OperationOwner::CollectionExecution,
+            &format!("collection:{id}:dispatch"),
+            200,
+            "success",
+            None,
+        )?;
+        store.append_in(tx, &fact).await?;
+        super::wake::run_in(messaging, tx, id).await?;
+        audit.finalize(None);
+        Ok(true)
     }
 }
 pub async fn recover_one(

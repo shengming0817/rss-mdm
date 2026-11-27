@@ -26,7 +26,7 @@ impl Copies {
         channel: Arc<dyn ChannelCopies>,
     ) -> std::result::Result<Self, Error> {
         let caller = runtime.clone();
-        let (_, store) = runtime
+        let store = runtime
             .local_tx(execution, deadline(), move |tx| {
                 Box::pin(async move {
                     storage::bind_command_in(

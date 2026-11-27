@@ -93,7 +93,7 @@ pub struct SoftwareService {
     pub(crate) worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
-    pub(crate) outbox: Arc<PgOutboxStore<()>>,
+
     pub(crate) reconcile: rss_mdm_work_page::scheduler::Scheduler,
     pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
     pub(crate) transactions: Arc<Transactions>,
@@ -108,7 +108,7 @@ impl SoftwareService {
         storage: rss_transactional_messaging::fence::StorageIdentity,
         transactions: Arc<Transactions>,
         sessions: Arc<authorization::session::SessionAuthority>,
-        outbox: Arc<PgOutboxStore<()>>,
+
         reconcile: rss_mdm_work_page::scheduler::Scheduler,
         worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
         recovery_batch: rss_device_command::BatchLimit,
@@ -119,7 +119,6 @@ impl SoftwareService {
             storage,
             transactions,
             sessions,
-            outbox,
             reconcile,
             worker_budget,
             recovery_batch,

@@ -775,70 +775,47 @@ impl PolicyWork {
     }
     pub async fn relay_page(
         &self,
-        after: Option<(Uuid, i64)>,
-    ) -> std::result::Result<Vec<(Uuid, i64)>, Error> {
+        after: Option<Uuid>,
+    ) -> std::result::Result<
+        Vec<(Uuid, i64, rss_mdm_recovery_observation::RelayWork)>,
+        rss_reconcile::ErrorKind,
+    > {
         if self.service.configuration.is_none() {
             return Ok(Vec::new());
         }
         let page = rss_mdm_recovery_observation::RelayPage::begin(
             &self.service.automation_observation,
             crate::worker::jobs::domain(self.profile()),
-            after,
         );
-        let result = sqlx::query_as(
-            "SELECT tenant_id,expected_epoch FROM mdm_planning.configuration_relay_scopes($1,$2)",
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), sqlx::query_as(
+            "SELECT tenant_id,expected_epoch,claimable,quarantined FROM mdm_planning.configuration_relay_scopes($1)",
         )
-        .bind(after.map(|x| x.0))
-        .bind(after.map(|x| x.1))
-        .fetch_all(&self.read_pool)
-        .await
-        .map_err(|_| Error::Unavailable(Failure::PolicyStorage));
-        if let Ok(rows) = &result {
-            page.confirm(rows);
-        }
-        result
+        .bind(after)
+        .fetch_all(&self.read_pool))
+        .await.map_err(|_|rss_reconcile::ErrorKind::Deadline).and_then(|rows|rows.map_err(|error|crate::discovery::classify(&error)));
+        self.service
+            .automation_observation
+            .lock()
+            .expect("relay observations")
+            .relay_round(
+                crate::worker::jobs::domain(self.profile()),
+                result.as_ref().map(|_| ()).map_err(|kind| *kind),
+                self.service.clock.unix_seconds().ok(),
+            );
+        result.map(|rows| page.bindings(rows))
     }
-    pub async fn claim_relay(
+    pub fn relay_scope(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        limit: std::num::NonZeroUsize,
-    ) -> std::result::Result<
-        Vec<(
-            rss_mdm_recovery_observation::RelayMessage,
-            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
-        )>,
-        Error,
-    > {
-        let Some(configuration) = self.service.configuration.as_ref() else {
-            return Ok(Vec::new());
-        };
-        configuration
-            .claim_relay(binding, limit, Duration::from_secs(18))
-            .await
-    }
-    pub fn relay_check(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-    ) -> Option<(
-        rss_mdm_recovery_observation::RelayCheck<'_>,
-        &rss_transactional_messaging_postgres::PgRuntime,
-        &rss_transactional_messaging_postgres::PgOutboxStore<()>,
-    )> {
-        let config = self.service.configuration.as_ref()?;
-        let check = rss_mdm_recovery_observation::RelayCheck::begin(
+    ) -> Option<rss_mdm_recovery_observation::RelayScope<'_>> {
+        self.service.configuration.as_ref()?;
+        let check = rss_mdm_recovery_observation::RelayScope::new(
             &self.service.automation_observation,
             crate::worker::jobs::domain(self.profile()),
             binding,
-        )?;
-        Some((check, &config.runtime, &config.outbox))
-    }
-    pub fn observe_relay(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        message: Option<&rss_mdm_recovery_observation::RelayMessage>,
-        result: std::result::Result<(), &Error>,
-    ) {
-        self.service.record_relay(binding, message, result);
+            self.service.clock.unix_seconds().ok(),
+        );
+        Some(check)
     }
 }
 

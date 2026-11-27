@@ -59,112 +59,47 @@ pub async fn audit_recovery(
     Ok(())
 }
 impl Service {
-    pub async fn accept_action_dispatch(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        id: Uuid,
-        fingerprint: Vec<u8>,
-    ) -> std::result::Result<(), crate::enrollment::tasks::Error> {
-        let profile = self.profile();
-
-        let audit = rss_mdm_audit_integration::RequestAudit::new(
-            rss_mdm_audit_integration::Origin::Background,
+    pub async fn project_action_in(
+        tx: &mut PgTransaction<'_>,
+        dispatch: &rss_mdm_work_page::relay::Dispatch,
+        store: &rss_mdm_audit_integration::AuditStore,
+        profile: rss_mdm_audit_integration::StorageProfile,
+    ) -> Result<bool> {
+        use rss_mdm_audit_integration::operation::OperationOwner;
+        let id = dispatch.id;
+        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
             profile,
-            binding,
-            "command_dispatch",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        audit.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
+            dispatch.binding,
+            OperationOwner::EnrollmentTask,
             id,
-            "command_dispatch",
-            rss_mdm_audit_integration::AuditIntent::Management,
+            "enrollment-dispatch",
         );
         audit.target(&id.to_string());
-        audit.identify_service("enrollment-dispatch");
-        let result = crate::enrollment::tasks::transaction::run(
-            &self.transactions.audit_store,
-            &self.transactions.runtime,
-            binding,
-            &audit,
-            (self, id, fingerprint, &audit),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (service, id, fingerprint, audit) = ctx;
-                    crate::enrollment::tasks::transaction::prepare_audit_in(
-                        &service.transactions.audit_store,
-                        tx,
-                        audit,
-                        &[],
-                    )
-                    .await?;
-                    let run = storage::read_run(profile, tx, *id).await?;
-                    let fact = Fact::business(
-                        audit,
-                        rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
-                        &format!("enrollment:{id}:dispatch"),
-                        200,
-                        "success",
-                        None,
-                    )?
-                    .with_activity(
-                        &crate::enrollment::tasks::activity::run(
-                            &run,
-                            rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
-                        ),
-                    )?;
-                    let tenant = tx.tenant_id().to_string();
-                    let id = id.to_string();
-                    let fingerprint = fingerprint.clone();
-                    let old = tx
-                        .with_connection(move |c| {
-                            Box::pin(async move {
-                                let old = sqlx::query_scalar::<_, bool>(
-                                    crate::storage_profile::sql(profile)
-                                        .enrollment_tasks_recovery_accept_action_dispatch_1,
-                                )
-                                .bind(&tenant)
-                                .bind(&id)
-                                .bind(&fingerprint)
-                                .fetch_optional(&mut *c)
-                                .await?;
-                                if old == Some(false) {
-                                    sqlx::query(
-                                        crate::storage_profile::sql(profile)
-                                            .enrollment_tasks_recovery_accept_action_dispatch_2,
-                                    )
-                                    .bind(tenant)
-                                    .bind(id)
-                                    .execute(c)
-                                    .await?;
-                                }
-                                Ok(old)
-                            })
-                        })
-                        .await?
-                        .ok_or(crate::enrollment::tasks::Error::Invariant)?;
-                    if old {
-                        audit.management_result(
-                            rss_mdm_audit_integration::ManagementResult::Replayed,
-                        );
-                    }
-                    (if old {
-                        Ok(())
-                    } else {
-                        service.transactions.audit_store.append_in(tx, &fact).await
-                    })?;
-                    Ok(())
-                })
-            },
-        )
-        .await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        store.bind_in(tx).await?;
+        if !dispatch.accept_in(tx, match profile { rss_mdm_audit_integration::StorageProfile::Mdm => "UPDATE mdm_registration_tasks.runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted", rss_mdm_audit_integration::StorageProfile::Da => "UPDATE rss_da.enrollment_runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted", }).await? {
+            audit.finalize(None);
+            return Ok(false);
+        }
+        let run = match storage::read_run(profile, tx, id).await {
+            Err(crate::enrollment::tasks::transaction::Fault::Request(crate::enrollment::tasks::Error::Invariant)) => return Ok(false),
+            other => other?,
+        };
+        let activity = crate::enrollment::tasks::activity::run(
+            &run,
+            rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
-        result
+        let fact = Fact::business(
+            &audit,
+            OperationOwner::EnrollmentTask,
+            &format!("enrollment:{id}:dispatch"),
+            200,
+            "success",
+            None,
+        )?
+        .with_activity(&activity)?;
+        store.append_in(tx, &fact).await?;
+        audit.finalize(None);
+        Ok(true)
     }
 }
 

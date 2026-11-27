@@ -122,6 +122,7 @@ pub struct AttemptFailure {
 /// Owner-local facts; no task identity or input crosses the diagnostic boundary.
 #[derive(Clone, Copy, Debug)]
 pub struct AutomationHealth {
+    pub blocks_readiness: bool,
     pub discovery: Option<RunObservation>,
     pub recovery: rss_mdm_recovery_observation::Phase,
     pub scan: Option<RunObservation>,
@@ -141,6 +142,7 @@ impl Application {
             observed_at: value.observed_at,
         };
         AutomationHealth {
+            blocks_readiness: snapshot.blocks_readiness,
             discovery: snapshot.discovery.map(scan),
             recovery: snapshot.recovery,
             scan: snapshot.scan.map(scan),
@@ -174,34 +176,6 @@ impl Application {
             .scan(
                 scope,
                 result.map_err(|error| error.kind()),
-                self.clock.unix_seconds().ok(),
-            );
-    }
-
-    pub(crate) fn record_relay(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        message: Option<&rss_mdm_recovery_observation::RelayMessage>,
-        result: std::result::Result<(), &Error>,
-    ) {
-        let scope = rss_reconcile::Scope::new(
-            binding.tenant(),
-            crate::worker::jobs::domain(self.profile()),
-        )
-        .expect("fixed relay domain");
-        let outcome = result.map_err(|error| match error {
-            Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
-            Error::RollbackFailed => rss_reconcile::ErrorKind::RollbackFailed,
-            _ => rss_reconcile::ErrorKind::Transient,
-        });
-        self.automation_observation
-            .lock()
-            .expect("automation observation")
-            .relay(
-                &scope,
-                binding.epoch().get(),
-                message,
-                outcome,
                 self.clock.unix_seconds().ok(),
             );
     }

@@ -2,7 +2,6 @@ use super::*;
 use rss_mdm_audit_integration::Fact;
 use rss_mdm_audit_integration::activity::ActivityDelivery;
 use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, ReconcileStep, Reconciler};
-use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use sqlx::Row;
 use std::sync::Mutex;
 
@@ -82,34 +81,6 @@ fn diagnostic(event: rss_reconcile::Observation) {
         serde_json::json!({"event":"mdm_command_recovery_failure","phase":phase,"target":target,"reason":format!("{:?}",error.kind())})
     );
 }
-fn permanent(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::Unavailable(Failure::CommandInvariant | Failure::NativeInputIntegrity)
-            | Error::Malformed
-            | Error::Forbidden
-            | Error::Unauthorized
-    )
-}
-fn provider(error: PgError) -> Error {
-    use rss_transactional_messaging::error::MessagingErrorKind;
-    match error.kind() {
-        MessagingErrorKind::Permanent
-        | MessagingErrorKind::Invariant
-        | MessagingErrorKind::Conflict => Error::Unavailable(Failure::CommandInvariant),
-        _ => Error::Unavailable(Failure::CommandStorage),
-    }
-}
-fn relay_diagnostic_value(
-    phase: &str,
-    message_id: Option<&str>,
-    error: &Error,
-) -> serde_json::Value {
-    serde_json::json!({"event":"mdm_command_relay_failure","phase":phase,"messageId":message_id,"reason":if permanent(error){"invariant"}else if matches!(error, Error::CommitUnknown){"commit_unknown"}else{"transient"}})
-}
-fn relay_diagnostic(phase: &str, message_id: Option<&str>, error: &Error) {
-    eprintln!("{}", relay_diagnostic_value(phase, message_id, error));
-}
 impl Service {
     pub fn registration(
         self: Arc<Self>,
@@ -180,144 +151,62 @@ impl Service {
         result
     }
 
-    pub fn record_relay_health<T>(&self, result: &std::result::Result<T, Error>) {
-        self.readiness.relay_round(
-            result
-                .as_ref()
-                .map(|_| ())
-                .map_err(|e| failure(e.clone()).kind()),
-        );
-    }
-    pub async fn claim_relay(
-        &self,
-        execution: rss_transactional_messaging::fence::ExecutionBinding,
-        limit: std::num::NonZeroUsize,
-    ) -> std::result::Result<
-        Vec<(
-            rss_mdm_recovery_observation::RelayMessage,
-            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
-        )>,
-        Error,
-    > {
-        let claims = self
-            .outbox
-            .claim_partition_heads(execution, limit, deadline())
-            .await
-            .map_err(|e| {
-                let e = provider(e.into());
-                relay_diagnostic("claim", None, &e);
-                e
-            })?;
-        Ok(claims
-            .into_iter()
-            .map(|claim| {
-                (
-                    rss_mdm_recovery_observation::RelayMessage::from(PgOutboxStore::<()>::message(
-                        &claim,
-                    )),
-                    self.relay_claim(execution, claim),
-                )
-            })
-            .collect())
-    }
-    async fn relay_claim(
-        &self,
-        execution: rss_transactional_messaging::fence::ExecutionBinding,
-        claim: rss_transactional_messaging_postgres::PgOutboxClaim,
-    ) -> std::result::Result<(), Error> {
-        let message = PgOutboxStore::<()>::message(&claim);
-        let message_id = message.message_id().as_str().to_owned();
-        let action = message_id.starts_with("action.");
-        let id = message_id
-            .strip_prefix(if action { "action." } else { "dispatch." })
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .ok_or_else(|| {
-                let e = Error::Unavailable(Failure::CommandInvariant);
-                relay_diagnostic("identity", Some(&message_id), &e);
-                e
-            })?;
-        let fingerprint = message.fingerprint().as_bytes().to_vec();
-        let result = if action {
-            self.accept_action_dispatch(execution, id, fingerprint)
-                .await
-        } else {
-            self.accept_dispatch(execution, id, fingerprint).await
-        };
-        if let Err(e) = &result {
-            relay_diagnostic("accept", Some(&message_id), e);
-            // Preserve the claim and original message for repair; never retry poisoned facts.
-            if permanent(e) {
-                return result;
-            }
-        }
-        // Only a confirmed gateway commit can authorize a published settlement.
-        let settlement = if result.is_ok() {
-            OutboxSettlement::Published(())
-        } else {
-            OutboxSettlement::Retry
-        };
-        self.outbox
-            .settle(claim, settlement, deadline())
-            .await
-            .map_err(|e| {
-                let e = provider(e.into());
-                relay_diagnostic("settle", Some(&message_id), &e);
-                e
-            })?;
-        result?;
-        Ok(())
-    }
-    pub async fn accept_dispatch(
-        &self,
-        execution: rss_transactional_messaging::fence::ExecutionBinding,
-        id: Uuid,
-        fingerprint: Vec<u8>,
-    ) -> std::result::Result<(), Error> {
-        let audit = RequestAudit::new(
-            rss_mdm_audit_integration::Origin::Background,
+    pub async fn project_native_in(
+        tx: &mut PgTransaction<'_>,
+        dispatch: &rss_mdm_work_page::relay::Dispatch,
+        store: &rss_mdm_audit_integration::AuditStore,
+        protection: &rss_mdm_native_protection::Protector,
+    ) -> Result<bool> {
+        use rss_mdm_audit_integration::operation::OperationOwner;
+        let id = dispatch.id;
+        let audit = rss_mdm_audit_integration::command_transaction::dispatch_audit(
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            execution,
-            "command_dispatch",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        audit.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
+            dispatch.binding,
+            OperationOwner::DeviceControl,
             id,
-            "command_dispatch",
-            rss_mdm_audit_integration::AuditIntent::Management,
+            "command-dispatch",
         );
-        audit.identify_service("command-dispatch");
-        let result=crate::control::Transaction::run(&self.transactions.audit_store,&self.transactions.runtime,execution,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
-            let (service,id,fingerprint,audit) = ctx;
-            service.transactions.audit_store.prepare_in(tx,audit,&[]).await?;
-            let operation_id=*id;
-            let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
-            let old=tx.with_connection(move|c|Box::pin(async move {
-                let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
-                if old==Some(false) {sqlx::query("UPDATE mdm_devices.control_operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).execute(c).await?;}
-                Ok(old)
-            })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-            if old {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            if !old {
-                let operation=storage::load(tx,&service.transactions.protection,operation_id).await?;
-                let mut activity=crate::control::timeline::native_activity(&operation,service.transactions.required_command(tx,&operation).await?.status(),rss_mdm_audit_integration::activity::ActivityPhase::Dispatched);
-                activity.delivery=Some(ActivityDelivery::Dispatched);
-                let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::DeviceControl, &format!("command:{}:dispatch",operation.id), 200, "success", None)?.with_activity(&activity)?;
-                service.transactions.audit_store.append_in(tx, &fact).await?;
-                if matches!(&operation.request.task, crate::control::Task::Windows { .. }) {
-                    crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::WindowsPush).await?;
-                }
-            }
-            if !old { crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::Apple).await?; }
-            Ok(())
-        })).await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        store.bind_in(tx).await?;
+        if !dispatch.accept_in(tx, "UPDATE mdm_devices.control_operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_fingerprint=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT gateway_accepted").await? {
+            audit.finalize(None);
+            return Ok(false);
+        }
+        let operation = match storage::load(tx, protection, id).await {
+            Err(crate::control::transaction::Fault::Request(Error::Unavailable(Failure::CommandInvariant | Failure::NativeInputIntegrity))) => return Ok(false),
+            other => other?,
+        };
+        let stored = dispatch.native_status_in(tx).await?;
+        let Ok(status) = dc::Status::restore(&stored) else { return Ok(false); };
+        let mut activity = crate::control::timeline::native_activity(
+            &operation,
+            status,
+            rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
         );
-        result
+        activity.delivery = Some(ActivityDelivery::Dispatched);
+        let fact = Fact::business(
+            &audit,
+            OperationOwner::DeviceControl,
+            &format!("command:{id}:dispatch"),
+            200,
+            "success",
+            None,
+        )?
+        .with_activity(&activity)?;
+        store.append_in(tx, &fact).await?;
+        if matches!(
+            &operation.request.task,
+            crate::control::Task::Windows { .. }
+        ) {
+            crate::control::worker_wake::notify_in(
+                tx,
+                crate::control::worker_wake::Work::WindowsPush,
+            )
+            .await?;
+        }
+        crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::Apple)
+            .await?;
+        audit.finalize(None);
+        Ok(true)
     }
 }
 async fn device(
@@ -862,48 +751,26 @@ impl Service {
     }
     pub async fn relay_page(
         &self,
-        after: Option<(Uuid, i64)>,
-    ) -> std::result::Result<Vec<(Uuid, i64)>, Error> {
-        let page = self.readiness.relay_page(after);
-        let result = sqlx::query_as(
-            "SELECT tenant_id,expected_epoch FROM mdm_devices.control_work_relay_scopes($1,$2)",
+        after: Option<Uuid>,
+    ) -> std::result::Result<
+        Vec<(Uuid, i64, rss_mdm_recovery_observation::RelayWork)>,
+        rss_reconcile::ErrorKind,
+    > {
+        let page = self.readiness.relay_page();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), sqlx::query_as(
+            "SELECT tenant_id,expected_epoch,claimable,quarantined FROM mdm_devices.control_work_relay_scopes($1)",
         )
-        .bind(after.map(|x| x.0))
-        .bind(after.map(|x| x.1))
-        .fetch_all(&self.read_pool)
-        .await
-        .map_err(|_| Error::Unavailable(Failure::CommandStorage));
-        if let Ok(rows) = &result {
-            page.confirm(rows);
-        }
-        self.record_relay_health(&result);
-        result
+        .bind(after)
+        .fetch_all(&self.read_pool))
+        .await.map_err(|_|rss_reconcile::ErrorKind::Deadline).and_then(|rows|rows.map_err(|error|crate::discovery::classify(&error)));
+        self.readiness
+            .relay_round(result.as_ref().map(|_| ()).map_err(|kind| *kind));
+        result.map(|rows| page.bindings(rows))
     }
-    pub fn relay_check(
+    pub fn relay_scope(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-    ) -> Option<(
-        rss_mdm_recovery_observation::RelayCheck<'_>,
-        &rss_transactional_messaging_postgres::PgRuntime,
-        &rss_transactional_messaging_postgres::PgOutboxStore<()>,
-    )> {
-        Some((
-            self.readiness.relay_check(binding)?,
-            &self.transactions.runtime,
-            &self.outbox,
-        ))
-    }
-    pub fn observe_relay(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        message: Option<&rss_mdm_recovery_observation::RelayMessage>,
-        result: std::result::Result<(), &Error>,
-    ) {
-        self.readiness.relay_scope(
-            &recovery_scope(binding.tenant()),
-            binding.epoch().get(),
-            message,
-            result.map_err(|e| failure(e.clone()).kind()),
-        );
+    ) -> Option<rss_mdm_recovery_observation::RelayScope<'_>> {
+        Some(self.readiness.relay_scope(binding))
     }
 }

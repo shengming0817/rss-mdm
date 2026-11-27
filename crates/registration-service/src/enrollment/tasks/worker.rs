@@ -2,8 +2,7 @@
 use crate::enrollment::tasks::{Error, Service};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, ReconcileStep, Reconciler};
-use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
-use rss_transactional_messaging_postgres::{PgOutboxStore, PgTransaction};
+use rss_transactional_messaging_postgres::PgTransaction;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -15,7 +14,7 @@ pub struct Worker {
     readiness: rss_mdm_recovery_observation::Readiness,
     service: Arc<Service>,
     store: rss_mdm_work_page::scheduler::Scheduler,
-    outbox: Arc<PgOutboxStore<()>>,
+
     budget: Arc<rss_mdm_work_page::capacity::Capacity>,
 }
 impl Worker {
@@ -27,21 +26,6 @@ impl Worker {
         store: rss_mdm_work_page::scheduler::Scheduler,
         budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     ) -> std::result::Result<Self, Error> {
-        let delivery = rss_transactional_messaging::policy::DeliveryBudget::new(
-            Duration::from_secs(60),
-            Duration::from_secs(6),
-            Duration::from_secs(6),
-            Duration::from_secs(6),
-        )
-        .map_err(|_| Error::Invariant)?;
-        let outbox = Arc::new(
-            PgOutboxStore::new(
-                service.transactions.runtime.clone(),
-                crate::enrollment::tasks::admission::messaging_domain(profile),
-                delivery,
-            )
-            .map_err(|_| Error::Unavailable)?,
-        );
         let readiness = rss_mdm_recovery_observation::Readiness::new(
             match profile {
                 rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
@@ -56,7 +40,6 @@ impl Worker {
             readiness,
             service,
             store,
-            outbox,
             budget,
         })
     }
@@ -136,80 +119,6 @@ impl Worker {
         &self,
     ) -> impl rss_reconcile::DurableStore<Claim = rss_reconcile_postgres::PgClaim> + '_ {
         rss_mdm_recovery_observation::ObservedStore::new(&self.store, &self.readiness)
-    }
-    pub fn record_relay_health<T>(&self, result: &std::result::Result<T, Error>) {
-        self.readiness.relay_round(
-            result
-                .as_ref()
-                .map(|_| ())
-                .map_err(|e| failure(e.clone()).kind()),
-        );
-    }
-    pub async fn claim_relay(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        limit: std::num::NonZeroUsize,
-    ) -> std::result::Result<
-        Vec<(
-            rss_mdm_recovery_observation::RelayMessage,
-            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
-        )>,
-        Error,
-    > {
-        let claims = self
-            .outbox
-            .claim_partition_heads(
-                binding,
-                limit,
-                crate::enrollment::tasks::transaction::deadline(),
-            )
-            .await
-            .map_err(|_| Error::Unavailable)?;
-        Ok(claims
-            .into_iter()
-            .map(|claim| {
-                (
-                    rss_mdm_recovery_observation::RelayMessage::from(PgOutboxStore::<()>::message(
-                        &claim,
-                    )),
-                    self.relay_claim(binding, claim),
-                )
-            })
-            .collect())
-    }
-    async fn relay_claim(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        claim: rss_transactional_messaging_postgres::PgOutboxClaim,
-    ) -> std::result::Result<(), Error> {
-        let message = PgOutboxStore::<()>::message(&claim);
-        let id = message
-            .message_id()
-            .as_str()
-            .strip_prefix("enrollment.")
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .ok_or(Error::Invariant)?;
-        let result = self
-            .service
-            .accept_action_dispatch(binding, id, message.fingerprint().as_bytes().to_vec())
-            .await;
-        if result.as_ref().err().is_some_and(permanent) {
-            return result;
-        }
-        let settlement = if result.is_ok() {
-            OutboxSettlement::Published(())
-        } else {
-            OutboxSettlement::Retry
-        };
-        self.outbox
-            .settle(
-                claim,
-                settlement,
-                crate::enrollment::tasks::transaction::deadline(),
-            )
-            .await
-            .map_err(|_| Error::Unavailable)?;
-        result
     }
 }
 fn permanent(e: &Error) -> bool {
@@ -575,42 +484,22 @@ impl Worker {
     }
     pub async fn relay_page(
         &self,
-        after: Option<(Uuid, i64)>,
-    ) -> std::result::Result<Vec<(Uuid, i64)>, Error> {
-        let page = self.readiness.relay_page(after);
-        let result = sqlx::query_as(match self.service.profile() {rss_mdm_install_support::StorageProfile::Mdm=>"SELECT tenant_id,expected_epoch FROM mdm_registration_tasks.runs_work_relay_scopes($1,$2)",rss_mdm_install_support::StorageProfile::Da=>"SELECT tenant_id,expected_epoch FROM rss_da.enrollment_runs_work_relay_scopes($1,$2)"})
-            .bind(after.map(|x|x.0)).bind(after.map(|x|x.1)).fetch_all(&self.read_pool).await.map_err(|_| Error::Unavailable);
-        if let Ok(rows) = &result {
-            page.confirm(rows);
-        }
-        self.record_relay_health(&result);
-        result
+        after: Option<Uuid>,
+    ) -> std::result::Result<
+        Vec<(Uuid, i64, rss_mdm_recovery_observation::RelayWork)>,
+        rss_reconcile::ErrorKind,
+    > {
+        let page = self.readiness.relay_page();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), sqlx::query_as(match self.service.profile() {rss_mdm_install_support::StorageProfile::Mdm=>"SELECT tenant_id,expected_epoch,claimable,quarantined FROM mdm_registration_tasks.runs_work_relay_scopes($1)",rss_mdm_install_support::StorageProfile::Da=>"SELECT tenant_id,expected_epoch,claimable,quarantined FROM rss_da.enrollment_runs_work_relay_scopes($1)"})
+            .bind(after).fetch_all(&self.read_pool)).await.map_err(|_|rss_reconcile::ErrorKind::Deadline).and_then(|rows|rows.map_err(|error|crate::discovery::classify(&error)));
+        self.readiness
+            .relay_round(result.as_ref().map(|_| ()).map_err(|kind| *kind));
+        result.map(|rows| page.bindings(rows))
     }
-    pub fn relay_check(
+    pub fn relay_scope(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-    ) -> Option<(
-        rss_mdm_recovery_observation::RelayCheck<'_>,
-        &rss_transactional_messaging_postgres::PgRuntime,
-        &rss_transactional_messaging_postgres::PgOutboxStore<()>,
-    )> {
-        Some((
-            self.readiness.relay_check(binding)?,
-            &self.service.transactions.runtime,
-            &self.outbox,
-        ))
-    }
-    pub fn observe_relay(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        message: Option<&rss_mdm_recovery_observation::RelayMessage>,
-        result: std::result::Result<(), &Error>,
-    ) {
-        self.readiness.relay_scope(
-            &crate::enrollment::tasks::wake::scope(self.service.profile(), binding.tenant()),
-            binding.epoch().get(),
-            message,
-            result.map_err(|e| failure(e.clone()).kind()),
-        );
+    ) -> Option<rss_mdm_recovery_observation::RelayScope<'_>> {
+        Some(self.readiness.relay_scope(binding))
     }
 }

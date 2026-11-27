@@ -61,7 +61,7 @@ impl Transactions {
         let audit = audit_store.clone();
         let supersede_batch = materials.supersede_batch;
         let caller = runtime.clone();
-        let (_, store) = runtime
+        let store = runtime
             .local_tx(probe, deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;

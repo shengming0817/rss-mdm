@@ -24,7 +24,7 @@ pub struct Transactions {
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) changes: Arc<dyn crate::inputs::ConfigurationDependents>,
-    pub(crate) outbox: Arc<rss_transactional_messaging_postgres::PgOutboxStore<()>>,
+
 
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
