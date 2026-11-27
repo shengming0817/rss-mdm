@@ -287,13 +287,12 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     );
     Box::pin(step(&h, retirement)).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
-    for (_, claim) in
-        h.a.service
-            .claim_relay(h.c.execution(), std::num::NonZeroUsize::new(2).unwrap())
-            .await?
-    {
-        claim.await?;
-    }
+    assert_eq!(
+        h.a.resources
+            .project_once(&h.c, crate::assembly::task_relay::lanes::DEVICE)
+            .await?,
+        1
+    );
     let offer = h.claim().await?;
     assert!(matches!(offer.payload, w::TaskPayload::Unmanage(_)));
     h.event(&offer, w::TaskEvent::Received).await?;

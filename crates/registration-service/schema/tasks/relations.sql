@@ -19,7 +19,7 @@ GRANT UPDATE(authority) ON TABLE mdm_registration_tasks.operations TO mdm_comman
 GRANT UPDATE(revision,observed_command_version) ON TABLE mdm_registration_tasks.operations TO mdm_command_runtime;
 
 
-GRANT UPDATE(gateway_accepted,dispatch_failure) ON TABLE mdm_registration_tasks.operations TO mdm_command_runtime;
+GRANT UPDATE(dispatch_failure) ON TABLE mdm_registration_tasks.operations TO mdm_command_runtime;
 
 
 GRANT SELECT,INSERT ON TABLE mdm_registration_tasks.requests TO mdm_command_runtime;

@@ -38,10 +38,14 @@ const BASE_ROLES: &[&str] = &[
     "mdm_asset_ingress_consumer",
     "mdm_tenant_registry",
     "mdm_identity_provisioning",
- ];
+];
 
 pub(super) fn roles() -> impl Iterator<Item = &'static str> {
-    BASE_ROLES.iter().copied().chain(crate::assembly::task_relay::lanes::LANES.iter().map(|lane| lane.role))
+    BASE_ROLES.iter().copied().chain(
+        crate::assembly::task_relay::lanes::LANES
+            .iter()
+            .map(|lane| lane.role),
+    )
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

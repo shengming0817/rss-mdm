@@ -90,8 +90,9 @@ impl OwnerRuntime {
         )
         .with_pool_limits(0, connections);
         let runtime = Arc::new(
-            PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding.storage()).await
-            .map_err(|_| Error::Unavailable(Failure::Database))?,
+            PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding.storage())
+                .await
+                .map_err(|_| Error::Unavailable(Failure::Database))?,
         );
         acquire(Resource::new(runtime.clone(), name));
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));

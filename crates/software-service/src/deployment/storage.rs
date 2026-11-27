@@ -11,10 +11,7 @@ pub async fn bind_command_in(
     tx: &mut PgTransaction<'_>,
     clock: rss_device_command_postgres::CommandClock,
     supersede_batch: rss_device_command::BatchLimit,
-) -> std::result::Result<
-    rss_device_command_postgres::PgStore<()>,
-    PgError,
-> {
+) -> std::result::Result<rss_device_command_postgres::PgStore<()>, PgError> {
     runtime.validate_transaction(tx)?;
     let budget = rss_transactional_messaging::policy::DeliveryBudget::new(
         Duration::from_secs(60),
@@ -29,14 +26,9 @@ pub async fn bind_command_in(
         "mdm_policy_runtime",
     ])
     .map_err(|_| PgError::from(sqlx::Error::Protocol("command caller declaration".into())))?;
-    let store = rss_device_command_postgres::PgStore::new(
-        tx,
-        outbox,
-        clock,
-        &callers,
-        supersede_batch,
-    )
-    .await?;
+    let store =
+        rss_device_command_postgres::PgStore::new(tx, outbox, clock, &callers, supersede_batch)
+            .await?;
     Ok(store)
 }
 

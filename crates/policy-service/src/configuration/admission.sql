@@ -21,7 +21,6 @@ WITH reachable AS (
  ('mdm_planning.configuration_objects','digest'),
  ('mdm_planning.configuration_objects','diagnosis'),
  ('mdm_planning.configuration_operations','dispatch_failure'),
- ('mdm_planning.configuration_operations','gateway_accepted'),
  ('mdm_planning.configuration_operations','revision'),
  ('mdm_planning.configuration_operations','observed_command_version'),
  ('mdm_planning.configuration_recovery','authority_epoch'),
@@ -50,11 +49,4 @@ SELECT current_setting('transaction_isolation')='read committed'
  AND NOT EXISTS(SELECT FROM required r JOIN pg_class c ON c.oid=to_regclass(r.relation),LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute col ON col.attrelid=to_regclass(r.relation),LATERAL aclexplode(col.attacl) a
- WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
- AND NOT EXISTS(SELECT FROM (VALUES
-  ('rss_transactional_messaging.claim_outbox(uuid,text,integer,integer,bigint)'),
-  ('rss_transactional_messaging.next_outbox_wakeup(uuid,text)'),
-  ('rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'),
-  ('rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)')
- ) required(signature) WHERE to_regprocedure(signature) IS NULL
-  OR NOT has_function_privilege(current_user,to_regprocedure(signature),'EXECUTE'));
+ WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable));

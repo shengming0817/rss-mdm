@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub async fn owner(c: &Context, role: &str) -> Result<crate::owner_storage::OwnerRuntime> {
     if role == "mdm_policy_runtime" {
         return Ok(crate::owner_storage::OwnerRuntime::open(
-            crate::owner_storage::Messaging::Runtime(&c.inputs.database(&c.profile, role)),
+            &c.inputs.database(&c.profile, role),
             c.execution(),
             4,
             c.audit.clone(),

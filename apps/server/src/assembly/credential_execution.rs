@@ -1,7 +1,7 @@
 //! Recovery receives shared host resources; no capability retains another business service.
 use rss_mdm_recovery_credentials::{native, tasks};
 use rss_transactional_messaging_postgres::PgRuntime;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct Assembly {
     pub tasks: Vec<Arc<tasks::Service>>,
@@ -80,17 +80,14 @@ pub(crate) async fn assemble(
             .await
             .map_err(super::owner_errors::credential)?,
         ));
-        worker.push(Arc::new(
-            tasks::worker::Worker::new(
-                discovery_pool.clone(),
-                probe.storage(),
-                profile,
-                service.clone(),
-                reconcile.clone(),
-                budget.clone(),
-            )
-            .map_err(super::owner_errors::credential)?,
-        ));
+        worker.push(Arc::new(tasks::worker::Worker::new(
+            discovery_pool.clone(),
+            probe.storage(),
+            profile,
+            service.clone(),
+            reconcile.clone(),
+            budget.clone(),
+        )));
         tasks.push(service);
     }
     let transactions = native::Transactions::bind(

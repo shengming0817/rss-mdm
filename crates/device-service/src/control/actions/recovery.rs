@@ -130,7 +130,9 @@ impl Service {
             return Ok(false);
         }
         let run = match super::storage::read_run(tx, id).await {
-            Err(crate::control::transaction::Fault::Request(crate::control::Error::Unavailable(crate::control::Failure::CommandInvariant))) => return Ok(false),
+            Err(crate::control::transaction::Fault::Request(
+                crate::control::Error::Unavailable(crate::control::Failure::CommandInvariant),
+            )) => return Ok(false),
             other => other?,
         };
         let activity = super::activity::run(

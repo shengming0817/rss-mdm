@@ -9,6 +9,10 @@ pub fn units() -> Vec<Unit> {
             "messaging",
             rss_transactional_messaging_postgres::MIGRATION_SQL,
         ),
+        (
+            "command-relay-catalog",
+            rss_mdm_work_page::relay::DISCOVERY_SQL,
+        ),
         ("reconcile", rss_reconcile_postgres::MIGRATION_SQL),
         ("inventory", rss_mdm_inventory_postgres::MIGRATION_SQL),
         (

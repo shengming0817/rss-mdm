@@ -151,9 +151,7 @@ async fn host_with_provider(
     provider: Option<(u16, reqwest::Certificate)>,
 ) -> Result<Host> {
     let receipts = crate::owner_storage::OwnerRuntime::open(
-        crate::owner_storage::Messaging::Producer(
-            &c.inputs.database(&c.profile, "mdm_wns_runtime"),
-        ),
+        &c.inputs.database(&c.profile, "mdm_wns_runtime"),
         c.execution(),
         crate::background::WNS_RECEIPT_CONNECTIONS,
         c.audit.clone(),

@@ -24,16 +24,16 @@ impl Worker {
         service: Arc<ScriptService>,
         store: rss_mdm_work_page::scheduler::Scheduler,
         budget: Arc<rss_mdm_work_page::capacity::Capacity>,
-    ) -> std::result::Result<Self, Error> {
+    ) -> Self {
         let readiness = rss_mdm_recovery_observation::Readiness::new("mdm.script.v1", true, false);
-        Ok(Self {
+        Self {
             read_pool,
             storage,
             readiness,
             service,
             store,
             budget,
-        })
+        }
     }
     pub fn registration(
         self: Arc<Self>,

@@ -24,12 +24,13 @@ async fn queued(
     .await?;
     let fixture = open(c).await?;
     assert!(accepted(&accept(c, &fixture, policy, &target, id).await?));
-    let fingerprint: Vec<u8> = sqlx::query_scalar("SELECT dispatch_fingerprint FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
-    fixture
-        .software
-        .service
-        .accept_action_dispatch(c.execution(), id, fingerprint)
-        .await?;
+    assert_eq!(
+        fixture
+            .resources
+            .project_once(c, crate::assembly::task_relay::lanes::SOFTWARE)
+            .await?,
+        1
+    );
     limit_run(c, id, lifetime).await?;
     recover_run(c, &fixture, id).await?;
     let mut tx = command::seed_transaction(c).await?;

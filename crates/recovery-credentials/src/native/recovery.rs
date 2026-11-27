@@ -139,11 +139,15 @@ impl Service {
             return Ok(false);
         }
         let operation = match storage::load(tx, protection, id).await {
-            Err(crate::native::transaction::Fault::Request(Error::Unavailable(Failure::CommandInvariant | Failure::NativeInputIntegrity))) => return Ok(false),
+            Err(crate::native::transaction::Fault::Request(Error::Unavailable(
+                Failure::CommandInvariant | Failure::NativeInputIntegrity,
+            ))) => return Ok(false),
             other => other?,
         };
         let stored = dispatch.native_status_in(tx).await?;
-        let Ok(status) = dc::Status::restore(&stored) else { return Ok(false); };
+        let Ok(status) = dc::Status::restore(&stored) else {
+            return Ok(false);
+        };
         let mut activity = crate::native::timeline::native_activity(
             &operation,
             status,

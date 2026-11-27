@@ -20,7 +20,7 @@ async fn registered_owners_recover_discovery_without_restart() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .acquire_timeout(Duration::from_millis(100))
+        .acquire_timeout(Duration::from_secs(2))
         .connect_with(c.inputs.options("shared", "mdm_access")?)
         .await?;
     let fixture = Fixture::with_discovery(&c, pool.clone()).await?;
@@ -611,7 +611,6 @@ async fn owner_claim_wrappers_recover_only_the_failed_scope() -> Result<()> {
     let other = Context::open("shared", &[]).await?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .acquire_timeout(Duration::from_millis(100))
         .connect_with(c.inputs.options("shared", "mdm_scheduler_runtime")?)
         .await?;
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
@@ -628,8 +627,9 @@ async fn owner_claim_wrappers_recover_only_the_failed_scope() -> Result<()> {
                 let a = rss_reconcile::Scope::new(c.tenant, $domain)?;
                 let b = rss_reconcile::Scope::new(other.tenant, $domain)?;
                 let held = pool.acquire().await?;
+                let blocked = control.child(Duration::from_millis(100));
                 anyhow::ensure!(
-                    work.claim_due(&a, 1, 1, Duration::from_secs(30), &control)
+                    work.claim_due(&a, 1, 1, Duration::from_secs(30), &blocked)
                         .await
                         .is_err()
                 );

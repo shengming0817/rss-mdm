@@ -64,7 +64,9 @@ impl<'a> RelayScope<'a> {
     }
     pub fn owner_failed(&self, kind: rss_reconcile::ErrorKind) {
         self.state.lock().expect("relay observations").relay_round(
-            self.scope.reconciler(), Err(kind), self.at,
+            self.scope.reconciler(),
+            Err(kind),
+            self.at,
         );
     }
     pub fn quarantined(&self) {

@@ -31,15 +31,12 @@ pub(crate) async fn assemble(
         .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?,
         sessions.clone(),
     ));
-    let script_work = Arc::new(
-        rss_mdm_script_service::worker::Worker::new(
-            storage.discovery_pool.clone(),
-            storage.storage,
-            scripts.clone(),
-            storage.reconcile.clone(),
-            storage.worker_budget.clone(),
-        )
-        .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?,
-    );
+    let script_work = Arc::new(rss_mdm_script_service::worker::Worker::new(
+        storage.discovery_pool.clone(),
+        storage.storage,
+        scripts.clone(),
+        storage.reconcile.clone(),
+        storage.worker_budget.clone(),
+    ));
     Ok((scripts, script_work))
 }

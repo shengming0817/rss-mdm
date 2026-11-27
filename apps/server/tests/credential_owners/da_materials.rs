@@ -466,7 +466,7 @@ async fn verify_access_recovery(
     )
     .context("prepare the command worker runtime inputs")?;
     let runtime = Arc::new(
-        rss_transactional_messaging_postgres::PgRuntime::connect(
+        rss_transactional_messaging_postgres::PgRuntime::connect_producer(
             pg.with_pool_limits(0, 2),
             crate::lifecycle::RuntimeTimer,
             execution_binding,

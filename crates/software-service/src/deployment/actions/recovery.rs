@@ -173,7 +173,9 @@ impl SoftwareService {
             return Ok(false);
         }
         let run = match super::storage::read_run(tx, id).await {
-            Err(crate::deployment::transaction::Fault::Request(crate::deployment::Error::Unavailable(crate::deployment::Failure::CommandInvariant))) => return Ok(false),
+            Err(crate::deployment::transaction::Fault::Request(
+                crate::deployment::Error::Unavailable(crate::deployment::Failure::CommandInvariant),
+            )) => return Ok(false),
             other => other?,
         };
         let activity = super::activity::run(

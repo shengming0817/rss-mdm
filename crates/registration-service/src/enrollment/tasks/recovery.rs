@@ -81,7 +81,9 @@ impl Service {
             return Ok(false);
         }
         let run = match storage::read_run(profile, tx, id).await {
-            Err(crate::enrollment::tasks::transaction::Fault::Request(crate::enrollment::tasks::Error::Invariant)) => return Ok(false),
+            Err(crate::enrollment::tasks::transaction::Fault::Request(
+                crate::enrollment::tasks::Error::Invariant,
+            )) => return Ok(false),
             other => other?,
         };
         let activity = crate::enrollment::tasks::activity::run(

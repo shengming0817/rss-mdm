@@ -41,7 +41,7 @@ pub(crate) async fn assemble(
             collections.clone(),
             storage.reconcile.clone(),
             storage.worker_budget.clone(),
-        )?,
+        ),
     );
     Ok((collections, collection_work))
 }

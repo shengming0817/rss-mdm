@@ -13,7 +13,7 @@ GRANT SELECT,INSERT ON mdm_planning.configuration_devices,mdm_planning.configura
 GRANT UPDATE(version,operation) ON mdm_planning.configuration_claims TO mdm_policy_runtime,mdm_command_runtime;
 GRANT UPDATE(input_revision,observed_revision) ON mdm_planning.configuration_devices TO mdm_policy_runtime,mdm_command_runtime;
 GRANT UPDATE(operation,digest,diagnosis) ON mdm_planning.configuration_objects TO mdm_policy_runtime,mdm_command_runtime;
-GRANT UPDATE(dispatch_failure,gateway_accepted,revision,observed_command_version) ON mdm_planning.configuration_operations TO mdm_policy_runtime,mdm_command_runtime;
+GRANT UPDATE(dispatch_failure,revision,observed_command_version) ON mdm_planning.configuration_operations TO mdm_policy_runtime,mdm_command_runtime;
 GRANT UPDATE(authority_epoch,recovery_after) ON mdm_planning.configuration_recovery TO mdm_policy_runtime,mdm_command_runtime;
 ALTER TABLE mdm_planning.configuration_claims ADD FOREIGN KEY (tenant_id, operation) REFERENCES mdm_planning.configuration_operations (tenant_id, id);
 ALTER TABLE mdm_planning.configuration_devices ADD FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id);

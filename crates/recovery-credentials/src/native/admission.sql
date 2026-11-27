@@ -4,7 +4,7 @@ WITH reachable AS (
 ), required(relation,insertable,deletable) AS (VALUES
  ('mdm_recovery_tasks.operations',true,false),('mdm_recovery_tasks.requests',true,false)
 ), updates(relation,col) AS (VALUES
- ('mdm_recovery_tasks.operations','authority'),('mdm_recovery_tasks.operations','revision'),('mdm_recovery_tasks.operations','observed_command_version'),('mdm_recovery_tasks.operations','gateway_accepted'),('mdm_recovery_tasks.operations','dispatch_failure'),('mdm_recovery_tasks.operations','request')
+ ('mdm_recovery_tasks.operations','authority'),('mdm_recovery_tasks.operations','revision'),('mdm_recovery_tasks.operations','observed_command_version'),('mdm_recovery_tasks.operations','dispatch_failure'),('mdm_recovery_tasks.operations','request')
 )
 SELECT current_setting('transaction_isolation')='read committed'
  AND current_user='mdm_command_runtime'

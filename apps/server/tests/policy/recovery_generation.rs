@@ -26,7 +26,7 @@ pub(super) async fn verify(
         let attempt=runtime.local_tx(c.execution(),OperationDeadline::from_remaining(Duration::from_secs(15)),move |tx|Box::pin(async move{
             let role:String=tx.with_connection(|c|Box::pin(async move{sqlx::query_scalar("SELECT session_user::text").fetch_one(c).await})).await?;
             assert_eq!(role,"mdm_policy_runtime");
-            let (_,store)=crate::assembly::host_storage::bind_command_in(caller,tx,rss_device_command_postgres::CommandClock::Postgres,BatchLimit::new(1).expect("one per page"),rss_transactional_messaging::message::MessagingDomain::parse("mdm.policy.configuration.v1").expect("installed Policy domain")).await?;
+            let store=crate::assembly::host_storage::bind_command_in(caller,tx,rss_device_command_postgres::CommandClock::Postgres,BatchLimit::new(1).expect("one per page"),rss_transactional_messaging::message::MessagingDomain::parse("mdm.policy.configuration.v1").expect("installed Policy domain")).await?;
             store.advance(tx,scope,Coordinate::new(generation,epoch).expect("current"),Coordinate::new(generation+1,epoch+1).expect("successor")).await?;
             let observed=tx.with_connection(move |c|Box::pin(async move{sqlx::query_scalar::<_,i64>("UPDATE mdm_planning.configuration_operations o SET observed_command_version=c.version FROM rss_device_command.commands c WHERE (c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) AND o.tenant_id=$1::uuid AND o.id=$2 RETURNING o.observed_command_version").bind(tenant.to_string()).bind(id).fetch_one(c).await})).await?;
             let _=completed.send(observed);

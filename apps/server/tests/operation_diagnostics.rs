@@ -99,6 +99,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
     let access::credential::RequestCredential::Cookie(cookie) = manager.credential()? else {
         anyhow::bail!("cookie required")
     };
+    let csrf = cookie.csrf();
     let cookie = format!("__Host-identity-session={}", cookie.expose());
     let send = |path: String| {
         let request = client
@@ -134,6 +135,16 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             }
         })
         .await?;
+        let (status, page) = send(format!("/api/v1/tenants/{tenant}/operations")).await?;
+        assert!(status.is_success(), "{page}");
+        assert!(page["items"].is_array());
+        // The authenticated write must reach the device-control handler and its action validation.
+        let id = Uuid::new_v4();
+        let response=client.post(format!("http://{address}/api/v1/tenants/{tenant}/devices/{id}/operations"))
+           .header("host","mdm.example.test").header("x-rss-public-origin","https://mdm.example.test").header("x-forwarded-for","127.0.0.1")
+           .header("origin","https://mdm.example.test").header("x-identity-request","1").header("cookie",&cookie).header("x-csrf-token",&csrf)
+           .json(&json!({"operationId":Uuid::new_v4(),"deadline":time::OffsetDateTime::now_utc().unix_timestamp()+60,"action":{"kind":"wipe","confirmed":false}})).send().await?;
+        assert_eq!(response.status().as_u16(), 400);
         let mut failures = Vec::new();
         for (owner, case_id, query, expected) in &cases {
             let path = format!(

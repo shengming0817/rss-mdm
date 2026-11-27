@@ -5,6 +5,7 @@ fn recovery_reports_each_phase_and_keeps_other_owner_success_separate() {
     let healthy = OwnerHealth {
         task: Some(rss_runtime::TaskState::Running),
         stopping: false,
+        blocks_readiness: false,
         recovery: Phase::Healthy,
         discovery: Phase::Healthy,
         scan: Phase::Healthy,
@@ -15,6 +16,7 @@ fn recovery_reports_each_phase_and_keeps_other_owner_success_separate() {
     };
     let mut failed = healthy.clone();
     failed.recovery = Phase::Failed(rss_reconcile::ErrorKind::CommitUnknown);
+    failed.blocks_readiness = true;
     failed.unresolved_attempts = 1;
     let script = recovery_component(ComponentName::ScriptExecution, &failed);
     let collection = recovery_component(ComponentName::CollectionExecution, &healthy);
@@ -28,6 +30,10 @@ fn recovery_reports_each_phase_and_keeps_other_owner_success_separate() {
     assert_eq!(value["phases"].as_array().unwrap().len(), 2);
     failed.recovery = Phase::Healthy;
     failed.unresolved_attempts = 0;
+    failed.blocks_readiness = false;
+    failed.relay = Some(Phase::Failed(rss_reconcile::ErrorKind::Permanent));
+    let quarantined = recovery_component(ComponentName::ScriptExecution, &failed);
+    assert!(matches!(quarantined.health, Health::Degraded));
     assert!(matches!(
         recovery_component(ComponentName::ScriptExecution, &failed).readiness,
         Readiness::Ready

@@ -396,7 +396,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
         h.a.scripts.clone(),
         store,
         rss_mdm_work_page::capacity::Capacity::new(std::num::NonZeroUsize::new(1).unwrap()),
-    )?;
+    );
     let held = pool.acquire().await?;
     let scope = script::wake::scope(h.c.tenant);
     assert!(
@@ -406,7 +406,10 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
             .await
             .is_err()
     );
-    let failed = worker.health().recovery;
+    // Relay discovery can independently see a durable dead letter for another tenant.
+    // This proof tracks the original scan and its effect on readiness.
+    let failed = worker.health().scan;
+    assert!(worker.health().blocks_readiness);
     assert!(matches!(failed, Phase::Failed(_)));
     h.a.collection_work
         .recovery_store()
@@ -418,8 +421,12 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
             &control,
         )
         .await?;
-    worker.record_relay_health(&Ok(0));
-    assert_eq!(worker.health().recovery, failed);
+    worker
+        .relay_page(None)
+        .await
+        .map_err(rss_reconcile::Error::new)?;
+    assert_eq!(worker.health().scan, failed);
+    assert!(worker.health().blocks_readiness);
     drop(held);
     worker
         .recovery_store()
@@ -432,7 +439,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
         )
         .await?;
     assert_eq!(
-        worker.health().recovery,
+        worker.health().scan,
         failed,
         "another tenant scan cannot clear this failure"
     );
@@ -444,7 +451,8 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
             .claims
             .is_empty()
     );
-    assert_eq!(worker.health().recovery, Phase::Healthy);
+    assert_eq!(worker.health().scan, Phase::Healthy);
+    assert!(!worker.health().blocks_readiness);
     drop(worker);
     pool.close().await;
     for host in [&h, &other] {
@@ -487,10 +495,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     assert!(!accepted().await?);
     assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1")
         .bind(blocked.c.tenant.to_string()).execute(&blocked.c.operator).await?.rows_affected(), 1);
-    let stop = CancellationToken::new();
-    let relay = crate::assembly::task_relay::Relay::new(2, h.c.execution().storage(), &stop);
-    let work = h.a.script_work.clone();
-    let task = tokio::spawn(async move { crate::assembly::task_relay::script(&relay, work).await });
+    let stack = registered_relay(ready, Arc::new(tokio::sync::Notify::new())).await?;
     let observed = tokio::time::timeout(Duration::from_secs(20), async {
         while !accepted().await? {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -498,8 +503,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
         Ok::<_, anyhow::Error>(())
     })
     .await;
-    stop.cancel();
-    task.await?;
+    assert!(stack.shutdown().join().await?.is_clean());
     observed??;
     let epoch: i64 = sqlx::query_scalar(
         "SELECT expected_epoch FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
@@ -547,7 +551,7 @@ async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<
         h.a.scripts.clone(),
         store,
         rss_mdm_work_page::capacity::Capacity::new(std::num::NonZeroUsize::new(1).unwrap()),
-    )?);
+    ));
     let held = pool.acquire().await?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
@@ -637,25 +641,29 @@ async fn registered_relay(
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::owner_storage::Resource::new(owner.runtime, "relay-policy-test"),
     ));
+    let relay = crate::assembly::task_relay::registration(
+        &r.config,
+        &h.c.audit,
+        r.protection.clone(),
+        |r| startup.stage_resource(rss_runtime::DynManagedResource::new_box(r)),
+        policy,
+        h.a.service.clone(),
+        h.a.script_work.clone(),
+        h.a.collection_work.clone(),
+        h.a.software.service.clone(),
+        h.a.registration.native.clone(),
+        h.a.registration.worker.clone(),
+        h.a.access_execution.worker.clone(),
+        Vec::new(),
+        None,
+        4,
+        h.c.execution(),
+        hint,
+    )
+    .await?
+    .critical();
     let mut launch = startup.commit();
-    launch.stage_task_with_token(
-        crate::assembly::task_relay::registration(
-            policy,
-            h.a.service.clone(),
-            h.a.script_work.clone(),
-            h.a.collection_work.clone(),
-            h.a.software.service.clone(),
-            h.a.registration.native.clone(),
-            h.a.registration.worker.clone(),
-            h.a.access_execution.worker.clone(),
-            Vec::new(),
-            None,
-            4,
-            h.c.execution().storage(),
-            hint,
-        )
-        .critical(),
-    );
+    launch.stage_task_with_token(relay);
     launch.finish();
     Ok(stack)
 }
@@ -682,11 +690,87 @@ async fn accept_collection(h: &Harness) -> Result<Uuid> {
         .bind(h.c.tenant.to_string()).bind(version).fetch_one(&h.c.operator).await?)
 }
 
+/// Two ordered partitions of one tenant/domain. The first head has an invalid persisted
+/// Script result. Its successor and the independent head both have valid owner rows.
+async fn ordered_scripts(h: &Harness, template: Uuid) -> Result<[String; 3]> {
+    use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
+    use rss_transactional_messaging::{
+        message::*,
+        outbox::{OutboxWriter, PendingMessage},
+    };
+    use rss_transactional_messaging_postgres::PgOutboxWriter;
+    let binding = h.c.execution();
+    let domain = MessagingDomain::parse("mdm.script.v1")?;
+    let keys = [
+        PartitionKey::parse("broken")?,
+        PartitionKey::parse("healthy")?,
+    ];
+    let partitions = keys
+        .iter()
+        .map(|key| PartitionIdentity::new(binding.tenant(), domain.clone(), key.clone()))
+        .collect::<Vec<_>>();
+    let writer = PgOutboxWriter::new(h.a.resources.storage.runtime.clone(), domain.clone());
+    let runs = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    let ids = runs.map(|id| format!("script.{id}"));
+    let mut messages = Vec::new();
+    for (index, id) in ids.iter().enumerate() {
+        let key = &keys[usize::from(index == 2)];
+        let authored = AuthoredMessageMetadata::new(
+            binding.tenant(),
+            Timepoint::try_from(time::OffsetDateTime::now_utc().unix_timestamp())?,
+            domain.clone(),
+            MessageRoute::parse("agent.script")?,
+            ContractIdentity::new(
+                ContractId::parse("mdm.script-dispatch")?,
+                ContractVersion::from_static_major(1),
+                SchemaDigest::parse(&format!("sha256:{}", "a".repeat(64)))?,
+            ),
+        );
+        let metadata = MessageMetadata::new(
+            authored,
+            MessageMetadataExtensions::new(None, Some(key.clone()), None, Default::default()),
+        );
+        messages.push(PendingMessage::new(MessageEnvelope::new(
+            MessageId::parse(id)?,
+            metadata,
+            b"{}".to_vec(),
+        )));
+    }
+    h.a.resources
+        .storage
+        .runtime
+        .local_tx_with_context(
+            binding,
+            script::transaction::deadline(),
+            (writer, partitions, messages),
+            |ctx, tx| {
+                Box::pin(async move {
+                    tx.prepare_outbox_partitions(&ctx.1).await?;
+                    for message in ctx.2.drain(..) {
+                        ctx.0.append(tx, message).await?;
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
+    let mut tx = command::seed_transaction(&h.c).await?;
+    for (index, run) in runs.into_iter().enumerate() {
+        let written = sqlx::query("INSERT INTO mdm_script.runs(expected_epoch,tenant_id,id,policy_version,resource_id,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,invocation,result,dispatch_fingerprint)
+            SELECT r.expected_epoch,r.tenant_id,$3,r.policy_version,r.resource_id,r.origin,r.source_objects,r.device,$4,r.created_at,r.available_at,r.deadline,r.state,r.invocation,$5,o.fingerprint FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.message_id=$4 AND o.domain='mdm.script.v1' WHERE r.tenant_id=$1::uuid AND r.id=$2")
+            .bind(h.c.tenant.to_string()).bind(template).bind(run).bind(&ids[index]).bind((index==0).then(||serde_json::json!({"invalid":true}))).execute(&mut *tx).await?;
+        assert_eq!(written.rows_affected(), 1);
+    }
+    tx.commit().await?;
+    Ok(ids)
+}
+
 #[tokio::test]
 #[ignore = "T2: registered relay overlaps two devices, admits another tenant and owner, then drains on shutdown"]
 async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Result<()> {
-    let h = Harness::open().await?;
-    let late = Harness::open().await?;
+    let h = Harness::open_in("command_relay").await?;
+    let late = Harness::open_in("command_relay").await?;
     let trust: serde_json::Value = sqlx::query_scalar("SELECT body FROM mdm_task_signing.versions WHERE tenant_id=$1 AND usage='agent_task' AND revision=1")
         .bind(Uuid::from_bytes(h.c.tenant.octets())).fetch_one(&h.c.operator).await?;
     let (second, _, scope) = Harness::endpoint(&h.c, &serde_json::from_value(trust)?).await?;
@@ -716,6 +800,17 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         w::PolicyEventDecision::Accepted { .. }
     ));
     let collection = accept_collection(&h).await?;
+    let [poison, successor, ordered_peer] = ordered_scripts(&h, a).await?;
+    let (_, expired_version) = h.policy("expired-window").await?;
+    let expired = Uuid::new_v4();
+    assert!(matches!(
+        h.admit(expired_version, expired).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    let mut fixture = command::seed_transaction(&h.c).await?;
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.outbox SET automatic_retry_deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND message_id=$2")
+        .bind(h.c.tenant.to_string()).bind(format!("script.{expired}")).execute(&mut *fixture).await?.rows_affected(),1);
+    fixture.commit().await?;
     let mut lock = command::seed_transaction(&h.c).await?;
     sqlx::query("SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
         .bind(Uuid::from_bytes(h.c.tenant.octets()))
@@ -723,29 +818,6 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         .fetch_one(&mut *lock)
         .await?;
     let hint = Arc::new(tokio::sync::Notify::new());
-    // The second host observed an uncertain outcome for b. Its own readback
-    // must distinguish b's publication from the other pending or leased heads.
-    let binding = h.c.execution();
-    let receipt: (String, Vec<u8>) = sqlx::query_as(
-        "SELECT domain,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND message_id=$2",
-    ).bind(Uuid::from_bytes(h.c.tenant.octets())).bind(format!("script.{b}")).fetch_one(&h.c.operator).await?;
-    let message = rss_mdm_recovery_observation::RelayMessage {
-        domain: rss_transactional_messaging::message::MessagingDomain::parse(&receipt.0)?,
-        id: rss_transactional_messaging::message::MessageId::parse(&format!("script.{b}"))?,
-        fingerprint: rss_transactional_messaging::message::MessageFingerprint::from_bytes(
-            receipt
-                .1
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("invalid outbox fingerprint"))?,
-        ),
-    };
-    let observer = &late.a.script_work;
-    observer.observe_relay(binding, Some(&message), Err(&script::Error::CommitUnknown));
-    crate::assembly::task_relay::verify_publication(binding, observer.relay_check(binding)).await;
-    assert!(matches!(
-        observer.health().relay,
-        Some(rss_mdm_recovery_observation::Phase::Failed(_))
-    ));
     let stack = registered_relay(&h, hint.clone()).await?;
     let status = |message: String| {
         sqlx::query_scalar::<_, String>(
@@ -763,14 +835,25 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         })
         .await?
     };
+    wait(format!("script.{expired}"), "dead_letter").await?;
+    assert!(
+        !sqlx::query_scalar::<_, bool>(
+            "SELECT gateway_accepted FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2"
+        )
+        .bind(h.c.tenant.to_string())
+        .bind(expired)
+        .fetch_one(&h.c.operator)
+        .await?
+    );
+    wait(poison.clone(), "dead_letter").await?;
+    wait(ordered_peer.clone(), "published").await?;
+    let rejection: (String, bool, bool) = sqlx::query_as("SELECT d.reason,r.gateway_accepted,other.partition_key<>o.partition_key FROM rss_transactional_messaging.outbox o JOIN rss_transactional_messaging.consumer_dead_letter d USING(tenant_id,message_id,fingerprint) JOIN mdm_script.runs r ON r.tenant_id=o.tenant_id AND r.dispatch_fingerprint=o.fingerprint JOIN rss_transactional_messaging.outbox other ON other.tenant_id=o.tenant_id AND other.domain=o.domain AND other.message_id=$3 WHERE o.tenant_id=$1::uuid AND o.message_id=$2 AND o.domain=$4 AND d.consumer_group=$5")
+        .bind(h.c.tenant.to_string()).bind(&poison).bind(&ordered_peer).bind(crate::assembly::task_relay::lanes::SCRIPT.domain).bind(crate::assembly::task_relay::lanes::SCRIPT.role).fetch_one(&h.c.operator).await?;
+    assert_eq!(rejection, ("rejected_permanent".into(), false, true));
+    assert_eq!(status(successor.clone()).await?, "pending");
     wait(format!("script.{b}"), "published").await?;
     wait(format!("collection.{collection}"), "published").await?;
     assert_eq!(status(format!("script.{a}")).await?, "publishing");
-    crate::assembly::task_relay::verify_publication(binding, observer.relay_check(binding)).await;
-    assert_eq!(
-        observer.health().relay,
-        Some(rss_mdm_recovery_observation::Phase::Healthy)
-    );
     let refill = Uuid::new_v4();
     assert!(matches!(
         h.admit_on(refill_version, refill, *second.device()).await?,
@@ -796,9 +879,42 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     assert!(drain.join().await?.is_clean());
     assert_eq!(status(format!("script.{a}")).await?, "published");
     assert_eq!(status(format!("script.{restart}")).await?, "pending");
-    let stack = registered_relay(&h, hint).await?;
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1").bind(h.c.tenant.to_string()).execute(&h.c.operator).await?.rows_affected(),1);
+    let target = Uuid::from_bytes(h.c.tenant.octets());
+    let predecessor = target.as_u128().checked_sub(1).map(Uuid::from_u128);
+    let found: (i64, bool) = sqlx::query_as(
+        "SELECT expected_epoch,quarantined FROM mdm_script.relay_scopes($1) WHERE tenant_id=$2",
+    )
+    .bind(predecessor)
+    .bind(target)
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert_eq!(
+        found,
+        (2, true),
+        "the isolated tenant was rediscovered after takeover"
+    );
+    let fresh = Harness::open_in("command_relay").await?;
+    let stack = registered_relay(&fresh, hint).await?;
     wait(format!("script.{restart}"), "published").await?;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let health = fresh.a.script_work.health();
+            if health.relay
+                == Some(rss_mdm_recovery_observation::Phase::Failed(
+                    rss_reconcile::ErrorKind::Permanent,
+                ))
+            {
+                assert!(!health.blocks_readiness);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await?;
     assert!(stack.shutdown().join().await?.is_clean());
+    assert_eq!(status(poison).await?, "dead_letter");
+    assert_eq!(status(successor).await?, "pending");
     let scripts: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o
         ON o.tenant_id=r.tenant_id AND o.message_id='script.'||r.id::text
         WHERE r.id=ANY($1) AND r.gateway_accepted AND o.status='published' AND o.fingerprint=r.dispatch_fingerprint")
@@ -812,6 +928,7 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     .fetch_one(&h.c.operator)
     .await?;
     assert!(accepted);
+    fresh.close().await?;
     late.close().await?;
     h.close().await
 }
@@ -1113,7 +1230,7 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         a.a.collections.clone(),
         storage.reconcile.clone(),
         storage.worker_budget.clone(),
-    )?;
+    );
     armed.store(true, std::sync::atomic::Ordering::SeqCst);
     let collection = start_owner(Arc::new(peer_worker).registration(
         config.tasks,
@@ -1185,7 +1302,7 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         a.a.scripts.clone(),
         storage.reconcile.clone(),
         rss_mdm_work_page::capacity::Capacity::new(std::num::NonZeroUsize::MIN),
-    )?;
+    );
     let task =
         start_owner(Arc::new(serial).registration(policy()?, config.tasks_drain, Arc::default()))?;
     tokio::time::timeout(Duration::from_secs(4), async {

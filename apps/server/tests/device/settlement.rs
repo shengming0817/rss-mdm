@@ -51,19 +51,27 @@ async fn check_create(
         audit.finalize(result.as_ref().err().map(|_| FailureReason::Transaction));
         Ok((result, audit.snapshot().write_outcome))
     };
-    command::check_uncommitted_command(c, runtime, &key, async |expected| {
-        let (result, outcome) = submit().await?;
-        anyhow::ensure!(
-            outcome == expected,
-            "expected {expected:?}, found {outcome:?}"
-        );
-        anyhow::ensure!(matches!(
-            (result, expected),
-            (Err(Error::RollbackFailed), WriteOutcome::RollbackFailed)
-                | (Err(Error::CommitUnknown), WriteOutcome::Unknown)
-        ));
-        evidence(c, id, 0).await
-    })
+    command::check_uncommitted_command(
+        c,
+        |fault| {
+            runtime.inject_next_transaction_fault(fault);
+            Ok(())
+        },
+        &key,
+        async |expected| {
+            let (result, outcome) = submit().await?;
+            anyhow::ensure!(
+                outcome == expected,
+                "expected {expected:?}, found {outcome:?}"
+            );
+            anyhow::ensure!(matches!(
+                (result, expected),
+                (Err(Error::RollbackFailed), WriteOutcome::RollbackFailed)
+                    | (Err(Error::CommitUnknown), WriteOutcome::Unknown)
+            ));
+            evidence(c, id, 0).await
+        },
+    )
     .await?;
 
     runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);

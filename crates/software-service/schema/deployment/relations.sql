@@ -37,7 +37,6 @@ GRANT SELECT,INSERT ON TABLE mdm_software_deployment.action_runs TO mdm_command_
 
 GRANT UPDATE(state) ON TABLE mdm_software_deployment.action_runs TO mdm_command_runtime;
 
-GRANT UPDATE(gateway_accepted) ON TABLE mdm_software_deployment.action_runs TO mdm_command_runtime;
 
 GRANT UPDATE(result) ON TABLE mdm_software_deployment.action_runs TO mdm_command_runtime;
 
@@ -51,7 +50,7 @@ GRANT UPDATE(authority) ON TABLE mdm_software_deployment.operations TO mdm_comma
 
 GRANT UPDATE(revision,observed_command_version) ON TABLE mdm_software_deployment.operations TO mdm_command_runtime;
 
-GRANT UPDATE(gateway_accepted,dispatch_failure) ON TABLE mdm_software_deployment.operations TO mdm_command_runtime;
+GRANT UPDATE(dispatch_failure) ON TABLE mdm_software_deployment.operations TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_software_deployment.policy_recovery TO mdm_command_runtime;
 

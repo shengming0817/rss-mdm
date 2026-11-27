@@ -1,5 +1,39 @@
 use super::*;
 #[test]
+fn command_projection_pools_match_installation_and_optional_lanes() {
+    use crate::assembly::task_relay::lanes;
+    let example: Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    // The first-install profile uses DA, volume Content, tenant administration and PostgreSQL telemetry.
+    for (device_access, recovery, expected, connections) in [
+        (true, false, 8, 222),
+        (true, true, 11, 234),
+        (false, true, 9, 226),
+        (false, false, 7, 218),
+    ] {
+        let compile = |budget| {
+            crate::background::BackgroundConfig::installation(
+                example.background.external_calls,
+                8,
+                8,
+                budget,
+            )
+            .compile_pools(
+                false,
+                true,
+                false,
+                true,
+                lanes::enabled(device_access, recovery),
+                [4],
+            )
+        };
+        assert_eq!(lanes::enabled(device_access, recovery).count(), expected);
+        assert!(compile(connections - 1).is_err());
+        assert!(compile(connections).is_ok());
+    }
+}
+
+#[test]
 fn content_budget_reserves_all_three_physical_pools() {
     let mut config: Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();

@@ -141,26 +141,26 @@ impl Relay {
 /// An admitted slot can check one failed message before claiming more work.
 /// An unavailable or uncertain read preserves the original failure.
 impl Projection {
-pub(crate) async fn verify_terminal(
-    &self,
-    binding: ExecutionBinding,
-    scope: &rss_mdm_recovery_observation::RelayScope<'_>,
-) {
-    let runtime = &self.runtime;
-    let Some(probe) = scope.check() else {
-        return;
-    };
-    // The Outbox terminal status is fenced by RSS. Both published and quarantined
-    // resolve this exact uncertainty. Neither another message nor an empty page can.
-    let original = probe.message();
-    let Some(fingerprint) = original.fingerprint else {
-        // Learning a digest doesn't establish the outcome. The next check is fenced by that digest.
-        if let Some(digest) = read_fingerprint(binding, runtime, original).await {
-            probe.identify(digest);
-        }
-        return;
-    };
-    let terminal = runtime.local_tx_with_context(binding,
+    pub(crate) async fn verify_terminal(
+        &self,
+        binding: ExecutionBinding,
+        scope: &rss_mdm_recovery_observation::RelayScope<'_>,
+    ) {
+        let runtime = &self.runtime;
+        let Some(probe) = scope.check() else {
+            return;
+        };
+        // The Outbox terminal status is fenced by RSS. Both published and quarantined
+        // resolve this exact uncertainty. Neither another message nor an empty page can.
+        let original = probe.message();
+        let Some(fingerprint) = original.fingerprint else {
+            // Learning a digest doesn't establish the outcome. The next check is fenced by that digest.
+            if let Some(digest) = read_fingerprint(binding, runtime, original).await {
+                probe.identify(digest);
+            }
+            return;
+        };
+        let terminal = runtime.local_tx_with_context(binding,
         rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(1)),
         (binding.tenant().to_string(),original,fingerprint,self.lane.role),|args,tx| Box::pin(async move {
             tx.with_connection_context(args, |(tenant,message,digest,group),c|Box::pin(async move {
@@ -168,15 +168,14 @@ pub(crate) async fn verify_terminal(
                     .bind(tenant.as_str()).bind(message.domain.as_str()).bind(message.id.as_str()).bind(digest.as_bytes().as_slice()).bind(*group).fetch_optional(c).await
             })).await
         })).await.fold(|state|state,|_|None,|_|None,|_|None,|_|None,|_|None);
-    if let Some(status) = terminal {
-        if status == "dead_letter" {
-            probe.dead_lettered();
-        } else {
-            probe.published();
+        if let Some(status) = terminal {
+            if status == "dead_letter" {
+                probe.dead_lettered();
+            } else {
+                probe.published();
+            }
         }
     }
-}
-
 }
 
 /// The provider's original header has a unique tenant/message ID and immutable domain and digest.
@@ -280,29 +279,33 @@ impl Owner {
 }
 async fn drive(relay: &Arc<Relay>, owner: Owner, projection: Arc<Projection>) {
     let discovery = owner.clone();
-    relay.run(
-        projection.lane.owner,
-        move |after| {
-            let owner = discovery.clone();
-            async move { owner.page(after).await }
-        },
-        move |binding, slots, stop, work| {
-            let owner = owner.clone();
-            let projection = projection.clone();
-            async move {
-                let Some(scope) = owner.scope(binding) else { return Ok(Default::default()); };
-                tokio::select! {
-                    biased;
-                    () = stop.cancelled() => return Ok(Default::default()),
-                    () = projection.verify_terminal(binding, &scope) => {}
+    relay
+        .run(
+            projection.lane.owner,
+            move |after| {
+                let owner = discovery.clone();
+                async move { owner.page(after).await }
+            },
+            move |binding, slots, stop, work| {
+                let owner = owner.clone();
+                let projection = projection.clone();
+                async move {
+                    let Some(scope) = owner.scope(binding) else {
+                        return Ok(Default::default());
+                    };
+                    tokio::select! {
+                        biased;
+                        () = stop.cancelled() => return Ok(Default::default()),
+                        () = projection.verify_terminal(binding, &scope) => {}
+                    }
+                    if stop.is_cancelled() || work == RelayWork::Readback {
+                        return Ok(Default::default());
+                    }
+                    projection.poll(binding, slots, Some(&scope)).await
                 }
-                if stop.is_cancelled() || work == RelayWork::Readback {
-                    return Ok(Default::default());
-                }
-                projection.poll(binding, slots, Some(&scope)).await
-            }
-        },
-    ).await;
+            },
+        )
+        .await;
 }
 #[expect(
     clippy::too_many_arguments,
@@ -355,7 +358,12 @@ pub(crate) async fn registration(
         ));
         projections.push((owner, projection));
     }
-    Ok(register(projections, parallelism, binding.storage(), notify))
+    Ok(register(
+        projections,
+        parallelism,
+        binding.storage(),
+        notify,
+    ))
 }
 
 pub(crate) fn register(

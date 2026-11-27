@@ -31,7 +31,6 @@ GRANT SELECT,INSERT ON TABLE mdm_devices.unmanage_runs TO mdm_command_runtime;
 
 GRANT UPDATE(state) ON TABLE mdm_devices.unmanage_runs TO mdm_command_runtime;
 
-GRANT UPDATE(gateway_accepted) ON TABLE mdm_devices.unmanage_runs TO mdm_command_runtime;
 
 GRANT UPDATE(result) ON TABLE mdm_devices.unmanage_runs TO mdm_command_runtime;
 
@@ -45,7 +44,7 @@ GRANT UPDATE(authority) ON TABLE mdm_devices.control_operations TO mdm_command_r
 
 GRANT UPDATE(revision,observed_command_version) ON TABLE mdm_devices.control_operations TO mdm_command_runtime;
 
-GRANT UPDATE(gateway_accepted,dispatch_failure) ON TABLE mdm_devices.control_operations TO mdm_command_runtime;
+GRANT UPDATE(dispatch_failure) ON TABLE mdm_devices.control_operations TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_devices.unmanage_policy_recovery TO mdm_command_runtime;
 

@@ -1,7 +1,7 @@
 //! Enrollment and bootstrap share Registration ownership, with separate durable work scopes.
 use rss_mdm_registration_service::{enrollment::tasks, installation as native};
 use rss_transactional_messaging_postgres::PgRuntime;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub(crate) struct Assembly {
     pub enrollment: Arc<tasks::Service>,
@@ -68,17 +68,14 @@ pub(crate) async fn assemble(
         .map_err(super::owner_errors::enrollment)?,
         sessions,
     ));
-    let worker = Arc::new(
-        tasks::worker::Worker::new(
-            discovery_pool.clone(),
-            probe.storage(),
-            rss_mdm_install_support::StorageProfile::Mdm,
-            enrollment.clone(),
-            reconcile.clone(),
-            budget.clone(),
-        )
-        .map_err(super::owner_errors::enrollment)?,
-    );
+    let worker = Arc::new(tasks::worker::Worker::new(
+        discovery_pool.clone(),
+        probe.storage(),
+        rss_mdm_install_support::StorageProfile::Mdm,
+        enrollment.clone(),
+        reconcile.clone(),
+        budget.clone(),
+    ));
     let transactions =
         native::Transactions::bind(runtime.clone(), probe, audit, native_materials.clone())
             .await

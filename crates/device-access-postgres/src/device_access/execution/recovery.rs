@@ -75,7 +75,9 @@ impl Service {
             return Ok(false);
         }
         let run = match super::storage::read_run(tx, id).await {
-            Err(crate::device_access::execution::transaction::Fault::Request(crate::device_access::execution::Error::Invariant)) => return Ok(false),
+            Err(crate::device_access::execution::transaction::Fault::Request(
+                crate::device_access::execution::Error::Invariant,
+            )) => return Ok(false),
             other => other?,
         };
         let activity = super::activity::run(

@@ -231,7 +231,7 @@ async fn command_generation_and_product_observation_settle_together() -> Result<
         let old = Coordinate::new(1, 1)?;
         let next = Coordinate::new(2, 2)?;
         let outcome = caller.clone().local_tx(h.c.execution(), OperationDeadline::from_remaining(Duration::from_secs(10)), move |tx| Box::pin(async move {
-            let (_,store) = crate::assembly::host_storage::bind_command_in(caller, tx,
+            let store = crate::assembly::host_storage::bind_command_in(caller, tx,
                 rss_device_command_postgres::CommandClock::Postgres, page, rss_mdm_device_service::control::messaging_domain()).await?;
             store.advance(tx, scope, old, next).await?;
             let rows = tx.with_connection(move |c| Box::pin(async move {

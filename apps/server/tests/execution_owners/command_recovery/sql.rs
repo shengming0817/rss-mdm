@@ -74,7 +74,7 @@ pub(super) async fn provider(h: &Harness, device: rss_mdm_agent_wire::DeviceId) 
         .clone()
         .local_tx(h.c.execution(), budget, move |tx| {
             Box::pin(async move {
-                let (_, store) = crate::assembly::host_storage::bind_command_in(
+                let store = crate::assembly::host_storage::bind_command_in(
                     runtime,
                     tx,
                     rss_device_command_postgres::CommandClock::Postgres,

@@ -3,7 +3,7 @@ use super::*;
 use crate::planning_t2_support as planning;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
@@ -212,6 +212,7 @@ async fn policy_worker(
 }
 async fn reconcile(
     c: &Context,
+    lane: &crate::assembly::task_relay::projection::Projection,
     owner: &crate::owner_storage::OwnerRuntime,
     cfg: &Arc<rss_mdm_policy_service::configuration::Transactions>,
     device: &rss_mdm_agent_wire::DeviceId,
@@ -237,21 +238,13 @@ async fn reconcile(
         .map_err(|e| anyhow::anyhow!("configuration reconcile pass {pass}: {e:?}"))?;
         audit.finalize(None);
         crate::policy_configuration_t2::step(worker, c.tenant, device).await?;
-        loop {
-            let batch = cfg
-                .claim_relay(
-                    c.execution(),
-                    std::num::NonZeroUsize::new(2).unwrap(),
-                    Duration::from_secs(10),
-                )
-                .await?;
-            if batch.is_empty() {
-                break;
-            }
-            for (_, claim) in batch {
-                claim.await?;
-            }
-        }
+        while lane
+            .poll(c.execution(), vec![(); 2], None)
+            .await
+            .map_err(rss_reconcile::Error::new)?
+            .advanced
+            > 0
+        {}
     }
     Ok(())
 }
@@ -325,6 +318,10 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     let a = Fixture::open(&c).await?;
     let d = delivery(&c, &a).await?;
     let worker = policy_worker(&c, &a, app.clone()).await?;
+    let lane = a
+        .resources
+        .projection(&c, crate::assembly::task_relay::lanes::POLICY)
+        .await?;
     let first = published.policy;
     let other = planning::published(&c, &object(&n.device)?).await?;
     let second = other.policy;
@@ -337,7 +334,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
             resource_digest: [1; 32],
         };
         persist_policy(&c,policy,version,json!({"scope":scope,"action":{"resource":{"id":"policy-apple-test","version":"1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"configuration","exit":"remove"}}),serde_json::to_value(frozen)?).await?;
-        reconcile(&c, &owner, cfg, &n.device, &worker).await?;
+        reconcile(&c, &lane, &owner, cfg, &n.device, &worker).await?;
         if initial {
             let packet = next_command(&d, &apple, &p, &c, "DeclarativeManagement").await?;
             assert_eq!(
@@ -393,7 +390,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
         .await
         .map_err(|e| anyhow::anyhow!("DDM synchronization {e:?}"))?;
     assert_eq!(reply.synchronized.len(), 1);
-    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
+    reconcile(&c, &lane, &owner, cfg, &n.device, &worker).await?;
     let commands: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
     )
@@ -404,7 +401,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm_policy.policies SET state='disabled',revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(first).execute(&mut *tx).await?;
     tx.commit().await?;
-    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
+    reconcile(&c, &lane, &owner, cfg, &n.device, &worker).await?;
     assert_eq!(manifest(&d, &apple, &p, &c).await?, initial);
     let commands: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
@@ -416,7 +413,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm_policy.policies SET state='disabled',revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(second).execute(&mut *tx).await?;
     tx.commit().await?;
-    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
+    reconcile(&c, &lane, &owner, cfg, &n.device, &worker).await?;
     let packet = next_command(&d, &apple, &p, &c, "DeclarativeManagement").await?;
     assert_eq!(
         packet
@@ -450,6 +447,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     assert_eq!(status, "received");
     drop(worker);
     drop(d);
+    lane.runtime.close().await;
     Fixture::close(a).await?;
     drop(app);
     drop(owner);
@@ -532,7 +530,11 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     let a = Fixture::open(&c).await?;
     let d = delivery(&c, &a).await?;
     let worker = policy_worker(&c, &a, app.clone()).await?;
-    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
+    let lane = a
+        .resources
+        .projection(&c, crate::assembly::task_relay::lanes::POLICY)
+        .await?;
+    reconcile(&c, &lane, &owner, cfg, &n.device, &worker).await?;
     let packet = next_command(&d, &apple, &p, &c, "InstallProfile").await?;
     let payload = packet["Command"].as_dictionary().unwrap()["Payload"]
         .as_data()
@@ -573,7 +575,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     report.insert("CommandUUID".into(), query["CommandUUID"].clone());
     report.insert("ProfileList".into(), plist::Value::Array(vec![manifest]));
     plist_send(&d, &apple, &p, &c, report).await?;
-    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
+    reconcile(&c, &lane, &owner, cfg, &n.device, &worker).await?;
     let observed: (i64,bool) = sqlx::query_as("SELECT count(*),bool_and(observed_at IS NOT NULL) FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND identifier='org.example.policy.firewall'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(observed, (1, true));
     let pool = c.inputs.pool("shared", "mdm_policy_runtime").await?;
@@ -594,6 +596,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
 
     drop(worker);
     drop(d);
+    lane.runtime.close().await;
     Fixture::close(a).await?;
     drop(app);
     drop(owner);

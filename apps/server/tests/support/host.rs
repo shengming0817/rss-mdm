@@ -30,6 +30,12 @@ pub(crate) async fn configuration(
         serde_json::to_value(inputs.database(profile, "mdm_command_runtime"))?;
     configuration["scope_group_database"] =
         serde_json::to_value(inputs.database(profile, "mdm_scope_group_consumer"))?;
+    configuration["command_projection_password_files"] = serde_json::to_value(
+        crate::assembly::task_relay::lanes::LANES
+            .iter()
+            .map(|lane| (lane.role, inputs.database(profile, lane.role).password_file))
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    )?;
     configuration["asset_input_database"] =
         serde_json::to_value(inputs.database(profile, "mdm_asset_ingress_consumer"))?;
     configuration["webhooks"]["recovery_database"] =

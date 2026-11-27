@@ -1,6 +1,7 @@
 mod applicability;
 mod fixture;
 mod reads;
+mod relay;
 mod settlement;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,

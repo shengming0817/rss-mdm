@@ -16,6 +16,33 @@ pub struct Prepared {
     lifecycle: rss_runtime::ShutdownStack,
 }
 impl Prepared {
+    pub(crate) async fn projection(
+        &self,
+        c: &Context,
+        lane: crate::assembly::task_relay::lanes::Lane,
+    ) -> Result<Arc<crate::assembly::task_relay::projection::Projection>> {
+        Ok(crate::assembly::task_relay::projection::Projection::open(
+            &self.config,
+            c.execution(),
+            &c.audit,
+            self.protection.clone(),
+            lane,
+        )
+        .await?)
+    }
+    pub(crate) async fn project_once(
+        &self,
+        c: &Context,
+        lane: crate::assembly::task_relay::lanes::Lane,
+    ) -> Result<usize> {
+        let projection = self.projection(c, lane).await?;
+        let outcome = projection
+            .poll(c.execution(), vec![()], None)
+            .await
+            .map_err(rss_reconcile::Error::new);
+        projection.runtime.close().await;
+        Ok(outcome?.advanced)
+    }
     pub async fn open(c: &Context, configure: fn(&mut serde_json::Value)) -> Result<Self> {
         let mut config: serde_json::Value =
             serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
@@ -31,6 +58,17 @@ impl Prepared {
             serde_json::to_value(c.inputs.database(&c.profile, "mdm_access"))?;
         config["device_access"]["database"] =
             serde_json::to_value(c.inputs.database(&c.profile, "da_access"))?;
+        config["command_projection_password_files"] = serde_json::to_value(
+            crate::assembly::task_relay::lanes::LANES
+                .iter()
+                .map(|lane| {
+                    (
+                        lane.role,
+                        c.inputs.database(&c.profile, lane.role).password_file,
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        )?;
         config["command_database"] =
             serde_json::to_value(c.inputs.database(&c.profile, "mdm_command_runtime"))?;
         config["storage_binding"] = json!({"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1});
@@ -142,11 +180,43 @@ pub(crate) async fn recovery_fact(
         .transpose()
 }
 
+/// Exercise the same registered task and discovery/admission loop with a fault on its actual lane.
+pub(crate) fn register_relay(
+    c: &Context,
+    owner: crate::assembly::task_relay::Owner,
+    projection: Arc<crate::assembly::task_relay::projection::Projection>,
+) -> Result<rss_runtime::ShutdownStack> {
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let task = crate::assembly::task_relay::register(
+        vec![(owner, projection)],
+        1,
+        c.execution().storage(),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let mut launch = stack.startup()?.commit();
+    launch.stage_task_with_token(task.critical());
+    launch.finish();
+    Ok(stack)
+}
+
+pub(crate) async fn wait_relay(mut condition: impl AsyncFnMut() -> Result<bool>) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(55), async {
+        while !condition().await? {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        Ok(())
+    })
+    .await?
+}
+
 /// The first append fails after inserting the fact. The second reaches the commit boundary.
 /// PostgreSQL sequence values survive both rollbacks and identify the exact attempted fact.
 pub(crate) async fn check_uncommitted_command(
     c: &Context,
-    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    inject: impl Fn(rss_transactional_messaging_postgres::PgTransactionFault) -> Result<()>,
     event_key: &str,
     exercise: impl AsyncFn(rss_mdm_audit_integration::WriteOutcome) -> Result<()>,
 ) -> Result<()> {
@@ -180,7 +250,7 @@ pub(crate) async fn check_uncommitted_command(
             ),
             (2, PgTransactionFault::CommitPending, WriteOutcome::Unknown),
         ] {
-            runtime.inject_next_transaction_fault(fault);
+            inject(fault)?;
             exercise(outcome).await?;
             let witnessed: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
                 "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM public.{probe}"

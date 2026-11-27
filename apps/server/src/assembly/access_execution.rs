@@ -48,15 +48,12 @@ pub(crate) async fn assemble(
             .await
             .map_err(super::owner_errors::access)?,
     ));
-    let worker = Arc::new(
-        access::worker::Worker::new(
-            discovery_pool.clone(),
-            probe.storage(),
-            service.clone(),
-            reconcile,
-            budget,
-        )
-        .map_err(super::owner_errors::access)?,
-    );
+    let worker = Arc::new(access::worker::Worker::new(
+        discovery_pool.clone(),
+        probe.storage(),
+        service.clone(),
+        reconcile,
+        budget,
+    ));
     Ok(Assembly { service, worker })
 }

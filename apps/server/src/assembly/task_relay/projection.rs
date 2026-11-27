@@ -268,7 +268,9 @@ impl Projection {
                 self.log(binding, None, "claim", kind, Some(&error));
                 if let Some(scope) = scope {
                     scope.claim(Err(kind));
-                    if kind == ErrorKind::StorageContract { scope.owner_failed(kind); }
+                    if kind == ErrorKind::StorageContract {
+                        scope.owner_failed(kind);
+                    }
                 }
                 kind
             })?;
@@ -374,7 +376,9 @@ impl Projection {
                     if let Err((stage, kind, isolated)) = result {
                         self.log(binding, Some(&message), stage, kind, None);
                         if let Some(scope) = scope {
-                            if kind == ErrorKind::StorageContract { scope.owner_failed(kind); }
+                            if kind == ErrorKind::StorageContract {
+                                scope.owner_failed(kind);
+                            }
                             if isolated {
                                 scope.quarantined();
                             }

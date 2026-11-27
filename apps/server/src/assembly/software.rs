@@ -1,7 +1,7 @@
 //! Software owner assembly; participants bind to the caller's runtime.
 use rss_mdm_software_service::deployment as owner;
 use rss_transactional_messaging_postgres::PgRuntime;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct Assembly {
     pub service: Arc<owner::SoftwareService>,
