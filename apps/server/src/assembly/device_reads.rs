@@ -3,7 +3,7 @@ use rss_mdm_authorization_service::{Permission as Required, context::AuthorizedP
 use rss_mdm_management_http::{Error, enrollment::directory::*};
 use std::sync::Arc;
 pub(crate) struct Devices {
-    pub tasks: Arc<super::task_reads::Reads>,
+    pub tasks: Arc<super::policy_task_reads::Reads>,
     pub devices: Arc<rss_mdm_registration_service::DeviceService>,
     pub windows: bool,
     pub apple: bool,
@@ -13,11 +13,12 @@ impl DeviceReads for Devices {
         &'a self,
         request: &'a rss_mdm_authorization_service::context::RequestAuth,
         device: &'a rss_mdm_agent_wire::DeviceId,
-    ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, DeviceDetail> {
+    ) -> rss_mdm_management_http::Pending<'a, DeviceDetail> {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             self.tasks
-                .snapshot_registered(
+                .snapshot
+                .read_registered(
                     request,
                     (self, proof, device),
                     |ctx, c, grant, _, registration| {
@@ -61,7 +62,7 @@ impl DeviceReads for Devices {
                                         c, p, grant, device, s.windows, s.apple,
                                     )
                                     .await
-                                    .map_err(super::task_reads::software_fault)?
+                                    .map_err(super::policy_task_reads::software_fault)?
                                     .into_iter()
                                     .map(software_capability),
                             );
@@ -240,7 +241,7 @@ impl Devices {
             let source =
                 device_control::source_on(c, proof.binding().tenant(), &registration.device)
                     .await
-                    .map_err(super::task_reads::history::execution_fault)?;
+                    .map_err(super::policy_task_reads::history::execution_fault)?;
             if let Some(source) = source {
                 let checks = kinds.map(|action| Check {
                     device: registration.device,
@@ -250,10 +251,10 @@ impl Devices {
                 });
                 let states = self
                     .tasks
-                    .execution
+                    .device_control
                     .control_applicability_on(proof.binding(), c, &checks)
                     .await
-                    .map_err(super::task_reads::history::execution_fault)?;
+                    .map_err(super::policy_task_reads::history::execution_fault)?;
                 (Some(source), states)
             } else {
                 (None, Vec::new())

@@ -113,3 +113,49 @@ pub(crate) async fn assemble(
 
     Ok((service, queries))
 }
+
+pub(crate) struct Changes {
+    pub snapshot: super::query_snapshot::QuerySnapshot,
+    pub device_control: Arc<rss_mdm_device_service::control::Service>,
+}
+impl rss_mdm_management_http::device_control::Changes for Changes {
+    fn change<'a>(
+        &'a self,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
+        device: &'a rss_mdm_agent_wire::DeviceId,
+        id: uuid::Uuid,
+        change: &'a rss_mdm_device_service::control::Change,
+        reauthorization: Option<
+            &'a rss_mdm_device_service::control::device_control::Reauthorization,
+        >,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
+    ) -> rss_mdm_management_http::Pending<'a, rss_mdm_device_service::control::ChangedReceipt> {
+        let proof = request.proof.as_ref();
+        Box::pin(async move {
+            let owner = self
+                .snapshot
+                .read(request, (proof, device, id), |ctx, c, grant, _| {
+                    Box::pin(async move {
+                        let (p, d, id) = *ctx;
+                        grant.require(
+                            p,
+                            rss_mdm_authorization_service::Permission::OperationRead,
+                            Some(d),
+                        )?;
+                        super::native_ownership::on(c, p.binding().tenant(), id)
+                            .await
+                            .map_err(Into::into)
+                    })
+                })
+                .await?;
+            // Only direct device controls support management cancel/reauthorization; policies own desired work.
+            if owner != super::native_ownership::Owner::Device {
+                return Err(rss_mdm_management_http::Error::Conflict);
+            }
+            self.device_control
+                .change(proof, device, id, change, reauthorization, audit)
+                .await
+                .map_err(Into::into)
+        })
+    }
+}

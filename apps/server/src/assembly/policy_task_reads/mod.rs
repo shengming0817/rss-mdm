@@ -1,9 +1,9 @@
 //! App composes bounded reads; preparation and result interpretation stay with each owner.
-use rss_mdm_authorization_service::{Permission, Snapshot};
+use rss_mdm_authorization_service::Permission;
 use rss_mdm_management_http::{Error, Failure};
 use std::sync::Arc;
 mod preview;
-mod snapshot;
+use super::query_snapshot::{QuerySnapshot, sql};
 pub(crate) struct Reads {
     pub content_available: bool,
     pub configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
@@ -11,24 +11,12 @@ pub(crate) struct Reads {
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
     pub entries: rss_mdm_registration_service::enrollment::task::Entries,
     pub recovery_enabled: bool,
-    pub clock: Arc<dyn rss_request_context::Clock>,
+    pub snapshot: QuerySnapshot,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
-    pub read_pool: sqlx::PgPool,
     pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub scripts: rss_mdm_script_service::inputs::Inputs,
     pub collections: rss_mdm_inventory_service::collection::execution::inputs::Inputs,
-    pub execution: Arc<rss_mdm_device_service::control::queries::Queries>,
-}
-pub(super) fn sql(error: sqlx::Error) -> Error {
-    if error
-        .as_database_error()
-        .and_then(|e| e.code())
-        .is_some_and(|c| c == "40001" || c == "40P01")
-    {
-        Error::QueryReadConflict
-    } else {
-        Error::Unavailable(Failure::Database)
-    }
+    pub device_control: Arc<rss_mdm_device_service::control::queries::Queries>,
 }
 fn script(error: rss_mdm_script_service::Error) -> Error {
     use rss_mdm_script_service::Error as S;
@@ -184,12 +172,11 @@ pub(crate) fn assemble(
         enrollment,
         entries: config.enrollment_entries.clone(),
         recovery_enabled,
-        clock: Arc::new(crate::lifecycle::RuntimeTimer),
+        snapshot: QuerySnapshot::new(storage.read_pool.clone()),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             storage.runtime.clone(),
         ),
-        read_pool: storage.read_pool.clone(),
         source,
         scripts: rss_mdm_script_service::inputs::Inputs::bind(
             storage.runtime.clone(),
@@ -202,6 +189,6 @@ pub(crate) fn assemble(
                 protection: protection.clone(),
             }),
         ),
-        execution: queries,
+        device_control: queries,
     })
 }

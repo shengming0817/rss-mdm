@@ -52,7 +52,7 @@ pub(crate) fn from_state(
         delivery: state.apple_delivery.clone(),
         enrollment_authority: state.registration.enrollment.clone(),
         departure: Arc::new(super::apple_business::AppleBusiness(
-            state.execution.clone(),
+            state.device_control.clone(),
             state.configuration.clone(),
             state.agent_tasks.collections.clone(),
             state.software.service.clone(),
@@ -115,7 +115,7 @@ pub(crate) fn from_state(
         delivery: state.windows_delivery.clone(),
         enrollment_authority: state.registration.enrollment.clone(),
         departure: Arc::new(super::windows_business::WindowsBusiness(
-            state.execution.clone(),
+            state.device_control.clone(),
             state.configuration.clone(),
             state.agent_tasks.collections.clone(),
             state.software.service.clone(),
@@ -227,7 +227,7 @@ pub(crate) fn from_state(
 
         access: state.access.archive_pool(),
         telemetry: state.telemetry.clone(),
-        execution: state.execution.clone(),
+        device_control: state.device_control.clone(),
         software: state.software.service.clone(),
         installation: state.registration.native.clone(),
         scripts: state.script_work.clone(),
@@ -355,9 +355,13 @@ pub(crate) fn from_state(
         rss_mdm_management_http::Services {
             access_execution: state.access_execution.service.clone(),
             operation_reads: state.operation_reads.clone(),
+            device_changes: Arc::new(super::device_control::Changes {
+                snapshot: state.policy_task_reads.snapshot.clone(),
+                device_control: state.device_control.clone(),
+            }),
             operation_diagnostics: operation_diagnostics.clone(),
             device_reads: Arc::new(super::device_reads::Devices {
-                tasks: state.task_reads.clone(),
+                tasks: state.policy_task_reads.clone(),
                 devices: state.devices.clone(),
                 windows: state.windows.is_some(),
                 apple: state.apple.is_some(),
@@ -426,10 +430,10 @@ pub(crate) fn from_state(
             scopes: state.scopes.clone(),
             groups: state.groups.clone(),
             compliance: state.compliance.clone(),
-            execution: state.execution.clone(),
+            device_control: state.device_control.clone(),
             task_trust: state.task_trust.clone(),
             queries: state.queries.clone(),
-            task_reads: state.task_reads.clone(),
+            policy_task_reads: state.policy_task_reads.clone(),
             policies: state.policies.clone(),
             assets: state.assets.clone(),
             catalog: state.resources.clone(),

@@ -64,7 +64,7 @@ pub struct Detail {
     pub original_result: Evidence<ReceiptSummary>,
     pub audit_evidence: Evidence<DiagnosticPage>,
     pub request_evidence: Evidence<DiagnosticPage>,
-    pub execution_evidence: Evidence<crate::execution::operations::Evidence>,
+    pub execution_evidence: Evidence<crate::operation_reads::Evidence>,
     /// An original-result read endpoint; never a write/replay or secret disclosure URL.
     pub original_result_url: Option<String>,
     pub current_resource_url: Option<String>,

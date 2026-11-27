@@ -250,7 +250,7 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
         },
     ));
     let codec = CursorCodec::new(&[8; 32])?;
-    let router = rss_mdm_management_http::execution::http::read_routes()
+    let router = rss_mdm_management_http::operation_reads::http::read_routes()
         .with_state::<()>(operations.clone())
         .layer(axum::Extension(codec.clone()))
         .layer(axum::Extension(h.c.read_auth(proof.clone())))
@@ -438,10 +438,9 @@ fn directory(h: &Harness, budgets: Budgets) -> Operations {
         apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: h.a.resources.protection.clone(),
         }),
-        tasks: h.a.task_reads.clone(),
+        tasks: h.a.policy_task_reads.clone(),
         registration: h.a.registration.native.clone(),
         recovery: None,
-        execution: h.a.service.clone(),
     }
 }
 
@@ -477,7 +476,7 @@ async fn independent_statistics(h: &Harness, busy: &DeviceObject, version: Uuid)
             statistics: 4097,
         },
     ));
-    let router = rss_mdm_management_http::execution::http::read_routes()
+    let router = rss_mdm_management_http::operation_reads::http::read_routes()
         .with_state::<()>(operations.clone())
         .layer(axum::Extension(CursorCodec::new(&[8; 32])?))
         .layer(axum::Extension(h.c.read_auth(proof.clone())))

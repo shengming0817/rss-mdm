@@ -1,5 +1,8 @@
 //! Aggregate operation HTTP contract; App composes the final producer reads.
-use super::task_reads::Pending;
+pub mod declarations;
+pub mod http;
+pub mod projection;
+use crate::Pending;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::context::RequestAuth;
 use rss_mdm_query::{
@@ -60,25 +63,21 @@ pub struct Item {
 #[serde(tag = "owner", rename_all = "snake_case")]
 pub enum Detail {
     Configuration(
-        rss_mdm_policy_service::configuration::queries::records::Detail<
-            super::projection::Observation,
-        >,
+        rss_mdm_policy_service::configuration::queries::records::Detail<projection::Observation>,
     ),
     Device(
-        rss_mdm_device_service::control::queries::records::CommandDetail<
-            super::projection::Observation,
-        >,
+        rss_mdm_device_service::control::queries::records::CommandDetail<projection::Observation>,
     ),
     Software(
         Box<
             rss_mdm_software_service::deployment::queries::records::CommandDetail<
-                super::projection::Observation,
+                projection::Observation,
             >,
         >,
     ),
-    Recovery(rss_mdm_recovery_credentials::native::queries::Detail<super::projection::Observation>),
+    Recovery(rss_mdm_recovery_credentials::native::queries::Detail<projection::Observation>),
     Registration(
-        rss_mdm_registration_service::installation::queries::Detail<super::projection::Observation>,
+        rss_mdm_registration_service::installation::queries::Detail<projection::Observation>,
     ),
 }
 #[derive(Serialize, schemars::JsonSchema)]
@@ -154,7 +153,7 @@ pub trait Reads: Send + Sync {
         query: &'a rss_mdm_query::window::Query,
         audit: &'a RequestAudit,
         codec: &'a CursorCodec,
-    ) -> Pending<'a, super::declarations::Page>;
+    ) -> Pending<'a, declarations::Page>;
 
     fn directory<'a>(
         &'a self,
@@ -176,17 +175,6 @@ pub trait Reads: Send + Sync {
         id: Uuid,
         audit: &'a RequestAudit,
     ) -> Pending<'a, Detail>;
-    fn change<'a>(
-        &'a self,
-        proof: &'a RequestAuth,
-        device: &'a rss_mdm_agent_wire::DeviceId,
-        id: Uuid,
-        change: &'a rss_mdm_device_service::control::Change,
-        reauthorization: Option<
-            &'a rss_mdm_device_service::control::device_control::Reauthorization,
-        >,
-        audit: &'a RequestAudit,
-    ) -> Pending<'a, rss_mdm_device_service::control::ChangedReceipt>;
 }
 
 /// Closed logical read fields. App supplies the exhaustive SQL interpretation of this port.

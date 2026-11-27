@@ -40,13 +40,14 @@ pub struct Services {
     pub scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_group_service::Groups>,
     pub compliance: Arc<rss_mdm_compliance_service::Compliance>,
-    pub execution: Arc<rss_mdm_device_service::control::Service>,
+    pub device_control: Arc<rss_mdm_device_service::control::Service>,
+    pub device_changes: Arc<dyn crate::device_control::Changes>,
     pub device_reads: Arc<dyn crate::enrollment::directory::DeviceReads>,
     pub operation_diagnostics: Arc<crate::operation_diagnostics::Services>,
-    pub operation_reads: Arc<dyn crate::execution::operations::Reads>,
+    pub operation_reads: Arc<dyn crate::operation_reads::Reads>,
     pub software_queries: Arc<rss_mdm_software_service::deployment::queries::Queries>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
-    pub task_reads: Arc<dyn crate::execution::task_reads::Reads>,
+    pub policy_task_reads: Arc<dyn crate::policy_task_reads::Reads>,
     pub queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub configuration_preview: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub policies: Arc<rss_mdm_policy_service::management::Policies>,
@@ -187,7 +188,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
         .assemble()
     };
     let planning = {
-        rss_mdm_http_contract::route_module! { struct AssembleModule2 for [Browser] { operation_diagnostics_routes, runtime_diagnostics_routes, planning_routes, http_register, assets_routes, http_routes } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule2 for [Browser] { operation_diagnostics_routes, runtime_diagnostics_routes, planning_routes, policy_runs, software_rollout, assets_routes, http_routes } }
         AssembleModule2 {
             operation_diagnostics_routes: crate::operation_diagnostics::routes()
                 .bind_with(context, |(s, _)| s.operation_diagnostics.clone()),
@@ -198,15 +199,10 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                     groups: s.groups.clone(),
                 })
             }),
-            http_register: crate::execution::actions::http::register(cursor()).bind_with(
-                context,
-                |(s, _)| {
-                    Arc::new(crate::execution::actions::http::StateServices {
-                        software: s.software_queries.clone(),
-                        tasks: s.task_reads.clone(),
-                    })
-                },
-            ),
+            policy_runs: crate::policy_task_reads::http::routes(cursor())
+                .bind_with(context, |(s, _)| s.policy_task_reads.clone()),
+            software_rollout: crate::software_rollout::routes()
+                .bind_with(context, |(s, _)| s.software_queries.clone()),
             assets_routes: crate::assets::routes().bind_with(context, |(s, _)| {
                 Arc::new(crate::assets::http::HttpState {
                     assets: s.assets.clone(),
@@ -224,28 +220,26 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
         })
     });
     let operations = {
-        rss_mdm_http_contract::route_module! { struct AssembleModule3 for [Browser] { agent_enrollment_register, windows_entra_register, http_register, http_register_2, http_register_previews, software_catalog_routes, http_routes, http_register_3, directory_routes, timeline_routes, device_views_register } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule3 for [Browser] { agent_enrollment_register, windows_entra_register, device_control, operation_reads, recovery_commands, task_trust, http_register_2, http_register_previews, software_catalog_routes, http_routes, http_register_3, directory_routes, timeline_routes, device_views_register } }
         AssembleModule3 {
             agent_enrollment_register: crate::agent_enrollment::register()
                 .bind_with(context, |(s, _)| s.agent_enrollment.clone()),
             windows_entra_register: crate::windows_entra::register()
                 .bind_with(context, |(s, _)| Arc::new(s.windows_entra.clone())),
-            http_register: crate::execution::http::register(
-                runtime.map(|(s, _)| s.operation_reads.clone()),
-                cursor(),
-            )
-            .bind_with(context, |(s, _)| {
-                Arc::new(crate::execution::http::HttpState {
-                    recovery: s.recovery_native.clone(),
-                    operations: s.operation_reads.clone(),
-                    task_trust: s.task_trust.clone(),
-                    execution: s.execution.clone(),
-                    windows: s.windows,
-                    apple: s.apple,
+            device_control: crate::device_control::routes().bind_with(context, |(s, _)| {
+                Arc::new(crate::device_control::Services {
+                    device_control: s.device_control.clone(),
+                    changes: s.device_changes.clone(),
                 })
             }),
+            operation_reads: crate::operation_reads::http::register(cursor())
+                .bind_with(context, |(s, _)| s.operation_reads.clone()),
+            recovery_commands: crate::recovery_credentials::command_routes()
+                .bind_with(context, |(s, _)| s.recovery_native.clone()),
+            task_trust: crate::task_trust::routes()
+                .bind_with(context, |(s, _)| s.task_trust.clone()),
             http_register_2: crate::planning::policies::http::register(
-                runtime.map(|(s, _)| s.task_reads.clone()),
+                runtime.map(|(s, _)| s.policy_task_reads.clone()),
                 cursor(),
             )
             .bind_with(context, |(s, _)| s.policies.clone()),
@@ -253,7 +247,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                 .bind_with(context, |(s, _)| {
                     Arc::new(crate::planning::policies::http_preview::StateServices {
                         policies: s.policies.clone(),
-                        tasks: s.task_reads.clone(),
+                        tasks: s.policy_task_reads.clone(),
                         configuration: s.configuration_preview.clone(),
                         telemetry: s.telemetry.clone(),
                     })

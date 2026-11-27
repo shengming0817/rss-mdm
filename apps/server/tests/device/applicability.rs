@@ -16,7 +16,7 @@ struct Http {
 impl Http {
     fn open(a: &Fixture) -> Result<Self> {
         let reads = Arc::new(crate::assembly::device_reads::Devices {
-            tasks: a.task_reads.clone(),
+            tasks: a.policy_task_reads.clone(),
             devices: a.devices.clone(),
             windows: true,
             apple: true,
@@ -394,14 +394,14 @@ async fn snapshot_revalidates_authority_and_registration_before_return() -> Resu
         let p=Arc::new(c.authenticate(&account).await?);
         for change_registration in [true,false] {
             let request=c.read_auth(p.clone());
-            let result=a.task_reads.snapshot_registered(&request,(&c,&n,&account),move |args,connection,_,_,registration| Box::pin(async move {
+            let result=a.policy_task_reads.snapshot.read_registered(&request,(&c,&n,&account),move |args,connection,_,_,registration| Box::pin(async move {
                 let (c,n,account)=*args;
                 *registration=Some((n.device,endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm,connection,&c.tenant.to_string(),&n.device,rss_mdm_inventory::Channel::Mdm).await?));
                 // A second real connection commits while the first retains its RR snapshot.
                 if change_registration {
-                    change(c, "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2::uuid", n.credential).await.map_err(crate::assembly::task_reads::sql)?;
+                    change(c, "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2::uuid", n.credential).await.map_err(crate::assembly::query_snapshot::sql)?;
                 } else {
-                    change(c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2::uuid", account.rule).await.map_err(crate::assembly::task_reads::sql)?;
+                    change(c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2::uuid", account.rule).await.map_err(crate::assembly::query_snapshot::sql)?;
                 }
                 Ok(())
             })).await;

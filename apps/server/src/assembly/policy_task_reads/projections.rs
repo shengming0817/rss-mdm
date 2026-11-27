@@ -1,4 +1,4 @@
-use rss_mdm_management_http::execution::task_reads as http;
+use rss_mdm_management_http::policy_task_reads as http;
 use rss_mdm_scope_service::channels;
 use rss_mdm_software_service::deployment::{queries::records as software, scope};
 pub(super) fn software_preview(v: software::Preview) -> http::Preview {

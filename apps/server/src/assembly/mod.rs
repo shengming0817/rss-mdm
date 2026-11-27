@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 pub(crate) mod collection;
 pub(crate) mod content;
-pub(crate) mod device_control;
 pub(crate) mod host_storage;
 pub(crate) mod http;
 pub(crate) mod inventory;
@@ -63,7 +62,7 @@ pub(crate) struct Assembly {
     pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) execution: Arc<rss_mdm_device_service::control::Service>,
+    pub(crate) device_control: Arc<rss_mdm_device_service::control::Service>,
     pub(crate) access_execution: access_execution::Assembly,
     pub(crate) credential_execution: Option<credential_execution::Assembly>,
     pub(crate) agent_tasks: Arc<agent_tasks::AgentTasks>,
@@ -71,7 +70,7 @@ pub(crate) struct Assembly {
     pub(crate) apple_delivery: Arc<rss_mdm_apple_channel::delivery::Delivery>,
     pub(crate) agent_delivery: Arc<rss_mdm_agent_channel::delivery::Delivery>,
     pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
-    pub(crate) task_reads: Arc<task_reads::Reads>,
+    pub(crate) policy_task_reads: Arc<policy_task_reads::Reads>,
     pub(crate) queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) groups: Arc<rss_mdm_group_service::Groups>,
@@ -135,7 +134,7 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) scripts: Arc<rss_mdm_script_service::ScriptService>,
     pub(crate) collections:
         Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
-    pub(crate) task_reads: Arc<task_reads::Reads>,
+    pub(crate) policy_task_reads: Arc<policy_task_reads::Reads>,
     pub(crate) queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
@@ -202,11 +201,11 @@ pub(crate) async fn from_compiled(
         channels,
         providers,
         bootstrap,
-        control: execution,
+        control: device_control,
         self_service,
         scripts,
         collections,
-        task_reads,
+        policy_task_reads,
         queries,
         protection,
         content: content_writer,
@@ -398,7 +397,7 @@ pub(crate) async fn from_compiled(
         audit: protocol_audit.clone(),
         protection: protection.clone(),
         business: Arc::new(windows_business::WindowsBusiness(
-            execution.clone(),
+            device_control.clone(),
             configuration.clone(),
             collections.clone(),
             software.service.clone(),
@@ -409,7 +408,7 @@ pub(crate) async fn from_compiled(
         runtime: protocol_runtime.clone(),
         audit: protocol_audit.clone(),
         business: Arc::new(apple_business::AppleBusiness(
-            execution.clone(),
+            device_control.clone(),
             configuration.clone(),
             collections.clone(),
             software.service.clone(),
@@ -430,7 +429,7 @@ pub(crate) async fn from_compiled(
         software: software.service.clone(),
         registration: registration.enrollment.clone(),
         content: content_writer.clone(),
-        execution: execution.clone(),
+        device_control: device_control.clone(),
         scripts,
         collections,
     });
@@ -447,9 +446,8 @@ pub(crate) async fn from_compiled(
             protection: protection.clone(),
         }),
         recovery: credential_execution.as_ref().map(|v| v.native.clone()),
-        tasks: task_reads.clone(),
+        tasks: policy_task_reads.clone(),
         registration: registration.native.clone(),
-        execution: execution.clone(),
     });
     let state = Arc::new(Assembly {
         request_timeout: std::time::Duration::from_secs(config.http.request_seconds),
@@ -499,12 +497,12 @@ pub(crate) async fn from_compiled(
         configuration_preview,
         configuration,
         queries,
-        task_reads,
+        policy_task_reads,
         protection,
         audit_store,
         apple,
         platform_configuration,
-        execution,
+        device_control,
         groups,
         policy_application,
         policies,
@@ -540,7 +538,8 @@ pub(crate) mod timeline_associations;
 
 mod collection_ports;
 
-pub(crate) mod task_reads;
+pub(crate) mod policy_task_reads;
+mod query_snapshot;
 
 #[cfg(test)]
 #[path = "../../tests/execution_owners/mod.rs"]
@@ -561,6 +560,7 @@ mod software_windows_facts;
 mod owner_errors;
 pub(crate) mod registration;
 
+pub(crate) mod device_control;
 mod device_reads;
 mod operation_reads;
 

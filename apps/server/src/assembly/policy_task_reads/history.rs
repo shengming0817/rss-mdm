@@ -1,7 +1,7 @@
 //! Keyset composition includes every original owner and Policy version in one snapshot.
 use super::*;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_management_http::execution::task_reads::{RUNS_SCHEMA, RunDetail, RunPage, RunSummary};
+use rss_mdm_management_http::policy_task_reads::{RUNS_SCHEMA, RunDetail, RunPage, RunSummary};
 use rss_mdm_query::{cursor::CursorCodec, window::Query};
 use uuid::Uuid;
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -30,7 +30,8 @@ impl Reads {
         let proof = request.proof.as_ref();
         page.require_schema(&RUNS_SCHEMA)
             .map_err(|_| Error::Malformed)?;
-        self.snapshot(
+        QuerySnapshot::read(
+            &self.snapshot,
             request,
             (self, proof, policy, page, codec),
             |ctx, c, grant, now| {
@@ -64,7 +65,7 @@ impl Reads {
                     let after = position.map(|p| (p.available_at, p.task_id));
                     let limit = page.limit();
                     let mut items = s
-                        .execution
+                        .device_control
                         .run_page_on(proof.binding(), c, policy, after, limit + 1, now)
                         .await
                         .map_err(execution_fault)?
@@ -192,7 +193,7 @@ impl Reads {
         id: Uuid,
     ) -> Result<RunDetail, Error> {
         let proof = request.proof.as_ref();
-        self.snapshot(request, (self, proof, policy, id), |ctx, c, grant, now| {
+        self.snapshot.read(request, (self, proof, policy, id), |ctx, c, grant, now| {
             Box::pin(async move {
                 let (s, proof, policy, id) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;
@@ -250,7 +251,7 @@ impl Reads {
                         .map_err(enrollment_fault)
                     }
                     Owner::Device => s
-                        .execution
+                        .device_control
                         .run_detail_on(c, proof, grant, policy, id, now)
                         .await
                         .map(RunDetail::Execution)

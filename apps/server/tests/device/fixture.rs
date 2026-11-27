@@ -5,7 +5,7 @@ use std::sync::Arc;
 pub(super) struct Fixture {
     pub(super) resources: Prepared,
     pub(super) service: Arc<rss_mdm_device_service::control::Service>,
-    pub(super) task_reads: Arc<assembly::task_reads::Reads>,
+    pub(super) policy_task_reads: Arc<assembly::policy_task_reads::Reads>,
     pub(super) devices: Arc<rss_mdm_registration_service::DeviceService>,
 }
 impl Fixture {
@@ -87,7 +87,7 @@ impl Fixture {
                 rss_device_command_postgres::CommandClock::Postgres,
             )
             .await?;
-            let task_reads = assembly::task_reads::assemble(
+            let policy_task_reads = assembly::policy_task_reads::assemble(
                 config,
                 storage,
                 protection.clone(),
@@ -103,14 +103,14 @@ impl Fixture {
                 c.database.registration(),
                 c.audit.clone(),
             ));
-            Ok((service, task_reads, devices))
+            Ok((service, policy_task_reads, devices))
         }
         .await;
-        let (resources, (service, task_reads, devices)) = resources.finish(result).await?;
+        let (resources, (service, policy_task_reads, devices)) = resources.finish(result).await?;
         Ok(Self {
             resources,
             service,
-            task_reads,
+            policy_task_reads,
             devices,
         })
     }

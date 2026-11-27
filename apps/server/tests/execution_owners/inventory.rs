@@ -186,7 +186,7 @@ async fn native_cleanup_distinguishes_complete_failure_from_unconfirmed_report()
 #[ignore = "T2: native metadata detail needs InventoryRead while Agent raw detail retains sensitive authorization"]
 async fn native_detail_does_not_require_raw_evidence_permission() -> anyhow::Result<()> {
     use rss_mdm_authorization_service::Permission;
-    use rss_mdm_management_http::execution::task_reads::Reads;
+    use rss_mdm_management_http::policy_task_reads::Reads;
     let h = Harness::open().await?;
     let (policy, task, _) = super::retirement::native(&h, Some("complete")).await?;
     let account =
@@ -198,7 +198,7 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> anyhow::Res
         .await?;
     let proof = std::sync::Arc::new(h.c.authenticate(&account).await?);
     let detail = Reads::run(
-        h.a.task_reads.as_ref(),
+        h.a.policy_task_reads.as_ref(),
         &h.c.read_auth(proof.clone()),
         &h.c.request(&proof)?,
         policy,
@@ -215,7 +215,7 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> anyhow::Res
     let task = super::mixed::run(&h, v, now()).await?;
     assert!(matches!(
         Reads::run(
-            h.a.task_reads.as_ref(),
+            h.a.policy_task_reads.as_ref(),
             &h.c.read_auth(proof.clone()),
             &h.c.request(&proof)?,
             policy,
@@ -231,7 +231,7 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> anyhow::Res
 #[ignore = "T2: Collection assignment interval follows actual starts and new versions without writing or reusing historical success"]
 async fn periodic_assignment_uses_actual_start_and_exact_current_version() -> anyhow::Result<()> {
     use rss_mdm_authorization_service::Permission;
-    use rss_mdm_management_http::execution::task_reads::Reads;
+    use rss_mdm_management_http::policy_task_reads::Reads;
     let h = Harness::open().await?;
     let result=async {
         let (definition,frozen,template)=super::mixed::agent(&h)?;
@@ -247,7 +247,7 @@ async fn periodic_assignment_uses_actual_start_and_exact_current_version() -> an
         let proof=std::sync::Arc::new(h.c.authenticate(&account).await?);
         let query=rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.page(Some(10),None,4096)?;
         let codec=rss_mdm_query::cursor::CursorCodec::new(&[9;32])?;
-        let read=||async {Ok::<Value,anyhow::Error>(serde_json::to_value(Reads::assignments(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,policy,&query,&codec).await?)?)};
+        let read=||async {Ok::<Value,anyhow::Error>(serde_json::to_value(Reads::assignments(h.a.policy_task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,policy,&query,&codec).await?)?)};
         let first=read().await?;
         assert_eq!(first["items"][0]["taskAdmission"]["state"],"waiting_check_in");
         assert!(first["items"][0]["execution"]["latestRun"].is_null());

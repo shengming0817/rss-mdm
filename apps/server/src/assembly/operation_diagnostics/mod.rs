@@ -17,7 +17,7 @@ pub(crate) use installation::Installation;
 
 type OperationSections = (
     Evidence<ReceiptSummary>,
-    Evidence<rss_mdm_management_http::execution::operations::Evidence>,
+    Evidence<rss_mdm_management_http::operation_reads::Evidence>,
 );
 pub(crate) struct Diagnostics {
     pub state: Arc<super::Assembly>,
@@ -184,10 +184,11 @@ impl Diagnostics {
                     .delivery
                     .map(|status| {
                         Some(
-                rss_mdm_management_http::execution::operations::Evidence::InventoryReport {
-                    observation: status.receipt.state(), projection: status.projection,
-                }
-            )
+                            rss_mdm_management_http::operation_reads::Evidence::InventoryReport {
+                                observation: status.receipt.state(),
+                                projection: status.projection,
+                            },
+                        )
                     })
                     .map_err(Into::into),
             )?;
@@ -230,9 +231,9 @@ impl Diagnostics {
                 .await
                 .map(|value| {
                     Some(
-                        rss_mdm_management_http::execution::operations::Evidence::Retirement(
-                            Box::new(value),
-                        ),
+                        rss_mdm_management_http::operation_reads::Evidence::Retirement(Box::new(
+                            value,
+                        )),
                     )
                 })
                 .map_err(Into::into),
@@ -265,9 +266,9 @@ impl Diagnostics {
                 }) {
                 Ok(Some((original, execution))) => (
                     Evidence::Available(original),
-                    Evidence::Available(
-                        rss_mdm_management_http::execution::operations::Evidence::Pki(execution),
-                    ),
+                    Evidence::Available(rss_mdm_management_http::operation_reads::Evidence::Pki(
+                        execution,
+                    )),
                 ),
                 Ok(None) => (Evidence::NotFound, Evidence::NotFound),
                 Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),

@@ -1,6 +1,6 @@
 //! Aggregate evidence is checked against the mounted response, using real owner DTOs.
-use crate::execution::{
-    operations::{Detail, Evidence, Item, KindOfOperation, Metadata, Page},
+use crate::operation_reads::{
+    Detail, Evidence, Item, KindOfOperation, Metadata, Page,
     projection::{AppleObservation, CommandStatus, Observation, Unverified},
 };
 use configuration::queries::records::Detail as ConfigurationDetail;

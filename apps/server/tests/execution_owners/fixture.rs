@@ -15,7 +15,7 @@ pub(super) struct Fixture {
     pub(super) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(super) collection_work:
         Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
-    pub(super) task_reads: Arc<crate::assembly::task_reads::Reads>,
+    pub(super) policy_task_reads: Arc<crate::assembly::policy_task_reads::Reads>,
 }
 impl Fixture {
     pub(super) async fn open(c: &Context) -> Result<Self> {
@@ -131,7 +131,7 @@ impl Fixture {
                 config.identity.instance_id.clone(),
                 &[7; 32],
             ));
-            let task_reads = assembly::task_reads::assemble(
+            let policy_task_reads = assembly::policy_task_reads::assemble(
                 config,
                 storage,
                 protection.clone(),
@@ -153,7 +153,7 @@ impl Fixture {
                 self_service,
                 script_work,
                 collection_work,
-                task_reads,
+                policy_task_reads,
             ))
         }
         .await;
@@ -169,7 +169,7 @@ impl Fixture {
                 self_service,
                 script_work,
                 collection_work,
-                task_reads,
+                policy_task_reads,
             ),
         ) = resources.finish(result).await?;
         Ok(Self {
@@ -183,7 +183,7 @@ impl Fixture {
             self_service,
             script_work,
             collection_work,
-            task_reads,
+            policy_task_reads,
         })
     }
     pub(super) async fn close(self) -> Result<()> {

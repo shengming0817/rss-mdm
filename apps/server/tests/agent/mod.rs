@@ -122,7 +122,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
             registration: a.registration.enrollment.clone(),
             content: None,
             requests: a.self_service.clone(),
-            execution: a.service.clone(),
+            device_control: a.service.clone(),
             scripts: a.scripts.clone(),
             collections: a.collections.clone(),
         }),

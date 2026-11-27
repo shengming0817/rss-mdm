@@ -1,7 +1,7 @@
 //! Operation directory composition; each business owner interprets only its own rows.
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, Snapshot as Grant, context::AuthorizedPrincipal};
-use rss_mdm_management_http::{Error, Failure, execution::operations::*};
+use rss_mdm_management_http::{Error, Failure, operation_reads::*};
 use rss_mdm_query::{cursor::CursorCodec, directory::Query};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -27,19 +27,16 @@ impl Default for Budgets {
 pub(crate) struct Operations {
     pub budgets: Budgets,
     pub apple: Arc<rss_mdm_apple_channel::flow_store::Store>,
-    pub tasks: Arc<super::task_reads::Reads>,
+    pub tasks: Arc<super::policy_task_reads::Reads>,
     pub registration: Arc<rss_mdm_registration_service::installation::Service>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
-    pub execution: Arc<rss_mdm_device_service::control::Service>,
 }
-fn sql(e: sqlx::Error) -> Error {
-    super::task_reads::sql(e)
-}
+use super::query_snapshot::sql;
 fn execution_fault(e: rss_mdm_device_service::control::transaction::Fault) -> Error {
-    super::task_reads::history::execution_fault(e)
+    super::policy_task_reads::history::execution_fault(e)
 }
 fn software_fault(e: rss_mdm_software_service::deployment::transaction::Fault) -> Error {
-    super::task_reads::software_fault(e)
+    super::policy_task_reads::software_fault(e)
 }
 fn registration_fault(e: rss_mdm_registration_service::installation::transaction::Fault) -> Error {
     use rss_mdm_registration_service::installation::transaction::Fault as F;
@@ -118,10 +115,10 @@ impl Operations {
         match owner {
             Owner::Device => self
                 .tasks
-                .execution
+                .device_control
                 .read_on(c, proof, grant, now, device, id, redacted)
                 .await
-                .map(rss_mdm_management_http::execution::projection::command)
+                .map(rss_mdm_management_http::operation_reads::projection::command)
                 .map(Detail::Device)
                 .map_err(execution_fault),
             Owner::Configuration => {
@@ -130,20 +127,22 @@ impl Operations {
                     .configuration
                     .detail_on(c, proof, grant, now, device, id)
                     .await
-                    .map_err(super::task_reads::configuration_fault)?;
+                    .map_err(super::policy_task_reads::configuration_fault)?;
                 if redacted {
                     detail.observation = self
                         .tasks
                         .configuration
                         .evidence_on(c, proof, grant, vec![id])
                         .await
-                        .map_err(super::task_reads::configuration_fault)?
+                        .map_err(super::policy_task_reads::configuration_fault)?
                         .remove(&id)
                         .ok_or(Error::Conflict)?
                         .observation;
                 }
                 Ok(Detail::Configuration(
-                    rss_mdm_management_http::execution::projection::configuration_command(detail),
+                    rss_mdm_management_http::operation_reads::projection::configuration_command(
+                        detail,
+                    ),
                 ))
             }
             Owner::Software => self
@@ -151,7 +150,7 @@ impl Operations {
                 .software
                 .read_on(c, proof, grant, now, device, id, redacted)
                 .await
-                .map(rss_mdm_management_http::execution::projection::software_command)
+                .map(rss_mdm_management_http::operation_reads::projection::software_command)
                 .map(Box::new)
                 .map(Detail::Software)
                 .map_err(software_fault),
@@ -161,14 +160,14 @@ impl Operations {
                 .ok_or(Error::Unsupported)?
                 .read_on(c, proof, grant, device, id)
                 .await
-                .map(rss_mdm_management_http::execution::projection::recovery_command)
+                .map(rss_mdm_management_http::operation_reads::projection::recovery_command)
                 .map(Detail::Recovery)
                 .map_err(recovery_fault),
             Owner::Registration => self
                 .registration
                 .read_on(c, proof, grant, device, id)
                 .await
-                .map(rss_mdm_management_http::execution::projection::registration_command)
+                .map(rss_mdm_management_http::operation_reads::projection::registration_command)
                 .map(Detail::Registration)
                 .map_err(registration_fault),
         }
@@ -204,7 +203,7 @@ impl Operations {
                 .configuration
                 .classify_on(c, proof, grant, configuration, now)
                 .await
-                .map_err(super::task_reads::configuration_fault)?
+                .map_err(super::policy_task_reads::configuration_fault)?
                 .into_iter()
                 .map(|(id, value)| {
                     (
@@ -219,7 +218,7 @@ impl Operations {
 
         for (id, d) in self
             .tasks
-            .execution
+            .device_control
             .decisions_on(c, proof, grant, execution, now)
             .await
             .map_err(execution_fault)?
@@ -415,7 +414,7 @@ fn registration_authorization(
         },
     }
 }
-impl rss_mdm_management_http::execution::operations::Reads for Operations {
+impl rss_mdm_management_http::operation_reads::Reads for Operations {
     fn declarations<'a>(
         &'a self,
         request: &'a rss_mdm_authorization_service::context::RequestAuth,
@@ -423,9 +422,9 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         query: &'a rss_mdm_query::window::Query,
         audit: &'a RequestAudit,
         codec: &'a CursorCodec,
-    ) -> rss_mdm_management_http::execution::task_reads::Pending<
+    ) -> rss_mdm_management_http::Pending<
         'a,
-        rss_mdm_management_http::execution::declarations::Page,
+        rss_mdm_management_http::operation_reads::declarations::Page,
     > {
         Box::pin(self.declarations_read(request, device, query, audit, codec))
     }
@@ -436,12 +435,13 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         q: &'a Query,
         codec: &'a CursorCodec,
         audit: &'a RequestAudit,
-    ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, Page> {
+    ) -> rss_mdm_management_http::Pending<'a, Page> {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             q.require_schema(&SCHEMA).map_err(query_error)?;
             self.tasks
-                .snapshot(request, (self, proof, q, codec), |ctx, c, grant, now| {
+                .snapshot
+                .read(request, (self, proof, q, codec), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, q, codec) = *ctx;
                         let authority = grant.query_binding(p)?;
@@ -468,15 +468,13 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         request: &'a rss_mdm_authorization_service::context::RequestAuth,
         q: &'a Query,
         audit: &'a RequestAudit,
-    ) -> rss_mdm_management_http::execution::task_reads::Pending<
-        'a,
-        rss_mdm_query::Statistics<Statistics>,
-    > {
+    ) -> rss_mdm_management_http::Pending<'a, rss_mdm_query::Statistics<Statistics>> {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             q.require_schema(&SCHEMA).map_err(query_error)?;
             self.tasks
-                .snapshot(request, (self, proof, q), |ctx, c, grant, now| {
+                .snapshot
+                .read(request, (self, proof, q), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, q) = *ctx;
                         selection::statistics(s, c, p, grant, q, now).await
@@ -492,11 +490,12 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         device: &'a rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         audit: &'a RequestAudit,
-    ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, Detail> {
+    ) -> rss_mdm_management_http::Pending<'a, Detail> {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             self.tasks
-                .snapshot(request, (self, proof, device, id), |ctx, c, grant, now| {
+                .snapshot
+                .read(request, (self, proof, device, id), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, d, id) = *ctx;
                         s.detail_on(c, p, grant, now, d, id, false).await
@@ -504,44 +503,6 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 })
                 .await
                 .inspect(|_| audit.require_final_request())
-        })
-    }
-    fn change<'a>(
-        &'a self,
-        request: &'a rss_mdm_authorization_service::context::RequestAuth,
-        device: &'a rss_mdm_agent_wire::DeviceId,
-        id: Uuid,
-        change: &'a rss_mdm_device_service::control::Change,
-        reauthorization: Option<
-            &'a rss_mdm_device_service::control::device_control::Reauthorization,
-        >,
-        audit: &'a RequestAudit,
-    ) -> rss_mdm_management_http::execution::task_reads::Pending<
-        'a,
-        rss_mdm_device_service::control::ChangedReceipt,
-    > {
-        let proof = request.proof.as_ref();
-        Box::pin(async move {
-            let owner = self
-                .tasks
-                .snapshot(request, (self, proof, device, id), |ctx, c, grant, _| {
-                    Box::pin(async move {
-                        let (_, p, d, id) = *ctx;
-                        grant.require(p, Permission::OperationRead, Some(d))?;
-                        super::native_ownership::on(c, p.binding().tenant(), id)
-                            .await
-                            .map_err(Into::into)
-                    })
-                })
-                .await?;
-            // Only direct device controls support management cancel/reauthorization; policies own desired work.
-            if owner != super::native_ownership::Owner::Device {
-                return Err(Error::Conflict);
-            }
-            self.execution
-                .change(proof, device, id, change, reauthorization, audit)
-                .await
-                .map_err(Into::into)
         })
     }
 }

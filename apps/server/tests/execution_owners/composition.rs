@@ -72,7 +72,7 @@ async fn original_self_service_receipt_replays_after_policy_kind_changes() -> Re
         registration: h.a.registration.enrollment.clone(),
         content: None,
         requests: h.a.self_service.clone(),
-        execution: h.a.service.clone(),
+        device_control: h.a.service.clone(),
         scripts: h.a.scripts.clone(),
         collections: h.a.collections.clone(),
     };

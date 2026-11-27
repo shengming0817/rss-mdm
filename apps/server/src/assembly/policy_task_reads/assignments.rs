@@ -1,8 +1,6 @@
 use super::*;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_management_http::execution::task_reads::{
-    Assignment, AssignmentExecution, RecurringRun,
-};
+use rss_mdm_management_http::policy_task_reads::{Assignment, AssignmentExecution, RecurringRun};
 use rss_mdm_policy::{
     Action,
     pages::{CurrentRecord, TaskAdmission, TaskAdmissionState},
@@ -16,7 +14,7 @@ pub(super) async fn assignments(
     id: Uuid,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
-) -> std::result::Result<rss_mdm_management_http::execution::task_reads::AssignmentPage, Error> {
+) -> std::result::Result<rss_mdm_management_http::policy_task_reads::AssignmentPage, Error> {
     let auth = request.proof.as_ref();
     query
         .require_schema(&rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA)
@@ -31,7 +29,7 @@ pub(super) async fn assignments(
     );
     auth.manage(Permission::PolicyRead)?;
     auth.require_all_devices(Permission::InventoryRead)?;
-    service.snapshot(request,(service,auth,audit,query,codec),|ctx,c,current,now|Box::pin(async move {
+    service.snapshot.read(request,(service,auth,audit,query,codec),|ctx,c,current,now|Box::pin(async move {
         let (s,a,_audit,query,codec)=*ctx;let limit=query.limit();current.require(a,Permission::PolicyRead,None)?;current.require_all_devices(a,Permission::InventoryRead)?;
         let p=s.policy_reader.read_on(c,id).await.map_err(|_|Error::Unavailable(Failure::PlanningStorage))?.map_err(|_|Error::Conflict)?.ok_or(Error::PolicyMissing)?;
         let authority=current.query_binding(a)?;let scope=p.definition.scope;let input=json!([id,p.revision,p.version]);
@@ -114,7 +112,7 @@ pub(super) async fn assignments(
             items.push(Assignment{object:object.object,channel:Some(object.channel),availability:object.availability,reason:object.reason,target:object.target,qualification:object.admission,sources:object.sources,scope_result:Some(object.scope_result),task_admission,execution});
         }
 
-        Ok(rss_mdm_management_http::execution::task_reads::AssignmentPage{items,next_cursor:rss_mdm_scope_service::window::next(codec,&binding,next).map_err(window)?})
+        Ok(rss_mdm_management_http::policy_task_reads::AssignmentPage{items,next_cursor:rss_mdm_scope_service::window::next(codec,&binding,next).map_err(window)?})
         }.await?;
         Ok(page)
     })).await

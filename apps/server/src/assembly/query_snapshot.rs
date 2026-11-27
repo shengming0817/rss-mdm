@@ -1,9 +1,22 @@
 //! One six-second fact snapshot followed by a fresh authorization read under its fence.
 //! ref: sqlx sqlx-core/src/transaction.rs@v0.9.0
-use super::*;
+use rss_mdm_authorization_service::Snapshot;
+use rss_mdm_management_http::{Error, Failure};
+use rss_request_context::Clock;
 use sqlx::Acquire;
-impl Reads {
-    pub(crate) async fn snapshot<C: Send, R: Send, F>(
+
+use crate::lifecycle::RuntimeTimer;
+
+#[derive(Clone)]
+pub(crate) struct QuerySnapshot {
+    read_pool: sqlx::PgPool,
+}
+impl QuerySnapshot {
+    pub(super) fn new(read_pool: sqlx::PgPool) -> Self {
+        Self { read_pool }
+    }
+
+    pub(crate) async fn read<C: Send, R: Send, F>(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
         context: C,
@@ -19,12 +32,12 @@ impl Reads {
                 Box<dyn std::future::Future<Output = Result<R, Error>> + Send + 'c>,
             > + Send,
     {
-        self.snapshot_registered(request, context, |ctx, c, grant, now, _| {
+        self.read_registered(request, context, |ctx, c, grant, now, _| {
             operation(ctx, c, grant, now)
         })
         .await
     }
-    pub(crate) async fn snapshot_registered<C: Send, R: Send, F>(
+    pub(crate) async fn read_registered<C: Send, R: Send, F>(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
         mut context: C,
@@ -46,11 +59,11 @@ impl Reads {
     {
         let proof = request.proof.as_ref();
         proof.check_live()?;
-        let start = self.clock.now();
+        let start = RuntimeTimer.now();
         let deadline_at = request
             .deadline
             .min(start + std::time::Duration::from_secs(6));
-        let remaining = || deadline_at.saturating_duration_since(self.clock.now());
+        let remaining = || deadline_at.saturating_duration_since(RuntimeTimer.now());
         let deadline = || Error::Unavailable(Failure::RequestDeadline);
         let mut connection = tokio::time::timeout(remaining(), self.read_pool.acquire())
             .await
@@ -114,5 +127,17 @@ impl Reads {
                 })
             }
         }
+    }
+}
+
+pub(super) fn sql(error: sqlx::Error) -> Error {
+    if error
+        .as_database_error()
+        .and_then(|e| e.code())
+        .is_some_and(|c| c == "40001" || c == "40P01")
+    {
+        Error::QueryReadConflict
+    } else {
+        Error::Unavailable(Failure::Database)
     }
 }

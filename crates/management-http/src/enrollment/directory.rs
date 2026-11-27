@@ -150,7 +150,7 @@ pub trait DeviceReads: Send + Sync {
         &'a self,
         proof: &'a rss_mdm_authorization_service::context::RequestAuth,
         device: &'a rss_mdm_agent_wire::DeviceId,
-    ) -> crate::execution::task_reads::Pending<'a, DeviceDetail>;
+    ) -> crate::Pending<'a, DeviceDetail>;
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
