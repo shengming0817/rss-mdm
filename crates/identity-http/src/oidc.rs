@@ -507,17 +507,21 @@ impl IntoResponse for CallbackReply {
 impl rss_mdm_http_contract::signature::Output for CallbackReply {
     fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
         use rss_mdm_http_contract::signature::{Response, Schema};
-        let mut r = Response::empty(303);
-        for name in [
-            "location",
-            "set-cookie",
-            "x-request-id",
-            "x-content-type-options",
-            "connection",
-        ] {
-            r.headers.insert(name.into(), Schema::response::<String>());
+        let mut redirect = Response::empty(303);
+        for name in ["location", "x-request-id", "x-content-type-options"] {
+            redirect
+                .headers
+                .insert(name.into(), Schema::response::<String>());
         }
-        vec![r]
+        let mut issued = redirect.clone();
+        issued
+            .headers
+            .insert("set-cookie".into(), Schema::response::<String>());
+        let mut closing = redirect.clone();
+        let mut close = Schema::response::<String>();
+        close.value["const"] = "close".into();
+        closing.headers.insert("connection".into(), close);
+        vec![redirect, issued, closing]
     }
 }
 
@@ -528,6 +532,23 @@ mod callback_tests {
     use rss_identity_postgres::AuthorityError;
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct HostMarker;
+
+    #[test]
+    fn ordinary_and_issued_redirects_do_not_require_a_connection_close() {
+        use rss_mdm_http_contract::signature::Output;
+        let shapes: Vec<_> = CallbackReply::responses()
+            .into_iter()
+            .map(|r| {
+                assert_eq!(r.status, 303);
+                assert!(r.headers.contains_key("location"));
+                (
+                    r.headers.contains_key("set-cookie"),
+                    r.headers.contains_key("connection"),
+                )
+            })
+            .collect();
+        assert_eq!(shapes, [(false, false), (true, false), (false, true)]);
+    }
 
     #[tokio::test]
     async fn callback_error_projection_keeps_all_host_extensions_and_hides_body() {
