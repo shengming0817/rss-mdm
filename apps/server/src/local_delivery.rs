@@ -67,6 +67,26 @@ async fn read_while_running<T>(
 fn unavailable() -> Error {
     Error::Unavailable(Failure::Database)
 }
+pub(crate) async fn consumer_runtime(
+    db: &crate::config::Database,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+) -> Result<Arc<PgRuntime>, Error> {
+    let pg = PgConfig::new(
+        &db.host,
+        db.port,
+        &db.name,
+        &db.user,
+        PgPassword::new(crate::config::secret(&db.password_file)?.as_str()),
+        PgPrivateCa::from_pem(crate::config::read(&db.ca_file, 1024 * 1024, false)?.to_vec())
+            .map_err(|_| Error::Malformed)?,
+    )
+    .with_pool_limits(0, CONNECTIONS);
+    Ok(Arc::new(
+        PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, storage)
+            .await
+            .map_err(|_| unavailable())?,
+    ))
+}
 impl<H, V> Delivery<H, V>
 where
     H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
@@ -92,23 +112,7 @@ where
                 return Err(Error::Malformed);
             }
             let binding = config.management_binding()?;
-            let pg = PgConfig::new(
-                &db.host,
-                db.port,
-                &db.name,
-                &db.user,
-                PgPassword::new(crate::config::secret(&db.password_file)?.as_str()),
-                PgPrivateCa::from_pem(
-                    crate::config::read(&db.ca_file, 1024 * 1024, false)?.to_vec(),
-                )
-                .map_err(|_| Error::Malformed)?,
-            )
-            .with_pool_limits(0, CONNECTIONS);
-            let runtime = Arc::new(
-                PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding.storage())
-                    .await
-                    .map_err(|_| unavailable())?,
-            );
+            let runtime = consumer_runtime(db, binding.storage()).await?;
             let result = async {
                 let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
                     runtime.clone(),
@@ -318,14 +322,16 @@ where
                                 .bind(after.map(|key| key.1))
                                 .fetch_all(&lane.read_pool)
                                 .await
-                                .map_err(|_| eprintln!("{} discovery failed", lane.name))
+                                .map_err(|_| {
+                                    eprintln!("{} discovery failed", lane.name);
+                                    rss_mdm_work_page::Failure::Retry
+                                })
                         }
                     },
                 ),
-                |key| {
+                |key, cancel| {
                     let lane = self.clone();
                     let budget = budget.clone();
-                    let cancel = stop.clone();
                     async move {
                         lane.batch(key, &cancel, &budget).await.map_err(|error| {
                             let event = serde_json::json!({
@@ -334,6 +340,7 @@ where
                                 "recoveryRequired":matches!(error, PollFailure::RecoveryRequired)
                             });
                             eprintln!("{event}");
+                            rss_mdm_work_page::Failure::Retry
                         })
                     }
                 },
@@ -346,7 +353,7 @@ where
                         .store(true, std::sync::atomic::Ordering::Release);
                 },
             )
-            .await;
+            .await?;
             Ok(())
         })
     }

@@ -9,8 +9,8 @@ use std::sync::{
 
 mod observations;
 mod relay;
-pub use observations::{Attempt, Observations, RelayPage, Scan, Snapshot};
-pub use relay::{RelayCheck, RelayMessage};
+pub use observations::{Attempt, Observations, RelayPage, RelayWork, Scan, Snapshot};
+pub use relay::{RelayCheck, RelayMessage, RelayScope};
 mod store;
 pub use store::ObservedStore;
 
@@ -25,6 +25,7 @@ pub enum Phase {
 pub struct Health {
     pub task: Option<TaskState>,
     pub stopping: bool,
+    pub blocks_readiness: bool,
     pub recovery: Phase,
     pub discovery: Phase,
     pub scan: Phase,
@@ -41,9 +42,7 @@ impl Health {
     }
     /// Startup belongs to the managed task; an idle owner need not invent tenant work.
     pub fn is_ready(&self) -> bool {
-        self.task == Some(TaskState::Running)
-            && !self.stopping
-            && self.phases().all(|p| !matches!(p, Phase::Failed(_)))
+        self.task == Some(TaskState::Running) && !self.stopping && !self.blocks_readiness
     }
 }
 /// A new process starts an observation window. Overflow remains failed until restart;
@@ -85,6 +84,7 @@ impl Readiness {
             task: self.task.get().map(TaskStatus::current),
             stopping: self.stopping.load(Ordering::Acquire),
             recovery,
+            blocks_readiness: snapshot.is_none_or(|s| s.blocks_readiness),
             discovery: snapshot.map_or(Phase::Failed(ErrorKind::Invariant), |s| {
                 phase_scan(s.discovery)
             }),
@@ -151,28 +151,14 @@ impl Readiness {
             r.scan(scope, outcome, None);
         }
     }
-    pub fn relay_page(&self, after: Option<(uuid::Uuid, i64)>) -> RelayPage<'_> {
-        RelayPage::begin(&self.rounds, &self.domain, after)
-    }
-    pub fn relay_check(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-    ) -> Option<RelayCheck<'_>> {
-        RelayCheck::begin(&self.rounds, &self.domain, binding)
+    pub fn relay_page(&self) -> RelayPage<'_> {
+        RelayPage::begin(&self.rounds, &self.domain)
     }
     pub fn relay_scope(
         &self,
-        scope: &Scope,
-        epoch: i64,
-        message: Option<&RelayMessage>,
-        outcome: Result<(), ErrorKind>,
-    ) {
-        if self.relay_enabled
-            && self.check(scope).is_ok()
-            && let Ok(mut r) = self.rounds.lock()
-        {
-            r.relay(scope, epoch, message, outcome, None);
-        }
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> RelayScope<'_> {
+        RelayScope::new(&self.rounds, &self.domain, binding, None)
     }
     fn settled(&self, target: &Target, completion: Completion) {
         if let Ok(mut r) = self.rounds.lock() {

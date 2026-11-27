@@ -130,6 +130,7 @@ impl RuntimeDiagnostics {
                 false,
             );
             let health = self.planning.automation_health();
+            let task_readiness = policy.readiness;
             apply_runner(
                 &mut policy,
                 Runner {
@@ -144,6 +145,9 @@ impl RuntimeDiagnostics {
                 },
                 health.recovery,
             );
+            if !health.blocks_readiness {
+                policy.readiness = task_readiness;
+            }
             let health = self.groups.runner_health();
             let mut group = worker_component(
                 ComponentName::Group,

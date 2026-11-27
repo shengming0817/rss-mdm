@@ -155,14 +155,24 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
             .is_empty()
     );
     assert_eq!(health.health().recovery, Phase::Healthy);
-    health.relay_scope(&scope, 1, None, Err(ErrorKind::Transient));
-    health.relay_scope(&other_tenant, 1, None, Ok(()));
-    health.relay_scope(&scope, 2, None, Ok(()));
+    use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+    let binding = |scope: &Scope, epoch| {
+        ExecutionBinding::new(
+            StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+            scope.tenant(),
+            Epoch::new(epoch).unwrap(),
+        )
+    };
+    health
+        .relay_scope(binding(&scope, 1))
+        .claim(Err(ErrorKind::Transient));
+    health.relay_scope(binding(&other_tenant, 1)).claim(Ok(()));
+    health.relay_scope(binding(&scope, 2)).claim(Ok(()));
     assert_eq!(
         health.health().recovery,
         Phase::Failed(ErrorKind::Transient)
     );
-    health.relay_scope(&scope, 1, None, Ok(()));
+    health.relay_scope(binding(&scope, 1)).claim(Ok(()));
     assert_eq!(health.health().recovery, Phase::Healthy);
 
     let target = Token(Target::new(scope.clone(), "a").unwrap());

@@ -4,6 +4,7 @@ pub use admission::Work;
 pub mod capacity;
 pub mod external;
 pub mod reconcile;
+pub mod relay;
 pub mod scheduler;
 
 use std::{
@@ -99,21 +100,24 @@ pub async fn run<K, P, F>(
 /// stays live until its batch drains. A peer position can refill released
 /// item capacity while that batch still owns a slow head. The database
 /// cursor remains the owner's key; positions exist only inside this process.
-pub async fn run_partitioned<K, G, P, F>(
+pub async fn run_partitioned<K, G, R, P, F, E>(
     (capacity, positions): (NonZeroUsize, NonZeroUsize),
     idle: Duration,
     stop: &CancellationToken,
     notify: &Notify,
     (tenant, page): (impl Fn(K) -> G, impl Fn(Option<K>) -> P),
-    batch: impl Fn(K) -> F,
+    batch: impl Fn(K, CancellationToken) -> F,
     observed: impl Fn(bool),
-) where
+) -> Result<(), E>
+where
+    E: Send + 'static,
     K: Copy + Ord + Send + 'static,
     G: Copy + Ord,
-    P: Future<Output = Result<Vec<K>, ()>>,
-    F: Future<Output = Result<Duration, ()>> + Send + 'static,
+    R: Into<Page<K>>,
+    P: Future<Output = Result<R, Failure<E>>>,
+    F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
 {
-    run_grouped(
+    run_fallible(
         capacity,
         idle,
         stop,
@@ -123,18 +127,23 @@ pub async fn run_partitioned<K, G, P, F>(
             |after: Option<(K, usize)>| {
                 let rows = page(after.map(|(key, _)| key));
                 async move {
-                    let rows = rows.await?;
-                    Ok(rows
-                        .into_iter()
-                        .flat_map(|key| (0..positions.get()).map(move |position| (key, position)))
-                        .collect::<Vec<_>>())
+                    let page: Page<K> = rows.await?.into();
+                    Ok(Page {
+                        after: page.after.map(|key| (key, positions.get() - 1)),
+                        next: page.next,
+                        rows: page
+                            .rows
+                            .into_iter()
+                            .flat_map(|key| (0..positions.get()).map(move |p| (key, p)))
+                            .collect(),
+                    })
                 }
             },
         ),
-        |(key, _)| batch(key),
+        |(key, _), admission| batch(key, admission),
         observed,
     )
-    .await;
+    .await
 }
 
 /// A group occupies at most one slot, so multiple keys sharing a tenant resource
