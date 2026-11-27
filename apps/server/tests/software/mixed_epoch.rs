@@ -4,6 +4,43 @@ use rss_mdm_registration_service::device::endpoints::PrimaryRegistration;
 use rss_transactional_messaging::fence::ExecutionBinding;
 use std::time::Duration;
 
+async fn check_stale_binding(fixture: &Fixture, stale: ExecutionBinding) -> Result<()> {
+    use rss_mdm_device_service::control as device;
+    let storage = &fixture.resources.storage;
+    let audit = background(stale);
+    let write = device::Transaction::run::<_, (), _>(
+        &storage.audit,
+        &storage.runtime,
+        stale,
+        &audit,
+        (),
+        |_, _| panic!("stale command entered its write callback"),
+    )
+    .await;
+    audit.finalize(
+        write
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    anyhow::ensure!(
+        matches!(write, Err(device::Error::Conflict)),
+        "stale write: {write:?}"
+    );
+    assert_eq!(
+        audit.snapshot().write_outcome,
+        rss_mdm_audit_integration::WriteOutcome::CommitNotStarted
+    );
+    let read = owner::Transaction::inspect::<_, (), _>(&storage.runtime, stale, (), |_, _| {
+        panic!("stale command entered its preflight callback")
+    })
+    .await;
+    anyhow::ensure!(
+        matches!(read, Err(owner::Error::Conflict)),
+        "stale preflight: {read:?}"
+    );
+    Ok(())
+}
 async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()> {
     let runtime = &f.resources.storage.runtime;
     let profile = rss_mdm_install_support::StorageProfile::Mdm;
@@ -120,6 +157,7 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1").bind(c.tenant.to_string()).execute(&c.operator).await?.rows_affected(),1);
+    check_stale_binding(&fixture, c.execution()).await?;
     let current = ExecutionBinding::new(
         c.execution().storage(),
         c.tenant,

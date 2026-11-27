@@ -76,7 +76,7 @@ impl<F: CommandFault> Transaction<F> {
             },
             |_| Err(Failure::RollbackFailed.into()),
             |_| Err(Failure::CommitUnknown.into()),
-            |_| Err(Failure::Storage.into()),
+            |_| Err(Failure::Conflict.into()),
         )
     }
     /// The owner locks its actual business objects before declaring partitions.
@@ -171,7 +171,7 @@ impl<F: CommandFault> Transaction<F> {
             },
             |_| Err(Failure::RollbackFailed.into()),
             |_| Err(Failure::Storage.into()),
-            |_| Err(Failure::Storage.into()),
+            |_| Err(Failure::Conflict.into()),
         )
     }
 }

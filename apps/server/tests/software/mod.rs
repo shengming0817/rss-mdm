@@ -400,6 +400,20 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
         }
         if reboot {
             recover_run(&c, &a, id).await?;
+            let competing = Uuid::new_v4();
+            let decision = accept(&c, &a, mp, &native, competing).await?;
+            assert!(
+                matches!(decision, w::PolicyEventDecision::Rejected { reason } if reason == "software_not_eligible")
+            );
+            assert_eq!(count(&c).await?, 1);
+            let dispatches: Vec<String> = sqlx::query_scalar(
+                "SELECT message_id FROM rss_transactional_messaging.outbox
+                 WHERE tenant_id=$1::uuid AND message_id LIKE 'action.%'",
+            )
+            .bind(c.tenant.to_string())
+            .fetch_all(&c.operator)
+            .await?;
+            assert_eq!(dispatches, [format!("action.{id}")]);
         }
         let (state, stored_effect): (Value, Option<String>) = sqlx::query_as(
             "SELECT state, result->>'effect' FROM mdm_software_deployment.action_runs

@@ -15,37 +15,14 @@ async fn evidence(c: &Context, id: Uuid, expected: i64) -> Result<()> {
                 (SELECT count(*) FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2::uuid::text),
                 (SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id='dispatch.'||$2::uuid::text)",
     ).bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
-    assert_eq!(rows, (expected, expected, expected, expected));
-    assert_eq!(
-        c.audit_count("mdm.business", &id.to_string()).await?,
-        expected
+    anyhow::ensure!(
+        rows == (expected, expected, expected, expected),
+        "persisted command counts {rows:?}, expected {expected} each"
     );
-    Ok(())
-}
-fn check_outcome(
-    result: std::result::Result<AcceptedReceipt, Error>,
-    outcome: WriteOutcome,
-    expected: WriteOutcome,
-    id: Uuid,
-) -> Result<()> {
-    assert_eq!(outcome, expected);
-    match expected {
-        WriteOutcome::RollbackFailed => assert!(matches!(result, Err(Error::RollbackFailed))),
-        WriteOutcome::Unknown => assert!(matches!(result, Err(Error::CommitUnknown))),
-        WriteOutcome::Committed => {
-            let receipt = result?;
-            assert_eq!(
-                (
-                    receipt.operation_id,
-                    receipt.command_id,
-                    receipt.revision,
-                    receipt.accepted
-                ),
-                (id, id, 1, true)
-            );
-        }
-        other => anyhow::bail!("unexpected settlement case {other:?}"),
-    }
+    anyhow::ensure!(
+        c.audit_count("mdm.business", &id.to_string()).await? == expected,
+        "unexpected durable audit count"
+    );
     Ok(())
 }
 pub(super) async fn check_create(
@@ -56,22 +33,9 @@ pub(super) async fn check_create(
     input: &Input,
 ) -> Result<()> {
     let id = input.operation_id;
-    // The producer checks this generation after enqueuing on the original transaction.
-    for (epoch, fault, expected, rows) in [
-        (
-            2_i64,
-            Some(PgTransactionFault::RollbackFailedAfterAck),
-            WriteOutcome::RollbackFailed,
-            0,
-        ),
-        (
-            1,
-            Some(PgTransactionFault::CommitUnknownAfterAck),
-            WriteOutcome::Unknown,
-            1,
-        ),
-        (1, None, WriteOutcome::Committed, 1),
-    ] {
+    let key = format!("command:{}:{id}:accept", proof.principal_id());
+    let runtime = &fixture.resources.storage.runtime;
+    let submit = async || -> Result<(std::result::Result<AcceptedReceipt, Error>, WriteOutcome)> {
         let audit = c.request(proof)?;
         audit.owned_operation(
             OperationOwner::DeviceControl,
@@ -80,24 +44,44 @@ pub(super) async fn check_create(
             AuditIntent::Management,
         );
         audit.target_device(device);
-        if let Some(fault) = fault {
-            let updated = sqlx::query("UPDATE mdm_devices.control_recovery SET expected_epoch=$3 WHERE tenant_id=$1::uuid AND device=$2")
-            .bind(c.tenant.to_string()).bind(device.into_uuid()).bind(epoch)
-            .execute(&c.operator).await?;
-            assert_eq!(updated.rows_affected(), 1);
-            fixture
-                .resources
-                .storage
-                .runtime
-                .inject_next_transaction_fault(fault);
-        }
         let result = fixture
             .service
             .create_control(proof, device, input, &audit)
             .await;
         audit.finalize(result.as_ref().err().map(|_| FailureReason::Transaction));
-        check_outcome(result, audit.snapshot().write_outcome, expected, id)?;
-        evidence(c, id, rows).await?;
-    }
-    Ok(())
+        Ok((result, audit.snapshot().write_outcome))
+    };
+    command::check_uncommitted_command(c, runtime, &key, async |expected| {
+        let (result, outcome) = submit().await?;
+        anyhow::ensure!(
+            outcome == expected,
+            "expected {expected:?}, found {outcome:?}"
+        );
+        anyhow::ensure!(matches!(
+            (result, expected),
+            (Err(Error::RollbackFailed), WriteOutcome::RollbackFailed)
+                | (Err(Error::CommitUnknown), WriteOutcome::Unknown)
+        ));
+        evidence(c, id, 0).await
+    })
+    .await?;
+
+    runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
+    let (lost, outcome) = submit().await?;
+    assert!(matches!(lost, Err(Error::CommitUnknown)));
+    assert_eq!(outcome, WriteOutcome::Unknown);
+    evidence(c, id, 1).await?;
+    let (replay, outcome) = submit().await?;
+    let receipt = replay?;
+    assert_eq!(
+        (
+            receipt.operation_id,
+            receipt.command_id,
+            receipt.revision,
+            receipt.accepted
+        ),
+        (id, id, 1, true)
+    );
+    assert_eq!(outcome, WriteOutcome::Committed);
+    evidence(c, id, 1).await
 }
