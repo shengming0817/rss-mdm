@@ -199,8 +199,18 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
             observed
         }
     );
+    let old_target = format!("run:{old}");
+    let failures = sqlx::query_scalar::<_, i64>(
+        "SELECT failures FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3",
+    ).bind(c.tenant.to_string()).bind(owner::recovery_scope(c.tenant).reconciler()).bind(old_target)
+        .fetch_one(&c.operator).await;
     fixture.close().await?;
     c.close().await;
     worker?;
-    observed?
+    observed??;
+    assert_eq!(
+        failures?, 0,
+        "a stale command binding must not consume the recovery retry budget"
+    );
+    Ok(())
 }

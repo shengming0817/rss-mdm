@@ -691,9 +691,17 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for SoftwareService {
                     .err()
                     .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
             );
+            // Observation only checks the command binding. The scheduler still owns its
+            // claim and can defer it, releasing the device for the current generation.
+            let active = active.map_err(|error| match error {
+                Error::Conflict => {
+                    rss_reconcile::Error::new(rss_reconcile::ErrorKind::BindingChanged)
+                }
+                other => failure(other),
+            })?;
             Ok(ReconcileStep::Ready(ReconcileDiff::between(
                 DesiredState::present(false),
-                ActualState::present(active.map_err(failure)?),
+                ActualState::present(active),
             )))
         })
     }
