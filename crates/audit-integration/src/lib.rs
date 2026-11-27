@@ -5,6 +5,7 @@ mod intent;
 pub use intent::{AuditIntent, SensitiveAction};
 
 pub use rss_mdm_install_support::StorageProfile;
+pub mod command_transaction;
 mod context;
 pub mod operation;
 mod settlement;

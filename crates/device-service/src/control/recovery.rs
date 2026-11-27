@@ -35,6 +35,14 @@ impl rss_reconcile::Timer for Timer {
         }
     }
 }
+/// Losing the command binding during a read leaves the separate scheduler claim
+/// available for a fenced deferral, so the current generation can use the device.
+pub(super) fn preflight_failure(error: Error) -> rss_reconcile::Error {
+    match error {
+        Error::Conflict => rss_reconcile::Error::new(rss_reconcile::ErrorKind::BindingChanged),
+        other => failure(other),
+    }
+}
 fn failure(error: Error) -> rss_reconcile::Error {
     if matches!(error, Error::Unavailable(Failure::NativeInputIntegrity)) {
         eprintln!(
@@ -279,9 +287,9 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("command-dispatch");
-        let result=crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,execution,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
+        let result=crate::control::Transaction::run(&self.transactions.audit_store,&self.transactions.runtime,execution,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
-            crate::control::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
+            service.transactions.audit_store.prepare_in(tx,audit,&[]).await?;
             let operation_id=*id;
             let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
@@ -434,13 +442,11 @@ pub(crate) async fn prepare(
         }
     };
 
-    crate::control::transaction::prepare_audit_in(
-        &service.transactions.audit_store,
-        tx,
-        audit,
-        &partitions,
-    )
-    .await?;
+    service
+        .transactions
+        .audit_store
+        .prepare_in(tx, audit, &partitions)
+        .await?;
     Ok(Some(prepared))
 }
 pub(crate) async fn apply_prepared(
@@ -631,7 +637,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                 "management_read",
                 rss_mdm_audit_integration::AuditIntent::Routine,
             );
-            let active=crate::control::transaction::inspect(&self.transactions.runtime,execution,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
+            let active=crate::control::Transaction::inspect(&self.transactions.runtime,execution,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
             if entity == "inputs" { return crate::control::source_changes::pending_in(tx, service.transactions.source.clone()).await; }
             if let Some(id)=crate::control::unmanage::operation(entity){return crate::control::unmanage::active_in(tx,id).await;}
@@ -652,9 +658,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                     .err()
                     .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
             );
+            let active = active.map_err(preflight_failure)?;
             Ok(ReconcileStep::Ready(ReconcileDiff::between(
                 DesiredState::present(false),
-                ActualState::present(active.map_err(failure)?),
+                ActualState::present(active),
             )))
         })
     }
@@ -699,18 +706,23 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                         |(service, claim, context), tx| {
                             Box::pin(async move {
                                 if let Err(e) = service.transactions.audit_store.bind_in(tx).await {
-                                    return Err(rejection(Fault::Request(e.into()), context.3));
+                                    return Err(Transaction::rejection(
+                                        Fault::Request(e.into()),
+                                        context.3,
+                                    ));
                                 }
                                 let prepared =
                                     match prepare(service, tx, context.1, context.2).await {
                                         Ok(prepared) => prepared,
-                                        Err(error) => return Err(rejection(error, context.3)),
+                                        Err(error) => {
+                                            return Err(Transaction::rejection(error, context.3));
+                                        }
                                     };
 
                                 if prepared.is_some() {
                                     let resources = resources_in(tx, claim.target().entity())
                                         .await
-                                        .map_err(|e| rejection(e, context.3))?;
+                                        .map_err(|e| Transaction::rejection(e, context.3))?;
                                     service
                                         .transactions
                                         .reconcile_messaging
@@ -739,7 +751,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                                                         more,
                                                     ),
                                                 ),
-                                                Err(e) => Err(rejection(e, failure)),
+                                                Err(e) => Err(Transaction::rejection(e, failure)),
                                             }
                                         })
                                     })
@@ -752,7 +764,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                         },
                     )
                     .await;
-                let result = settle(attempt, &audit, error);
+                let result = Transaction::settle(attempt, &audit, error);
                 audit.finalize(
                     result
                         .as_ref()

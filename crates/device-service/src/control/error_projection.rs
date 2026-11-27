@@ -199,3 +199,15 @@ impl From<crate::Error> for Error {
         }
     }
 }
+
+#[cfg(test)]
+#[test]
+fn apple_protocol_rejections_retain_their_declared_class() {
+    use rss_mdm_apple_mdm::Error as Apple;
+    assert!(matches!(Error::from(Apple::Malformed), Error::Malformed));
+    assert!(matches!(
+        Error::from(Apple::Unsupported),
+        Error::Unsupported
+    ));
+    assert!(matches!(Error::from(Apple::Conflict), Error::Conflict));
+}

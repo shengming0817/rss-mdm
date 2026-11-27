@@ -83,7 +83,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::deployment::actions::scheduled::Work::parse(claim.target().entity())
         {
             if matches!(completion, Completion::Converged | Completion::Reobserve(_)) {
-                let delay = crate::deployment::transaction::inspect(
+                let delay = crate::deployment::Transaction::inspect(
                     &self.0.transactions.runtime,
                     self.0.binding_for(claim, &settlement).await?,
                     (self.0, work),
@@ -94,7 +94,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                     },
                 )
                 .await
-                .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+                .map_err(super::recovery::preflight_failure)?;
                 delay.map_or(Completion::Converged, Completion::Reobserve)
             } else {
                 completion
@@ -103,7 +103,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::deployment::actions::run_recovery::Work::parse(claim.target().entity())
             && completion == Completion::Converged
         {
-            let waiting = crate::deployment::transaction::inspect(
+            let waiting = crate::deployment::Transaction::inspect(
                 &self.0.transactions.runtime,
                 self.0.binding_for(claim, &settlement).await?,
                 work,
@@ -114,7 +114,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 },
             )
             .await
-            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            .map_err(super::recovery::preflight_failure)?;
             if waiting {
                 Completion::Reobserve(std::time::Duration::from_secs(5))
             } else {
@@ -124,7 +124,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::deployment::actions::recovery::policy_id(claim.target().entity())
             && matches!(completion, Completion::Reobserve(_))
         {
-            let pending = crate::deployment::transaction::inspect(
+            let pending = crate::deployment::Transaction::inspect(
                 &self.0.transactions.runtime,
                 self.0.binding_for(claim, &settlement).await?,
                 policy,
@@ -135,7 +135,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 },
             )
             .await
-            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            .map_err(super::recovery::preflight_failure)?;
             Completion::Reobserve(if pending {
                 std::time::Duration::from_millis(20)
             } else {
@@ -144,7 +144,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         } else {
             match (input, completion) {
                 (false, Completion::Reobserve(_)) => {
-                    let pending = crate::deployment::transaction::inspect(
+                    let pending = crate::deployment::Transaction::inspect(
                         &self.0.transactions.runtime,
                         self.0.binding_for(claim, &settlement).await?,
                         claim.target().entity(),
@@ -155,7 +155,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                         },
                     )
                     .await
-                    .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+                    .map_err(super::recovery::preflight_failure)?;
                     Completion::Reobserve(if pending {
                         std::time::Duration::from_millis(20)
                     } else {

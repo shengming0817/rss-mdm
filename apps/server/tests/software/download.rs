@@ -31,18 +31,7 @@ async fn queued(
         .accept_action_dispatch(c.execution(), id, fingerprint)
         .await?;
     limit_run(c, id, lifetime).await?;
-    let execution = c.execution();
-    owner::transaction::inspect(
-        &fixture.resources.storage.runtime,
-        execution,
-        fixture.software.service.as_ref(),
-        move |service, tx| {
-            Box::pin(async move {
-                owner::actions::recovery::recover_one(execution, service, tx, id).await
-            })
-        },
-    )
-    .await?;
+    recover_run(c, &fixture, id).await?;
     let mut tx = command::seed_transaction(c).await?;
     let operation =
         owner::storage::load_on(&mut tx, c.tenant, &fixture.resources.protection, id).await?;

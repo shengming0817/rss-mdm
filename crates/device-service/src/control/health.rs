@@ -79,7 +79,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::control::actions::run_recovery::Work::parse(claim.target().entity())
             && completion == Completion::Converged
         {
-            let waiting = crate::control::transaction::inspect(
+            let waiting = crate::control::Transaction::inspect(
                 &self.0.transactions.runtime,
                 self.0.binding_for(claim, &settlement).await?,
                 work,
@@ -90,7 +90,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 },
             )
             .await
-            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            .map_err(super::recovery::preflight_failure)?;
             if waiting {
                 Completion::Reobserve(std::time::Duration::from_secs(5))
             } else {
@@ -100,7 +100,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::control::actions::recovery::policy_id(claim.target().entity())
             && matches!(completion, Completion::Reobserve(_))
         {
-            let pending = crate::control::transaction::inspect(
+            let pending = crate::control::Transaction::inspect(
                 &self.0.transactions.runtime,
                 self.0.binding_for(claim, &settlement).await?,
                 policy,
@@ -111,7 +111,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 },
             )
             .await
-            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            .map_err(super::recovery::preflight_failure)?;
             Completion::Reobserve(if pending {
                 std::time::Duration::from_millis(20)
             } else {
@@ -120,7 +120,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         } else {
             match (input, completion) {
                 (false, Completion::Reobserve(_)) => {
-                    let pending = crate::control::transaction::inspect(
+                    let pending = crate::control::Transaction::inspect(
                         &self.0.transactions.runtime,
                         self.0.binding_for(claim, &settlement).await?,
                         claim.target().entity(),
@@ -131,7 +131,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                         },
                     )
                     .await
-                    .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+                    .map_err(super::recovery::preflight_failure)?;
                     Completion::Reobserve(if pending {
                         std::time::Duration::from_millis(20)
                     } else {

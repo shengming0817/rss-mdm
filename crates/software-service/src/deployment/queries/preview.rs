@@ -35,7 +35,7 @@ pub async fn preview(
         proof.manage(Permission::ResourceRead)?;
     }
     authorize_preview(proof.authorization()?, proof, &input.definition)?;
-    let prepared = crate::deployment::transaction::inspect(
+    let prepared = crate::deployment::Transaction::inspect(
         &s.runtime,
         proof.binding(),
         (s, proof, input),

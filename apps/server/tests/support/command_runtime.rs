@@ -141,3 +141,62 @@ pub(crate) async fn recovery_fact(
         })
         .transpose()
 }
+
+/// The first append fails after inserting the fact. The second reaches the commit boundary.
+/// PostgreSQL sequence values survive both rollbacks and identify the exact attempted fact.
+pub(crate) async fn check_uncommitted_command(
+    c: &Context,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    event_key: &str,
+    exercise: impl AsyncFn(rss_mdm_audit_integration::WriteOutcome) -> Result<()>,
+) -> Result<()> {
+    use rss_mdm_audit_integration::WriteOutcome;
+    use rss_transactional_messaging_postgres::PgTransactionFault;
+    use sha2::{Digest, Sha256};
+    let event = format!("e-{:x}", Sha256::digest(event_key.as_bytes()));
+    let probe = format!("t2_command_{}", uuid::Uuid::new_v4().simple());
+    let install = format!(
+        "CREATE SEQUENCE public.{probe};
+         GRANT USAGE ON SEQUENCE public.{probe} TO mdm_audit_owner;
+         CREATE FUNCTION public.{probe}() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF nextval('public.{probe}') = 1 THEN RAISE EXCEPTION 'test audit failure'; END IF;
+             RETURN NEW;
+         END; $$;
+         CREATE TRIGGER {probe} AFTER INSERT ON rss_audit.records FOR EACH ROW
+         WHEN (NEW.tenant_id='{}'::uuid AND NEW.source_id='mdm.business' AND NEW.event_id='{event}')
+         EXECUTE FUNCTION public.{probe}()",
+        c.tenant
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(install))
+        .execute(&c.operator)
+        .await?;
+    let checked = async {
+        for (attempt, fault, outcome) in [
+            (
+                1,
+                PgTransactionFault::RollbackFailedAfterAck,
+                WriteOutcome::RollbackFailed,
+            ),
+            (2, PgTransactionFault::CommitPending, WriteOutcome::Unknown),
+        ] {
+            runtime.inject_next_transaction_fault(fault);
+            exercise(outcome).await?;
+            let witnessed: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM public.{probe}"
+            )))
+            .fetch_one(&c.operator)
+            .await?;
+            anyhow::ensure!(
+                witnessed == attempt,
+                "expected {attempt} audit appends, found {witnessed}"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER {probe} ON rss_audit.records; DROP FUNCTION public.{probe}(); DROP SEQUENCE public.{probe}"
+    ))).execute(&c.operator).await?;
+    checked
+}

@@ -4,6 +4,43 @@ use rss_mdm_registration_service::device::endpoints::PrimaryRegistration;
 use rss_transactional_messaging::fence::ExecutionBinding;
 use std::time::Duration;
 
+async fn check_stale_binding(fixture: &Fixture, stale: ExecutionBinding) -> Result<()> {
+    use rss_mdm_device_service::control as device;
+    let storage = &fixture.resources.storage;
+    let audit = background(stale);
+    let write = device::Transaction::run::<_, (), _>(
+        &storage.audit,
+        &storage.runtime,
+        stale,
+        &audit,
+        (),
+        |_, _| panic!("stale command entered its write callback"),
+    )
+    .await;
+    audit.finalize(
+        write
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    anyhow::ensure!(
+        matches!(write, Err(device::Error::Conflict)),
+        "stale write: {write:?}"
+    );
+    assert_eq!(
+        audit.snapshot().write_outcome,
+        rss_mdm_audit_integration::WriteOutcome::CommitNotStarted
+    );
+    let read = owner::Transaction::inspect::<_, (), _>(&storage.runtime, stale, (), |_, _| {
+        panic!("stale command entered its preflight callback")
+    })
+    .await;
+    anyhow::ensure!(
+        matches!(read, Err(owner::Error::Conflict)),
+        "stale preflight: {read:?}"
+    );
+    Ok(())
+}
 async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()> {
     let runtime = &f.resources.storage.runtime;
     let profile = rss_mdm_install_support::StorageProfile::Mdm;
@@ -11,9 +48,12 @@ async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()
     let messaging =
         rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), binding, owner::deadline())
             .await?;
-    owner::transaction::inspect(
+    let request = background(binding);
+    let result = owner::Transaction::run(
+        &f.resources.storage.audit,
         runtime,
         binding,
+        &request,
         (reader, messaging),
         move |(reader, messaging), tx| {
             Box::pin(async move {
@@ -23,17 +63,19 @@ async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()
             })
         },
     )
-    .await?;
+    .await;
+    finish(&request, result)?;
     Ok(())
 }
 async fn assign(
-    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    policy_owner: crate::owner_storage::OwnerRuntime,
     scope_result: Uuid,
     binding: ExecutionBinding,
     policy: Uuid,
     version: Uuid,
     target: PrimaryRegistration,
 ) -> Result<()> {
+    let runtime = policy_owner.runtime;
     let profile = rss_mdm_install_support::StorageProfile::Mdm;
     let reader = rss_mdm_policy_postgres::PolicyReader::bind(profile, runtime.clone());
     let messaging =
@@ -51,9 +93,12 @@ async fn assign(
         scope_result,
         entry_revision: 1,
     };
-    let result = owner::transaction::inspect(
+    let request = background(binding);
+    let result = owner::Transaction::run(
+        &policy_owner.audit,
         &runtime,
         binding,
+        &request,
         (reader, messaging),
         move |(reader, messaging), tx| {
             Box::pin(async move {
@@ -67,6 +112,7 @@ async fn assign(
         },
     )
     .await;
+    let result = finish(&request, result);
     runtime.close().await;
     Ok(result?)
 }
@@ -102,7 +148,7 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
     .fetch_one(&c.operator)
     .await?;
     assert!(frozen, "a run-only wake is durable");
-    let runtime = planning::owner(&c, "mdm_policy_runtime").await?.runtime;
+    let policy_owner = planning::owner(&c, "mdm_policy_runtime").await?;
     let scope_result = sqlx::query_scalar(
         "SELECT resolution FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -111,6 +157,7 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1").bind(c.tenant.to_string()).execute(&c.operator).await?.rows_affected(),1);
+    check_stale_binding(&fixture, c.execution()).await?;
     let current = ExecutionBinding::new(
         c.execution().storage(),
         c.tenant,
@@ -121,7 +168,7 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
         "a current writer cannot wake a historical run"
     );
     assign(
-        runtime,
+        policy_owner,
         scope_result,
         current,
         policy,
@@ -152,8 +199,18 @@ async fn scheduled_assignment_survives_a_prior_epoch_run() -> Result<()> {
             observed
         }
     );
+    let old_target = format!("run:{old}");
+    let failures = sqlx::query_scalar::<_, i64>(
+        "SELECT failures FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3",
+    ).bind(c.tenant.to_string()).bind(owner::recovery_scope(c.tenant).reconciler()).bind(old_target)
+        .fetch_one(&c.operator).await;
     fixture.close().await?;
     c.close().await;
     worker?;
-    observed?
+    observed??;
+    assert_eq!(
+        failures?, 0,
+        "a stale command binding must not consume the recovery retry budget"
+    );
+    Ok(())
 }

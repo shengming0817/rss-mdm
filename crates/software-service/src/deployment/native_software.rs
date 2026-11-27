@@ -175,7 +175,7 @@ impl SoftwareService {
             "software_content",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        crate::deployment::transaction::inspect(
+        crate::deployment::Transaction::inspect(
             &self.transactions.runtime,
             audit.binding()?,
             (self, id, token),

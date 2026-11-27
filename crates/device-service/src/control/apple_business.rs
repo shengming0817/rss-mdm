@@ -48,14 +48,11 @@ impl Service {
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
         actions::run_recovery::lock_device(tx, p.device()).await?;
-        crate::control::transaction::prepare_audit_in(
-            &self.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await
-        .map_err(Into::into)
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn apple_command_in(
@@ -234,14 +231,11 @@ impl Service {
         for device in devices {
             actions::run_recovery::lock_device(tx, &device).await?;
         }
-        crate::control::transaction::prepare_audit_in(
-            &self.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await
-        .map_err(Into::into)
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await
+            .map_err(Into::into)
     }
     pub async fn apple_wake_commands_in(
         &self,

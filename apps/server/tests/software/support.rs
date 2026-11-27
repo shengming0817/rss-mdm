@@ -11,6 +11,47 @@ pub fn schedule() -> rss_mdm_policy::schedule::Schedule {
 pub fn context() -> w::SoftwareExecutionContext {
     serde_json::from_value(json!({"revision":1,"osVersion":[10,0,26100,0],"systemBroker":true,"userHelper":false,"interactiveUser":null,"msixSideload":false,"msixUnsigned":false,"sourceCredentials":[]})).unwrap()
 }
+pub(super) fn background(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
+) -> RequestAudit {
+    RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
+        rss_mdm_audit_integration::StorageProfile::Mdm,
+        binding,
+        "command_reconcile",
+        AuditIntent::Management,
+    )
+}
+pub(super) fn finish<T>(
+    audit: &RequestAudit,
+    result: std::result::Result<T, owner::Error>,
+) -> std::result::Result<T, owner::Error> {
+    audit.finalize(
+        result
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    result
+}
+pub(super) async fn recover_run(c: &Context, a: &Fixture, id: Uuid) -> Result<()> {
+    let binding = c.execution();
+    let audit = background(binding);
+    let result = owner::Transaction::run(
+        &a.resources.storage.audit,
+        &a.resources.storage.runtime,
+        binding,
+        &audit,
+        a.software.service.as_ref(),
+        move |service, tx| {
+            Box::pin(async move {
+                owner::actions::recovery::recover_one(binding, service, tx, id).await
+            })
+        },
+    )
+    .await;
+    Ok(finish(&audit, result)?)
+}
 pub fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
@@ -275,7 +316,7 @@ pub(super) async fn decision(
     );
     let request = audit_request(c);
     let saved = std::sync::Mutex::new(None);
-    let result = owner::transaction::run(
+    let result = owner::Transaction::run(
         &audit,
         &a.resources.storage.runtime,
         c.execution(),
@@ -331,6 +372,44 @@ pub(super) async fn decision(
         other => Ok(other?),
     }
 }
+pub(super) fn satisfied_result(
+    steps: &[w::SoftwareTaskStep],
+    definition_digest: [u8; 32],
+    at: i64,
+) -> Result<w::SoftwareTaskResult> {
+    use rss_mdm_software_service::preparation::evidence;
+    let result = w::SoftwareTaskResult {
+        intent: w::SoftwareTaskIntent::Install,
+        definition_digest,
+        steps: steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                Ok(w::SoftwareStepResult {
+                    step_id: step.step_id,
+                    index: index.try_into()?,
+                    step_digest: step.digest()?,
+                    target: step.target.clone(),
+                    package: step.action.package.clone(),
+                    identity: evidence::observed_identity(&step.action),
+                    before: w::SoftwareDetectionObservation::Absent {
+                        evidence_sha256: [3; 32],
+                        observed_at: at,
+                    },
+                    after: w::SoftwareDetectionObservation::Present {
+                        version: evidence::detected_version(&step.action),
+                        evidence_sha256: [4; 32],
+                        observed_at: at,
+                    },
+                    process: w::SoftwareProcessObservation::Exited { code: 0 },
+                    reboot_required: false,
+                    diagnostics: w::TaskDiagnostics::new("".into(), "".into(), 1, at, None)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    };
+    Ok(result)
+}
 pub(super) async fn verified(
     c: &Context,
     a: &super::Fixture,
@@ -339,7 +418,7 @@ pub(super) async fn verified(
 ) -> Result<()> {
     use rss_mdm_software_service::preparation::{Delivery, Selection, Target, evidence};
     let prepare = a.software.materials.inputs.software.clone();
-    let steps = owner::transaction::inspect(
+    let steps = owner::Transaction::inspect(
         &a.resources.storage.runtime,
         c.execution(),
         (
@@ -375,36 +454,7 @@ pub(super) async fn verified(
     .await?;
     let definition_digest: [u8; 32] = Sha256::digest(serde_json::to_vec(&steps)?).into();
     let at = now();
-    let result = w::SoftwareTaskResult {
-        intent: w::SoftwareTaskIntent::Install,
-        definition_digest,
-        steps: steps
-            .iter()
-            .enumerate()
-            .map(|(index, step)| {
-                Ok(w::SoftwareStepResult {
-                    step_id: step.step_id,
-                    index: index.try_into()?,
-                    step_digest: step.digest()?,
-                    target: step.target.clone(),
-                    package: step.action.package.clone(),
-                    identity: evidence::observed_identity(&step.action),
-                    before: w::SoftwareDetectionObservation::Absent {
-                        evidence_sha256: [3; 32],
-                        observed_at: at,
-                    },
-                    after: w::SoftwareDetectionObservation::Present {
-                        version: evidence::detected_version(&step.action),
-                        evidence_sha256: [4; 32],
-                        observed_at: at,
-                    },
-                    process: w::SoftwareProcessObservation::Exited { code: 0 },
-                    reboot_required: false,
-                    diagnostics: w::TaskDiagnostics::new("".into(), "".into(), 1, at, None)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?,
-    };
+    let result = satisfied_result(&steps, definition_digest, at)?;
     assert_eq!(
         evidence::assess_execution(
             &result,

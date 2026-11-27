@@ -47,7 +47,7 @@ impl Queries {
 
         let started = self.clock.now();
         let remaining = || {
-            crate::deployment::transaction::TRANSACTION_BUDGET
+            rss_mdm_audit_integration::command_transaction::TRANSACTION_BUDGET
                 .saturating_sub(self.clock.now().saturating_duration_since(started))
         };
         let deadline = || Error::Unavailable(Failure::RequestDeadline);
@@ -86,7 +86,7 @@ impl Queries {
         if remaining().is_zero() {
             return Err(deadline());
         }
-        crate::deployment::transaction::inspect_budget(
+        crate::deployment::Transaction::inspect_budget(
             &self.runtime,
             proof.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining()),

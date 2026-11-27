@@ -1,6 +1,7 @@
 //! Software's surviving transaction risks: alias/channel exclusion, durable Unknown, rollout snapshot.
 mod fixture;
 mod publication;
+mod settlement;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     device_material_support as material, planning_t2_support as planning,
@@ -66,7 +67,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
     ))
     .await?;
     let request = audit(&c);
-    rss_mdm_device_service::control::transaction::run(
+    rss_mdm_device_service::control::Transaction::run(
         &store,
         &a.resources.storage.runtime,
         c.execution(),
@@ -89,7 +90,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
     request.finalize(None);
     for _ in 0..2 {
         let request = audit(&c);
-        owner::transaction::run(
+        owner::Transaction::run(
             &store,
             &a.resources.storage.runtime,
             c.execution(),
@@ -197,9 +198,10 @@ async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result
 #[tokio::test]
 #[ignore = "T2: original durable Unknown blocks new Software identity/channel/revision after service reconstruction"]
 async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    // Audit schema admission in other tests must see the unmodified schema.
+    let c = Context::open("software_command_settlement", &[]).await?;
     let execution_binding = c.execution();
-    let (agent, native, agent_scope, native_scope, _) = endpoints(&c).await?;
+    let (agent, native, agent_scope, native_scope, principal) = endpoints(&c).await?;
     let original = software(&c, "editor").await?;
     let alias = software(&c, "editor-alias").await?;
     let (ap, _) = policy(
@@ -224,7 +226,54 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     ));
     let id = Uuid::new_v4();
     assert!(accepted(&accept(&c, &a, ap, &agent, id).await?));
+    settlement::check_dispatch(&c, &a, id).await?;
     let attempt = Uuid::new_v4();
+    let trust:Value=sqlx::query_scalar("SELECT body FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND usage='agent_task' AND revision=1").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    material::seed_ack(&c, &serde_json::from_value(trust)?, principal.device()).await?;
+    let request = audit(&c);
+    let claim = w::TaskClaimRequest::new(
+        Uuid::new_v4(),
+        vec![w::ExecutorProfile::PowerShell7],
+        context(),
+    )?;
+    let (payload, deadline) = owner::Transaction::run(
+        &a.resources.storage.audit,
+        &a.resources.storage.runtime,
+        execution_binding,
+        &request,
+        (
+            &a.software.service,
+            &a.resources.storage.audit,
+            &principal,
+            &claim,
+            &request,
+        ),
+        |(service, store, p, claim, audit), tx| {
+            Box::pin(async move {
+                let (payload, fact, deadline) = service
+                    .agent_offer_one_in(tx, p, claim, id, attempt, audit)
+                    .await?
+                    .ok_or(owner::Error::Conflict)?;
+                store.append_in(tx, &fact).await?;
+                Ok((payload, deadline))
+            })
+        },
+    )
+    .await?;
+    request.finalize(None);
+    let mut seeded = command::seed_transaction(&c).await?;
+    let signed = a
+        .resources
+        .signing
+        .sign_task_on(&mut seeded, &principal, payload)
+        .await?;
+    let w::TaskPayload::Software(spec) = &signed.payload else {
+        anyhow::bail!("expected signed software offer");
+    };
+    let digest = spec.definition_digest;
+    let steps = spec.steps.clone();
+    sqlx::query("INSERT INTO mdm_agent.task_attempts(tenant_id,id,run,device,claimed_at,offer,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(c.tenant.to_string()).bind(attempt).bind(id).bind(principal.device().into_uuid()).bind(now()).bind(serde_json::to_value(&signed)?).bind(deadline).execute(&mut *seeded).await?;
+    seeded.commit().await?;
     let mut state = rss_mdm_task_state::RunState::new(now() + 300, now())?;
     state.claim(attempt, now())?;
     state.received(attempt, now())?;
@@ -284,17 +333,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     })?;
     sqlx::query("UPDATE mdm_policy.policies SET current_version=$3,version_number=2,revision=revision+1,definition=jsonb_set(definition,'{action}',$4) WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(ap).bind(next).bind(action).execute(&mut *changed).await?;
     changed.commit().await?;
-    owner::transaction::inspect(
-        &a.resources.storage.runtime,
-        c.execution(),
-        a.software.service.as_ref(),
-        move |service, tx| {
-            Box::pin(async move {
-                owner::actions::recovery::recover_one(execution_binding, service, tx, id).await
-            })
-        },
-    )
-    .await?;
+    recover_run(&c, &a, id).await?;
     let recovered:rss_mdm_task_state::RunState=serde_json::from_value(sqlx::query_scalar("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?)?;
     assert_eq!(recovered.execution, rss_mdm_task_state::Execution::Unknown);
     assert_eq!(
@@ -302,35 +341,96 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
         rss_mdm_task_state::Cancellation::Requested
     );
     assert_eq!(recovered.attempt(), state.attempt());
-    // The same exit also retains waiting-for-reboot evidence rather than manufacturing success.
-    let mut reboot = rss_mdm_task_state::RunState::new(now() + 300, now())?;
-    reboot.claim(attempt, now())?;
-    reboot.received(attempt, now())?;
-    reboot.start(attempt, now())?;
-    reboot.waiting_reboot(attempt)?;
-    let mut tx = command::seed_transaction(&c).await?;
-    sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(reboot)?).execute(&mut *tx).await?;
-    tx.commit().await?;
-    owner::transaction::inspect(
-        &a.resources.storage.runtime,
-        c.execution(),
-        a.software.service.as_ref(),
-        move |service, tx| {
-            Box::pin(async move {
-                owner::actions::recovery::recover_one(execution_binding, service, tx, id).await
-            })
-        },
-    )
-    .await?;
-    let recovered:rss_mdm_task_state::RunState=serde_json::from_value(sqlx::query_scalar("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?)?;
-    assert_eq!(
-        recovered.execution,
-        rss_mdm_task_state::Execution::WaitingReboot
-    );
-    assert_eq!(
-        recovered.cancellation,
-        rss_mdm_task_state::Cancellation::Requested
-    );
+    // Deliver late protocol evidence to the real owner, including the frozen, signed Attempt.
+    let facts = || {
+        sqlx::query_scalar::<_,i64>("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business'").bind(c.tenant.to_string()).fetch_one(&c.operator)
+    };
+    let before = facts().await?;
+    use rss_mdm_task_state::{Cancellation, Execution};
+    for (submitted, reboot, execution, effect, added) in [
+        (Uuid::new_v4(), false, Execution::Unknown, None, 0),
+        (
+            attempt,
+            true,
+            Execution::WaitingReboot,
+            Some("waiting_reboot"),
+            1,
+        ),
+        (attempt, false, Execution::Succeeded, Some("verified"), 2),
+    ] {
+        let mut report = satisfied_result(&steps, digest, now())?;
+        report
+            .steps
+            .first_mut()
+            .ok_or_else(|| anyhow::anyhow!("empty signed installation plan"))?
+            .reboot_required = reboot;
+        let event = w::TaskEventRequest::new(
+            Uuid::new_v4(),
+            submitted,
+            w::TaskEvent::SoftwareResult(report),
+            context(),
+        )?;
+        let audit = audit(&c);
+        let outcome = owner::Transaction::run(
+            &a.resources.storage.audit,
+            &a.resources.storage.runtime,
+            execution_binding,
+            &audit,
+            (
+                &a.software.service,
+                &a.resources.storage.audit,
+                &principal,
+                &event,
+                &audit,
+            ),
+            |(service, store, p, event, audit), tx| {
+                Box::pin(async move {
+                    service.agent_prepare_in(tx, p).await?;
+                    let receipt = service.agent_event_in(tx, p, id, event, audit).await?;
+                    store.append_in(tx, &receipt.fact).await?;
+                    Ok(())
+                })
+            },
+        )
+        .await;
+        let outcome = finish(&audit, outcome);
+        if submitted == attempt {
+            outcome?;
+        } else {
+            assert!(matches!(outcome, Err(owner::Error::Conflict)));
+        }
+        if reboot {
+            recover_run(&c, &a, id).await?;
+            let competing = Uuid::new_v4();
+            let decision = accept(&c, &a, mp, &native, competing).await?;
+            assert!(
+                matches!(decision, w::PolicyEventDecision::Rejected { reason } if reason == "software_not_eligible")
+            );
+            assert_eq!(count(&c).await?, 1);
+            let dispatches: Vec<String> = sqlx::query_scalar(
+                "SELECT message_id FROM rss_transactional_messaging.outbox
+                 WHERE tenant_id=$1::uuid AND message_id LIKE 'action.%'",
+            )
+            .bind(c.tenant.to_string())
+            .fetch_all(&c.operator)
+            .await?;
+            assert_eq!(dispatches, [format!("action.{id}")]);
+        }
+        let (state, stored_effect): (Value, Option<String>) = sqlx::query_as(
+            "SELECT state, result->>'effect' FROM mdm_software_deployment.action_runs
+             WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(c.tenant.to_string())
+        .bind(id)
+        .fetch_one(&c.operator)
+        .await?;
+        let state: rss_mdm_task_state::RunState = serde_json::from_value(state)?;
+        assert_eq!(state.attempt(), Some(attempt));
+        assert_eq!(state.cancellation, Cancellation::Requested);
+        assert_eq!(state.execution, execution);
+        assert_eq!(stored_effect.as_deref(), effect);
+        assert_eq!(facts().await?, before + added);
+    }
     Fixture::close(a).await?;
     c.close().await;
     Ok(())
@@ -450,9 +550,12 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
         owner::deadline(),
     ))
     .await?;
-    owner::transaction::inspect(
+    let request = background(c.execution());
+    let result = owner::Transaction::run(
+        &a.resources.storage.audit,
         &a.resources.storage.runtime,
         c.execution(),
+        &request,
         messaging,
         move |m, tx| {
             Box::pin(
@@ -460,7 +563,8 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
             )
         },
     )
-    .await?;
+    .await;
+    finish(&request, result)?;
     let stop = tokio_util::sync::CancellationToken::new();
     let signals = owner::worker_wake::Signals::default();
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
@@ -577,7 +681,7 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
         parameters: Default::default(),
     };
     let request = audit(&c);
-    let accepted = owner::transaction::run(
+    let accepted = owner::Transaction::run(
         &a.resources.storage.audit,
         &a.resources.storage.runtime,
         c.execution(),
@@ -616,7 +720,7 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
             "agent_claim",
             AuditIntent::Management,
         );
-        let offered = owner::transaction::run(
+        let offered = owner::Transaction::run(
             &a.resources.storage.audit,
             &a.resources.storage.runtime,
             c.execution(),

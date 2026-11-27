@@ -1,6 +1,7 @@
 mod applicability;
 mod fixture;
 mod reads;
+mod settlement;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     native_identity_t2_support as native,
@@ -34,12 +35,20 @@ async fn post(
     Ok((response.status().as_u16(), response.json().await?))
 }
 
+async fn windows_control_device(c: &Context) -> Result<rss_mdm_agent_wire::DeviceId> {
+    let identity = native::seed(c, "windows").await?;
+    let mut tx = command::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $3, '10.0.22631.0', 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint))").bind(c.tenant.to_string()).bind(identity.device.into_uuid()).bind(identity.epoch).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(identity.device)
+}
+
 #[tokio::test]
 #[ignore = "T2 #3121-1: missing dangerous-action confirmation has no command effects; current confirmation binds exact device"]
 async fn current_confirmation_is_atomic() -> Result<()> {
     use rss_mdm_authorization_service::Permission;
     let c = Context::open("device_control_host", &[]).await?;
-    let identity = native::seed(&c, "windows").await?;
+    let device = windows_control_device(&c).await?;
     let account = c
         .account(&[
             Permission::DeviceWipe,
@@ -48,16 +57,13 @@ async fn current_confirmation_is_atomic() -> Result<()> {
         ])
         .await?;
     let reader = c.account(&[Permission::OperationRead]).await?;
-    let mut tx = command::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $3, '10.0.22631.0', 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint))").bind(c.tenant.to_string()).bind(identity.device.into_uuid()).bind(identity.epoch).execute(&mut *tx).await?;
-    tx.commit().await?;
     let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let config =
         crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4())
             .await?;
     let context = &c;
     let result = crate::host_t2_support::run(config, |client, base| async move {
-        confirm_and_cancel(context, &client, &base, identity.device, &account, &reader).await
+        confirm_and_cancel(context, &client, &base, device, &account, &reader).await
     })
     .await;
     c.close().await;

@@ -51,7 +51,7 @@ async fn assert_frozen_after_restart(
     })
     .await?;
     host.channels.installation(pki)?;
-    let op = owner::transaction::inspect(
+    let op = owner::Transaction::inspect(
         &host.storage.runtime,
         c.execution(),
         (host.protection.clone(), id),

@@ -180,13 +180,10 @@ impl Service {
         {
             return Err(Error::Conflict.into());
         }
-        crate::control::transaction::prepare_audit_in(
-            &self.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await?;
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
         Ok(())
     }
     pub async fn agent_replay_event_in(
@@ -202,13 +199,10 @@ impl Service {
         run.source.audit(audit);
         audit.target(&id.to_string());
         let plan = db::load_source(&self.transactions.policy_reader, tx, run.source).await?;
-        crate::control::transaction::prepare_audit_in(
-            &self.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await?;
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
 
         if matches!(input.event(), wire::TaskEvent::Start) {
             let now = storage::now(tx).await?;
@@ -242,13 +236,11 @@ impl Service {
         let service = self;
         let mut run = db::load_run(tx, id).await?;
         belongs(&run, p)?;
-        crate::control::transaction::prepare_audit_in(
-            &service.transactions.audit_store,
-            tx,
-            audit,
-            &[],
-        )
-        .await?;
+        service
+            .transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
         run.source.audit(audit);
         audit.target(&id.to_string());
         let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
