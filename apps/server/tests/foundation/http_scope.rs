@@ -229,5 +229,4 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
     result
 }
 
-#[path = "../../../../hack/test-support/identity_http.rs"]
-mod identity_http;
+use crate::identity_http;

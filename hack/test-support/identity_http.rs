@@ -51,6 +51,39 @@ pub fn surface(document: &serde_json::Value, raw_profile: bool) {
     assert_eq!(conditional, 11);
 }
 
+async fn verify_session(
+    client: &reqwest::Client,
+    base: &str,
+    origin: &str,
+    cookie: &str,
+    body: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let inspected: serde_json::Value = client
+        .get(format!("{base}/session"))
+        .header("cookie", cookie)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(&inspected, body);
+    let recovery = client
+        .post(format!("{base}/webauthn/register/begin"))
+        .header("cookie", cookie)
+        .header("origin", origin)
+        .header("x-identity-request", "1")
+        .header("x-csrf-token", body["csrfToken"].as_str().unwrap())
+        .json(&serde_json::json!({"label":"recovery","recover":true}))
+        .send()
+        .await?;
+    assert_eq!(recovery.status(), 400);
+    assert_eq!(
+        recovery.json::<serde_json::Value>().await?["code"],
+        "malformed_request"
+    );
+    Ok(())
+}
+
 /// Exercise the same browser exchange through each host's production middleware.
 pub async fn session_lifecycle(
     client: &reqwest::Client,
@@ -86,20 +119,7 @@ pub async fn session_lifecycle(
         .send()
         .await?;
     let (cookie, body) = issued(signed_in).await?;
-    let recovery = client
-        .post(format!("{base}/webauthn/register/begin"))
-        .header("cookie", &cookie)
-        .header("origin", origin)
-        .header("x-identity-request", "1")
-        .header("x-csrf-token", body["csrfToken"].as_str().unwrap())
-        .json(&serde_json::json!({"label":"recovery","recover":true}))
-        .send()
-        .await?;
-    assert_eq!(recovery.status(), 400);
-    assert_eq!(
-        recovery.json::<serde_json::Value>().await?["code"],
-        "malformed_request"
-    );
+    verify_session(client, base, origin, &cookie, &body).await?;
     let request = |method: &str, cookie: &str, csrf: &str| {
         client
             .post(format!("{base}/session/{method}"))
@@ -107,15 +127,6 @@ pub async fn session_lifecycle(
             .header("cookie", cookie)
             .header("x-csrf-token", csrf)
     };
-    let inspected: serde_json::Value = client
-        .get(format!("{base}/session"))
-        .header("cookie", &cookie)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(inspected, body);
     assert_eq!(
         request("refresh", &cookie, "invalid")
             .send()
@@ -211,12 +222,8 @@ pub async fn federation_surface(
     );
     let response = client.get(&callback).send().await?;
     if enabled {
-        if response.status() == 303 {
-            assert_eq!(response.headers()["location"], "/auth/error?reason=failed");
-        } else {
-            assert_eq!(response.url().path(), "/auth/error");
-            assert_eq!(response.url().query(), Some("reason=failed"));
-        }
+        assert_eq!(response.status(), 303);
+        assert_eq!(response.headers()["location"], "/auth/error?reason=failed");
     } else {
         assert_eq!(response.status(), 404);
     }

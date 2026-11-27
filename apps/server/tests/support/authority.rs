@@ -414,9 +414,14 @@ pub struct Account {
     secret: String,
 }
 impl Account {
+    pub fn cookie_session(&self) -> Result<rss_identity_core::session::SessionSecret> {
+        Ok(rss_identity_core::session::SessionSecret::parse(
+            self.secret.clone(),
+        )?)
+    }
     pub fn credential(&self) -> Result<access::credential::RequestCredential> {
         Ok(access::credential::RequestCredential::Cookie(
-            rss_identity_core::session::SessionSecret::parse(self.secret.clone())?,
+            self.cookie_session()?,
         ))
     }
 }

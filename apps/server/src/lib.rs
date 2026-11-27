@@ -169,6 +169,9 @@ mod scopes;
 #[cfg(test)]
 #[path = "../tests/foundation/mod.rs"]
 mod foundation_t2;
+#[cfg(test)]
+#[path = "../../../hack/test-support/identity_http.rs"]
+mod identity_http;
 
 #[cfg(test)]
 #[path = "../tests/support/authority.rs"]

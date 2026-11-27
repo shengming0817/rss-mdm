@@ -276,10 +276,7 @@ async fn embedded_step_up(
     da: &rss_mdm_registration_service::device::endpoints::DaRegistration,
     oidc: &device_oidc::Keycloak,
 ) -> Result<()> {
-    use rss_mdm_authorization_service::credential::RequestCredential;
-    let RequestCredential::Cookie(admin_session) = admin.credential()? else {
-        anyhow::bail!("admin session required")
-    };
+    let admin_session = admin.cookie_session()?;
     let tenant = c.tenant.to_string();
     oidc.install(
         client,
@@ -292,9 +289,7 @@ async fn embedded_step_up(
     let employee = c
         .account(&[rss_mdm_authorization_service::Permission::OperationRead])
         .await?;
-    let RequestCredential::Cookie(session) = employee.credential()? else {
-        anyhow::bail!("employee session required")
-    };
+    let session = employee.cookie_session()?;
     let principal = Uuid::parse_str(&employee.user.principal_id)?;
     oidc.link_employee(&c.operator, &tenant, principal).await?;
     let mut tx = seed(c).await?;
@@ -355,12 +350,7 @@ async fn embedded_step_up(
 
 #[path = "../../../../hack/test-support/device_oidc.rs"]
 mod device_oidc;
-#[allow(
-    dead_code,
-    reason = "the embedded fixture shares federation configuration with both host surface tests"
-)]
-#[path = "../../../../hack/test-support/identity_http.rs"]
-mod identity_http;
+use crate::identity_http;
 #[path = "../../../../hack/test-support/da_provider.rs"]
 mod provider;
 
