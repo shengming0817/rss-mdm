@@ -25,7 +25,7 @@ impl Service {
     ) -> std::result::Result<AcceptedReceipt, Error> {
         input.action.confirmation()?;
         proof.require(input.action.kind().permission(), Some(device))?;
-        crate::control::transaction::run(
+        crate::control::Transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
             proof.binding(),
@@ -133,7 +133,7 @@ impl Service {
         if change.request_id.is_nil() || change.expected_revision < 1 {
             return Err(Error::Malformed);
         }
-        crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,proof.binding(),audit,(self,proof,device,id,change,reauthorization,audit),|ctx,tx|Box::pin(async move {
+        crate::control::Transaction::run(&self.transactions.audit_store,&self.transactions.runtime,proof.binding(),audit,(self,proof,device,id,change,reauthorization,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,change,reauthorization,audit) = *ctx;
 
             let reauthorize = reauthorization.is_some();

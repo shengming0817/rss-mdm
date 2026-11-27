@@ -275,7 +275,7 @@ pub(super) async fn decision(
     );
     let request = audit_request(c);
     let saved = std::sync::Mutex::new(None);
-    let result = owner::transaction::run(
+    let result = owner::Transaction::run(
         &audit,
         &a.resources.storage.runtime,
         c.execution(),
@@ -339,7 +339,7 @@ pub(super) async fn verified(
 ) -> Result<()> {
     use rss_mdm_software_service::preparation::{Delivery, Selection, Target, evidence};
     let prepare = a.software.materials.inputs.software.clone();
-    let steps = owner::transaction::inspect(
+    let steps = owner::Transaction::inspect(
         &a.resources.storage.runtime,
         c.execution(),
         (

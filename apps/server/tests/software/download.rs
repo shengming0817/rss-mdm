@@ -32,7 +32,7 @@ async fn queued(
         .await?;
     limit_run(c, id, lifetime).await?;
     let execution = c.execution();
-    owner::transaction::inspect(
+    owner::Transaction::inspect(
         &fixture.resources.storage.runtime,
         execution,
         fixture.software.service.as_ref(),

@@ -11,7 +11,7 @@ async fn fail_run(f: &Fixture, binding: ExecutionBinding, id: Uuid) -> Result<()
     let messaging =
         rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), binding, owner::deadline())
             .await?;
-    owner::transaction::inspect(
+    owner::Transaction::inspect(
         runtime,
         binding,
         (reader, messaging),
@@ -51,7 +51,7 @@ async fn assign(
         scope_result,
         entry_revision: 1,
     };
-    let result = owner::transaction::inspect(
+    let result = owner::Transaction::inspect(
         &runtime,
         binding,
         (reader, messaging),

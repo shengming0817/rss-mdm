@@ -66,7 +66,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
     ))
     .await?;
     let request = audit(&c);
-    rss_mdm_device_service::control::transaction::run(
+    rss_mdm_device_service::control::Transaction::run(
         &store,
         &a.resources.storage.runtime,
         c.execution(),
@@ -89,7 +89,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
     request.finalize(None);
     for _ in 0..2 {
         let request = audit(&c);
-        owner::transaction::run(
+        owner::Transaction::run(
             &store,
             &a.resources.storage.runtime,
             c.execution(),
@@ -284,7 +284,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     })?;
     sqlx::query("UPDATE mdm_policy.policies SET current_version=$3,version_number=2,revision=revision+1,definition=jsonb_set(definition,'{action}',$4) WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(ap).bind(next).bind(action).execute(&mut *changed).await?;
     changed.commit().await?;
-    owner::transaction::inspect(
+    owner::Transaction::inspect(
         &a.resources.storage.runtime,
         c.execution(),
         a.software.service.as_ref(),
@@ -311,7 +311,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(reboot)?).execute(&mut *tx).await?;
     tx.commit().await?;
-    owner::transaction::inspect(
+    owner::Transaction::inspect(
         &a.resources.storage.runtime,
         c.execution(),
         a.software.service.as_ref(),
@@ -450,7 +450,7 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
         owner::deadline(),
     ))
     .await?;
-    owner::transaction::inspect(
+    owner::Transaction::inspect(
         &a.resources.storage.runtime,
         c.execution(),
         messaging,
@@ -577,7 +577,7 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
         parameters: Default::default(),
     };
     let request = audit(&c);
-    let accepted = owner::transaction::run(
+    let accepted = owner::Transaction::run(
         &a.resources.storage.audit,
         &a.resources.storage.runtime,
         c.execution(),
@@ -616,7 +616,7 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
             "agent_claim",
             AuditIntent::Management,
         );
-        let offered = owner::transaction::run(
+        let offered = owner::Transaction::run(
             &a.resources.storage.audit,
             &a.resources.storage.runtime,
             c.execution(),

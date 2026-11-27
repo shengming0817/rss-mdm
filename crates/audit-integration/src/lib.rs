@@ -8,6 +8,7 @@ pub use rss_mdm_install_support::StorageProfile;
 mod context;
 pub mod operation;
 mod settlement;
+pub mod command_transaction;
 pub use context::{
     AuthenticationKind, FailureReason, ManagementResult, Origin, RequestAudit, Snapshot,
     SoftwareFact, TargetKind, WriteOutcome,

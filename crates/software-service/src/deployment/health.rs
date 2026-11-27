@@ -83,7 +83,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::deployment::actions::scheduled::Work::parse(claim.target().entity())
         {
             if matches!(completion, Completion::Converged | Completion::Reobserve(_)) {
-                let delay = crate::deployment::transaction::inspect(
+                let delay = crate::deployment::Transaction::inspect(
                     &self.0.transactions.runtime,
                     self.0.binding_for(claim, &settlement).await?,
                     (self.0, work),
@@ -103,7 +103,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::deployment::actions::run_recovery::Work::parse(claim.target().entity())
             && completion == Completion::Converged
         {
-            let waiting = crate::deployment::transaction::inspect(
+            let waiting = crate::deployment::Transaction::inspect(
                 &self.0.transactions.runtime,
                 self.0.binding_for(claim, &settlement).await?,
                 work,
@@ -124,7 +124,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::deployment::actions::recovery::policy_id(claim.target().entity())
             && matches!(completion, Completion::Reobserve(_))
         {
-            let pending = crate::deployment::transaction::inspect(
+            let pending = crate::deployment::Transaction::inspect(
                 &self.0.transactions.runtime,
                 self.0.binding_for(claim, &settlement).await?,
                 policy,
@@ -144,7 +144,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         } else {
             match (input, completion) {
                 (false, Completion::Reobserve(_)) => {
-                    let pending = crate::deployment::transaction::inspect(
+                    let pending = crate::deployment::Transaction::inspect(
                         &self.0.transactions.runtime,
                         self.0.binding_for(claim, &settlement).await?,
                         claim.target().entity(),

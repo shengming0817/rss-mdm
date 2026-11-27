@@ -85,7 +85,7 @@ impl Queries {
         if remaining().is_zero() {
             return Err(deadline());
         }
-        crate::control::transaction::inspect_budget(
+        crate::control::Transaction::inspect_budget(
             &self.runtime,
             proof.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining()),
