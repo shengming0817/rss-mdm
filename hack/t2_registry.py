@@ -97,7 +97,7 @@ MODULES = {
 
     'device_access.foundation': dict(package='rss-mdm-device-access-http', target='foundation', installer=None,
         prefix='foundation::',profiles=('da_foundation',),
-        inputs=('hack/test-support/inventory-pages.sql', 'crates/agent-wire/src/identity.rs', 'apps/da-server/*','crates/apple-mdm/src/da.rs','crates/windows-mdm/src/da.rs','crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/recovery-credentials/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',
+        inputs=('hack/test-support/da-delivery-checkpoints.sql', 'hack/test-support/inventory-pages.sql', 'crates/agent-wire/src/identity.rs', 'apps/da-server/*','crates/apple-mdm/src/da.rs','crates/windows-mdm/src/da.rs','crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/recovery-credentials/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',
                 'crates/agent-wire/src/enroll.rs','crates/agent-wire/src/pki.rs','crates/agent-wire/src/task_trust.rs',
                 'crates/agent-wire/src/runtime.rs','crates/agent-wire/src/device_access.rs','crates/agent-wire/src/platform_sso.rs',
                 'crates/native-protection/*',
