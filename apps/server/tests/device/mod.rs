@@ -7,49 +7,37 @@ use crate::{
 };
 use anyhow::Result;
 use fixture::Fixture;
-use std::sync::Arc;
 use uuid::Uuid;
 
 async fn post(
-    c: &Context,
-    a: &Fixture,
-    proof: &Arc<rss_mdm_authorization_service::context::AuthorizedPrincipal>,
-    path: &str,
+    client: &reqwest::Client,
+    account: &crate::authority_t2_support::Account,
+    url: &str,
     body: serde_json::Value,
 ) -> Result<(u16, serde_json::Value)> {
-    use tower::ServiceExt;
-    let state = Arc::new(rss_mdm_management_http::device_control::Services {
-        device_control: a.service.clone(),
-        changes: Arc::new(crate::assembly::device_control::Changes {
-            snapshot: a.policy_task_reads.snapshot.clone(),
-            device_control: a.service.clone(),
-        }),
-    });
-    let routes = rss_mdm_management_http::device_control::routes()
-        .with_state::<()>(state)
-        .layer(axum::Extension(c.request(proof)?))
-        .layer(axum::Extension(c.read_auth(proof.clone())))
-        .into_axum();
-    let response = axum::Router::new()
-        .nest("/api/v1/tenants/{tenant}", routes)
-        .oneshot(
-            axum::http::Request::post(format!("/api/v1/tenants/{}/{path}", c.tenant))
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(serde_json::to_vec(&body)?))?,
+    use rss_mdm_authorization_service::credential::RequestCredential;
+    let RequestCredential::Cookie(cookie) = account.credential()? else {
+        anyhow::bail!("expected a browser session")
+    };
+    let response = client
+        .post(url)
+        .header(
+            "cookie",
+            format!("__Host-identity-session={}", cookie.expose()),
         )
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1")
+        .header("x-csrf-token", cookie.csrf())
+        .json(&body)
+        .send()
         .await?;
-    let status = response.status().as_u16();
-    Ok((
-        status,
-        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 262144).await?)?,
-    ))
+    Ok((response.status().as_u16(), response.json().await?))
 }
 
 #[tokio::test]
 #[ignore = "T2 #3121-1: missing dangerous-action confirmation has no command effects; current confirmation binds exact device"]
 async fn current_confirmation_is_atomic() -> Result<()> {
     use rss_mdm_authorization_service::Permission;
-    use rss_mdm_device_service::control::device_control::{Action, Input};
     let c = Context::open("shared", &[]).await?;
     let identity = native::seed(&c, "windows").await?;
     let account = c
@@ -59,20 +47,44 @@ async fn current_confirmation_is_atomic() -> Result<()> {
             Permission::OperationCancel,
         ])
         .await?;
-    let proof = Arc::new(c.authenticate(&account).await?);
-    let a = Fixture::open(&c).await?;
+    let reader = c.account(&[Permission::OperationRead]).await?;
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $3, '10.0.22631.0', 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint))").bind(c.tenant.to_string()).bind(identity.device.into_uuid()).bind(identity.epoch).execute(&mut *tx).await?;
     tx.commit().await?;
+    let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let config =
+        crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4())
+            .await?;
+    let context = &c;
+    let result = crate::host_t2_support::run(config, |client, base| async move {
+        confirm_and_cancel(context, &client, &base, identity.device, &account, &reader).await
+    })
+    .await;
+    c.close().await;
+    result
+}
+
+async fn confirm_and_cancel(
+    c: &Context,
+    client: &reqwest::Client,
+    base: &str,
+    device: rss_mdm_agent_wire::DeviceId,
+    account: &crate::authority_t2_support::Account,
+    reader: &crate::authority_t2_support::Account,
+) -> Result<()> {
+    use rss_mdm_device_service::control::device_control::{Action, Input};
     let id = Uuid::new_v4();
     let mut input = Input {
         operation_id: id,
         deadline: time::OffsetDateTime::now_utc().unix_timestamp() + 300,
         action: Action::Wipe { confirmed: false },
     };
-    let path = format!("devices/{}/operations", identity.device);
+    let path = format!(
+        "{base}/api/v1/tenants/{}/devices/{}/operations",
+        c.tenant, device
+    );
     assert_eq!(
-        post(&c, &a, &proof, &path, serde_json::to_value(&input)?)
+        post(client, account, &path, serde_json::to_value(&input)?)
             .await?
             .0,
         400
@@ -80,23 +92,21 @@ async fn current_confirmation_is_atomic() -> Result<()> {
     let count:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2)+(SELECT count(*) FROM mdm_devices.control_requests WHERE tenant_id=$1::uuid AND id=$2)+(SELECT count(*) FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2::text)").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
     assert_eq!(count, 0);
     input.action = Action::Wipe { confirmed: true };
-    let (status, receipt) = post(&c, &a, &proof, &path, serde_json::to_value(&input)?).await?;
+    let (status, receipt) = post(client, account, &path, serde_json::to_value(&input)?).await?;
     assert_eq!(status, 202);
     assert_eq!(receipt["operationId"], id.to_string());
     assert_eq!(
-        post(&c, &a, &proof, &path, serde_json::to_value(&input)?).await?,
+        post(client, account, &path, serde_json::to_value(&input)?).await?,
         (202, receipt.clone())
     );
 
     let change =
         serde_json::json!({"requestId":Uuid::new_v4(),"expectedRevision":receipt["revision"]});
-    let reader = c.account(&[Permission::OperationRead]).await?;
-    let reader = Arc::new(c.authenticate(&reader).await?);
+
     assert_eq!(
         post(
-            &c,
-            &a,
-            &reader,
+            client,
+            reader,
             &format!("{path}/{id}/cancel"),
             change.clone()
         )
@@ -104,22 +114,43 @@ async fn current_confirmation_is_atomic() -> Result<()> {
         .0,
         403
     );
-    let (status, changed) = post(&c, &a, &proof, &format!("{path}/{id}/cancel"), change).await?;
+    let (status, changed) = post(client, account, &format!("{path}/{id}/cancel"), change).await?;
     assert_eq!(status, 200, "{changed:?}");
     assert_eq!(changed["operationId"], id.to_string());
-    let reauthorize = serde_json::json!({"requestId":Uuid::new_v4(),"expectedRevision":changed["revision"],"confirmation":null});
+    assert_eq!(
+        changed["revision"].as_i64(),
+        receipt["revision"].as_i64().map(|value| value + 1)
+    );
+    let command_status: String = sqlx::query_scalar(
+        "SELECT status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id.to_string())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(command_status, "cancelled");
+    let reauthorize = |confirmation: serde_json::Value| {
+        serde_json::json!({
+            "requestId": Uuid::new_v4(), "expectedRevision": changed["revision"], "confirmation": confirmation
+        })
+    };
     let (status, _) = post(
-        &c,
-        &a,
-        &proof,
+        client,
+        account,
         &format!("{path}/{id}/reauthorize"),
-        reauthorize,
+        reauthorize(serde_json::Value::Null),
+    )
+    .await?;
+    assert_eq!(status, 409);
+    let (status, _) = post(
+        client,
+        account,
+        &format!("{path}/{id}/reauthorize"),
+        reauthorize(serde_json::json!({"confirmed": true})),
     )
     .await?;
     assert_eq!(status, 409);
     let stored:Uuid=sqlx::query_scalar("SELECT device FROM mdm_devices.control_operations WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
-    assert_eq!(stored, identity.device.into_uuid());
-    Fixture::close(a).await?;
-    c.close().await;
+    assert_eq!(stored, device.into_uuid());
     Ok(())
 }

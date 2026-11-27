@@ -19,7 +19,10 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
                 protection: h.a.resources.protection.clone(),
             }),
-            tasks: h.a.policy_task_reads.clone(),
+            snapshot: h.a.policy_task_reads.snapshot.clone(),
+            configuration: h.a.policy_task_reads.configuration.clone(),
+            software: h.a.policy_task_reads.software.clone(),
+            device_control: h.a.policy_task_reads.device_control.clone(),
             registration: h.a.registration.native.clone(),
             recovery: None,
         };
@@ -145,7 +148,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         let operations=Arc::new(crate::assembly::operation_reads::Operations {
             budgets: Default::default(),
             apple:Arc::new(rss_mdm_apple_channel::flow_store::Store{protection:h.a.resources.protection.clone()}),
-            tasks:h.a.policy_task_reads.clone(),registration:h.a.registration.native.clone(),recovery:None,
+            snapshot: h.a.policy_task_reads.snapshot.clone(), configuration: h.a.policy_task_reads.configuration.clone(), software: h.a.policy_task_reads.software.clone(), device_control: h.a.policy_task_reads.device_control.clone(),registration:h.a.registration.native.clone(),recovery:None,
         });
         for (owner,id,device) in [(rss_mdm_audit_integration::operation::OperationOwner::Script,script,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,collection,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,native,&native_object.members[0].device)] {
             let locator=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(*device),..Default::default()};
@@ -240,7 +243,10 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
             let detail: Value = client.get(format!("{base}/policies/{native_policy}/runs/{native}"))
                 .send().await?.error_for_status()?.json().await?;
             assert_eq!(detail["kind"], "collection");
-            let rule=rss_mdm_authorization_service::Rule{subject:rss_mdm_authorization_service::Subject::User{user:account.user.clone()},grants:vec![rss_mdm_authorization_service::Grant{operation:Permission::OperationRead,scope:rss_mdm_authorization_service::Scope::Device{id:*h.p.device()}}]};
+            let rule=rss_mdm_authorization_service::Rule{subject:rss_mdm_authorization_service::Subject::User{user:account.user.clone()},grants:vec![
+                rss_mdm_authorization_service::Grant{operation:Permission::PolicyRead,scope:rss_mdm_authorization_service::Scope::Tenant},
+                rss_mdm_authorization_service::Grant{operation:Permission::OperationRead,scope:rss_mdm_authorization_service::Scope::Device{id:*h.p.device()}},
+            ]};
             sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
             let page:Value=client.get(format!("{base}/operations")).send().await?.error_for_status()?.json().await?;
             assert_eq!(page["items"].as_array().unwrap().len(),2);
@@ -361,7 +367,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         let expected=std::collections::BTreeMap::from([(device,true),(manual,true),(empty,false)]);
         let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(h.c.database.registration(), h.c.audit.clone()));
         let reads = Arc::new(crate::assembly::device_reads::Devices {
-            tasks: h.a.policy_task_reads.clone(),
+            snapshot: h.a.policy_task_reads.snapshot.clone(), software: h.a.policy_task_reads.software.clone(), device_control: h.a.policy_task_reads.device_control.clone(), content_available: h.a.resources.config.content.is_some(), recovery_enabled: h.a.policy_task_reads.recovery_enabled,
             devices: devices.clone(),
             windows: true,
             apple: false,

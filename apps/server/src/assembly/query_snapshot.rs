@@ -12,7 +12,7 @@ pub(crate) struct QuerySnapshot {
     read_pool: sqlx::PgPool,
 }
 impl QuerySnapshot {
-    pub(super) fn new(read_pool: sqlx::PgPool) -> Self {
+    pub(crate) fn new(read_pool: sqlx::PgPool) -> Self {
         Self { read_pool }
     }
 

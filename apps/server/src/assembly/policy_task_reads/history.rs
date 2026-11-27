@@ -10,14 +10,6 @@ struct Position {
     available_at: i64,
     task_id: Uuid,
 }
-pub(crate) fn execution_fault(error: rss_mdm_device_service::control::transaction::Fault) -> Error {
-    use rss_mdm_device_service::control::transaction::Fault as F;
-    match error {
-        F::Request(e) => e.into(),
-        F::Sql(e) => sql(e),
-        F::Storage(_) => Error::Unavailable(Failure::Database),
-    }
-}
 impl Reads {
     pub(super) async fn runs(
         &self,
@@ -68,7 +60,7 @@ impl Reads {
                         .device_control
                         .run_page_on(proof.binding(), c, policy, after, limit + 1, now)
                         .await
-                        .map_err(execution_fault)?
+                        .map_err(device_control_fault)?
                         .into_iter()
                         .map(RunSummary::Execution)
                         .collect::<Vec<_>>();
@@ -255,7 +247,7 @@ impl Reads {
                         .run_detail_on(c, proof, grant, policy, id, now)
                         .await
                         .map(RunDetail::Execution)
-                        .map_err(execution_fault),
+                        .map_err(device_control_fault),
                     Owner::Script => rss_mdm_script_service::queries::detail_on(
                         c,
                         &proof.binding().tenant().to_string(),

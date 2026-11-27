@@ -46,9 +46,29 @@ pub enum KindOfOperation {
     Command,
     ActionRun,
 }
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct Item(pub OperationRow);
+
+impl schemars::JsonSchema for Item {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        OperationRow::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        // Published in directory metadata and in the projected response schema.
+        "rss_mdm_management_http::execution::operations::Item".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        OperationRow::json_schema(generator)
+    }
+}
+
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct Item {
+#[schemars(rename = "Item")]
+pub struct OperationRow {
     #[serde(flatten)]
     pub metadata: Metadata,
     #[serde(skip_serializing_if = "Option::is_none")]

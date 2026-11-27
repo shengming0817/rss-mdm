@@ -70,6 +70,7 @@ pub(crate) struct Assembly {
     pub(crate) apple_delivery: Arc<rss_mdm_apple_channel::delivery::Delivery>,
     pub(crate) agent_delivery: Arc<rss_mdm_agent_channel::delivery::Delivery>,
     pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
+    pub(crate) query_snapshot: query_snapshot::QuerySnapshot,
     pub(crate) policy_task_reads: Arc<policy_task_reads::Reads>,
     pub(crate) queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
@@ -134,6 +135,7 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) scripts: Arc<rss_mdm_script_service::ScriptService>,
     pub(crate) collections:
         Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
+    pub(crate) query_snapshot: query_snapshot::QuerySnapshot,
     pub(crate) policy_task_reads: Arc<policy_task_reads::Reads>,
     pub(crate) queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
@@ -205,6 +207,7 @@ pub(crate) async fn from_compiled(
         self_service,
         scripts,
         collections,
+        query_snapshot,
         policy_task_reads,
         queries,
         protection,
@@ -446,7 +449,10 @@ pub(crate) async fn from_compiled(
             protection: protection.clone(),
         }),
         recovery: credential_execution.as_ref().map(|v| v.native.clone()),
-        tasks: policy_task_reads.clone(),
+        snapshot: query_snapshot.clone(),
+        device_control: queries.clone(),
+        configuration: configuration.clone(),
+        software: software.queries.clone(),
         registration: registration.native.clone(),
     });
     let state = Arc::new(Assembly {
@@ -497,6 +503,7 @@ pub(crate) async fn from_compiled(
         configuration_preview,
         configuration,
         queries,
+        query_snapshot,
         policy_task_reads,
         protection,
         audit_store,
@@ -539,7 +546,7 @@ pub(crate) mod timeline_associations;
 mod collection_ports;
 
 pub(crate) mod policy_task_reads;
-mod query_snapshot;
+pub(crate) mod query_snapshot;
 
 #[cfg(test)]
 #[path = "../../tests/execution_owners/mod.rs"]

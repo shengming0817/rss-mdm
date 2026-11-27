@@ -27,17 +27,16 @@ impl Default for Budgets {
 pub(crate) struct Operations {
     pub budgets: Budgets,
     pub apple: Arc<rss_mdm_apple_channel::flow_store::Store>,
-    pub tasks: Arc<super::policy_task_reads::Reads>,
+    pub snapshot: super::query_snapshot::QuerySnapshot,
+    pub device_control: Arc<rss_mdm_device_service::control::queries::Queries>,
+    pub configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
+    pub software: Arc<rss_mdm_software_service::deployment::queries::Queries>,
     pub registration: Arc<rss_mdm_registration_service::installation::Service>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
 }
+use super::owner_errors::device_control_fault;
+use super::owner_errors::software_fault;
 use super::query_snapshot::sql;
-fn execution_fault(e: rss_mdm_device_service::control::transaction::Fault) -> Error {
-    super::policy_task_reads::history::execution_fault(e)
-}
-fn software_fault(e: rss_mdm_software_service::deployment::transaction::Fault) -> Error {
-    super::policy_task_reads::software_fault(e)
-}
 fn registration_fault(e: rss_mdm_registration_service::installation::transaction::Fault) -> Error {
     use rss_mdm_registration_service::installation::transaction::Fault as F;
     match e {
@@ -114,27 +113,24 @@ impl Operations {
         use super::native_ownership::Owner;
         match owner {
             Owner::Device => self
-                .tasks
                 .device_control
                 .read_on(c, proof, grant, now, device, id, redacted)
                 .await
                 .map(rss_mdm_management_http::operation_reads::projection::command)
                 .map(Detail::Device)
-                .map_err(execution_fault),
+                .map_err(device_control_fault),
             Owner::Configuration => {
                 let mut detail = self
-                    .tasks
                     .configuration
                     .detail_on(c, proof, grant, now, device, id)
                     .await
-                    .map_err(super::policy_task_reads::configuration_fault)?;
+                    .map_err(super::owner_errors::configuration_fault)?;
                 if redacted {
                     detail.observation = self
-                        .tasks
                         .configuration
                         .evidence_on(c, proof, grant, vec![id])
                         .await
-                        .map_err(super::policy_task_reads::configuration_fault)?
+                        .map_err(super::owner_errors::configuration_fault)?
                         .remove(&id)
                         .ok_or(Error::Conflict)?
                         .observation;
@@ -146,7 +142,6 @@ impl Operations {
                 ))
             }
             Owner::Software => self
-                .tasks
                 .software
                 .read_on(c, proof, grant, now, device, id, redacted)
                 .await
@@ -199,11 +194,10 @@ impl Operations {
         }
         let mut result = BTreeMap::new();
         result.extend(
-            self.tasks
-                .configuration
+            self.configuration
                 .classify_on(c, proof, grant, configuration, now)
                 .await
-                .map_err(super::policy_task_reads::configuration_fault)?
+                .map_err(super::owner_errors::configuration_fault)?
                 .into_iter()
                 .map(|(id, value)| {
                     (
@@ -217,11 +211,10 @@ impl Operations {
         );
 
         for (id, d) in self
-            .tasks
             .device_control
             .decisions_on(c, proof, grant, execution, now)
             .await
-            .map_err(execution_fault)?
+            .map_err(device_control_fault)?
         {
             result.insert(
                 id,
@@ -232,7 +225,6 @@ impl Operations {
             );
         }
         for (id, d) in self
-            .tasks
             .software
             .decisions_on(c, proof, grant, software, now)
             .await
@@ -439,8 +431,7 @@ impl rss_mdm_management_http::operation_reads::Reads for Operations {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             q.require_schema(&SCHEMA).map_err(query_error)?;
-            self.tasks
-                .snapshot
+            self.snapshot
                 .read(request, (self, proof, q, codec), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, q, codec) = *ctx;
@@ -472,8 +463,7 @@ impl rss_mdm_management_http::operation_reads::Reads for Operations {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             q.require_schema(&SCHEMA).map_err(query_error)?;
-            self.tasks
-                .snapshot
+            self.snapshot
                 .read(request, (self, proof, q), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, q) = *ctx;
@@ -493,8 +483,7 @@ impl rss_mdm_management_http::operation_reads::Reads for Operations {
     ) -> rss_mdm_management_http::Pending<'a, Detail> {
         let proof = request.proof.as_ref();
         Box::pin(async move {
-            self.tasks
-                .snapshot
+            self.snapshot
                 .read(request, (self, proof, device, id), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, d, id) = *ctx;

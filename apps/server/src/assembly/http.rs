@@ -353,15 +353,18 @@ pub(crate) fn from_state(
         });
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
-            access_execution: state.access_execution.service.clone(),
             operation_reads: state.operation_reads.clone(),
             device_changes: Arc::new(super::device_control::Changes {
-                snapshot: state.policy_task_reads.snapshot.clone(),
+                snapshot: state.query_snapshot.clone(),
                 device_control: state.device_control.clone(),
             }),
             operation_diagnostics: operation_diagnostics.clone(),
             device_reads: Arc::new(super::device_reads::Devices {
-                tasks: state.policy_task_reads.clone(),
+                snapshot: state.query_snapshot.clone(),
+                software: state.software.queries.clone(),
+                device_control: state.queries.clone(),
+                content_available: state.content_writer.is_some(),
+                recovery_enabled: state.credential_execution.is_some(),
                 devices: state.devices.clone(),
                 windows: state.windows.is_some(),
                 apple: state.apple.is_some(),
@@ -427,12 +430,10 @@ pub(crate) fn from_state(
             identity_management: state.identity_management.clone(),
             audit_store: state.audit_store.clone(),
             events: state.events.clone(),
-            scopes: state.scopes.clone(),
             groups: state.groups.clone(),
             compliance: state.compliance.clone(),
             device_control: state.device_control.clone(),
             task_trust: state.task_trust.clone(),
-            queries: state.queries.clone(),
             policy_task_reads: state.policy_task_reads.clone(),
             policies: state.policies.clone(),
             assets: state.assets.clone(),

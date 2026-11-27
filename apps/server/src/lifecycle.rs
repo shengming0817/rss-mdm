@@ -439,7 +439,9 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             config.identity.instance_id.clone(),
                             &cursor_key,
                         ));
+                        let query_snapshot = crate::assembly::query_snapshot::QuerySnapshot::new(commands.read_pool.clone());
                         let policy_task_reads = crate::assembly::policy_task_reads::assemble(
+                            query_snapshot.clone(),
                             config,
                             &commands,
                             protection.clone(),
@@ -715,6 +717,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                                 self_service: self_service.clone(),
                                 scripts: scripts.clone(),
                                 collections: collections.clone(),
+                                query_snapshot: query_snapshot.clone(),
                                 policy_task_reads: policy_task_reads.clone(),
                                 queries: queries.clone(),
                                 protection: protection.clone(),

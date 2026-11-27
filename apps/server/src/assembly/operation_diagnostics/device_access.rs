@@ -89,7 +89,7 @@ impl Diagnostics {
                                         c, p, &grant, locator,
                                     )
                                     .await
-                                    .map_err(super::super::policy_task_reads::credential_fault)?;
+                                    .map_err(super::super::owner_errors::credential_fault)?;
                                 p.check_live()?;
                                 Ok::<_, Error>(value)
                             })

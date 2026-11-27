@@ -12,7 +12,6 @@ use rss_mdm_http_contract::{
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
-    pub access_execution: Arc<rss_mdm_device_access_postgres::device_access::execution::Service>,
     pub query_cursor: rss_mdm_query::cursor::CursorCodec,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub mail: Arc<rss_mdm_mail_service::authority::Authority>,
@@ -37,7 +36,6 @@ pub struct Services {
         Arc<rss_mdm_authorization_service::identity_management::IdentityManagementPolicy>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub events: Arc<rss_mdm_policy_service::events::Events>,
-    pub scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_group_service::Groups>,
     pub compliance: Arc<rss_mdm_compliance_service::Compliance>,
     pub device_control: Arc<rss_mdm_device_service::control::Service>,
@@ -48,7 +46,6 @@ pub struct Services {
     pub software_queries: Arc<rss_mdm_software_service::deployment::queries::Queries>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub policy_task_reads: Arc<dyn crate::policy_task_reads::Reads>,
-    pub queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub configuration_preview: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub policies: Arc<rss_mdm_policy_service::management::Policies>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,

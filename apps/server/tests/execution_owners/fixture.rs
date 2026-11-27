@@ -132,6 +132,7 @@ impl Fixture {
                 &[7; 32],
             ));
             let policy_task_reads = assembly::policy_task_reads::assemble(
+                assembly::query_snapshot::QuerySnapshot::new(storage.read_pool.clone()),
                 config,
                 storage,
                 protection.clone(),

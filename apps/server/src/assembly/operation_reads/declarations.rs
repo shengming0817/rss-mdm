@@ -21,8 +21,7 @@ impl Operations {
             "command_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        self.tasks
-            .snapshot
+        self.snapshot
             .read_registered(
                 request,
                 (self, proof, device, query, audit, codec),
@@ -94,11 +93,10 @@ impl Operations {
                             .map(|(id, _)| *id)
                             .collect::<Vec<_>>();
                         let mut configuration = s
-                            .tasks
                             .configuration
                             .declarations_on(c, p, authorization, &registration, ids)
                             .await
-                            .map_err(super::super::policy_task_reads::configuration_fault)?;
+                            .map_err(super::super::owner_errors::configuration_fault)?;
                         let mut items = Vec::new();
                         let mut bytes = 0;
                         let mut last = None;

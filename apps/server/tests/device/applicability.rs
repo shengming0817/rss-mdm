@@ -16,7 +16,11 @@ struct Http {
 impl Http {
     fn open(a: &Fixture) -> Result<Self> {
         let reads = Arc::new(crate::assembly::device_reads::Devices {
-            tasks: a.policy_task_reads.clone(),
+            snapshot: a.policy_task_reads.snapshot.clone(),
+            software: a.policy_task_reads.software.clone(),
+            device_control: a.policy_task_reads.device_control.clone(),
+            content_available: a.resources.config.content.is_some(),
+            recovery_enabled: a.policy_task_reads.recovery_enabled,
             devices: a.devices.clone(),
             windows: true,
             apple: true,
