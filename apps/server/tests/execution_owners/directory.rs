@@ -444,9 +444,11 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
                             .0
                             .revoke_current_session(
                                 state.1.take().unwrap(),
-                                rss_request_context::Deadline::at(
-                                    std::time::Instant::now() + std::time::Duration::from_secs(3),
-                                ),
+                                rss_request_context::Deadline::from_timeout(
+                                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                                    std::time::Duration::from_secs(3),
+                                )
+                                .expect("bounded fixture deadline"),
                             )
                             .await
                             .expect(

@@ -200,6 +200,35 @@ pub struct Challenge {
     pub options: w::RequestChallengeResponse,
 }
 
+pub fn department_snapshot_schema(_: &mut SchemaGenerator) -> Schema {
+    let text = json!({"type":"string","minLength":1,"maxLength":256,"pattern":"^[^\\u0000-\\u001f\\u007f-\\u009f]*$","description":"Identity additionally validates the 256 UTF-8 byte budget, trimming and department tree relationships"});
+    let node = object(
+        &[
+            ("id", text.clone()),
+            ("displayName", text.clone()),
+            ("parentId", json!({"anyOf":[text.clone(),{"type":"null"}]})),
+        ],
+        &["id", "displayName", "parentId"],
+    );
+    object(
+        &[
+            ("version", json!({"type":"integer","const":1})),
+            ("sourceRevision", text.clone()),
+            (
+                "nodes",
+                json!({"type":"array","minItems":1,"maxItems":1024,"items":node}),
+            ),
+            (
+                "memberships",
+                json!({"type":"array","maxItems":1024,"items":text}),
+            ),
+        ],
+        &["version", "sourceRevision", "nodes", "memberships"],
+    )
+    .try_into()
+    .expect("Identity department schema")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,33 +290,4 @@ mod tests {
         assert!(super::tests::validator::<TimedChallenge>().is_valid(&encoded));
         assert!(encoded.get("expires_at").is_some());
     }
-}
-
-pub fn department_snapshot_schema(_: &mut SchemaGenerator) -> Schema {
-    let text = json!({"type":"string","minLength":1,"maxLength":256,"pattern":"^[^\\u0000-\\u001f\\u007f-\\u009f]*$","description":"Identity additionally validates the 256 UTF-8 byte budget, trimming and department tree relationships"});
-    let node = object(
-        &[
-            ("id", text.clone()),
-            ("displayName", text.clone()),
-            ("parentId", json!({"anyOf":[text.clone(),{"type":"null"}]})),
-        ],
-        &["id", "displayName", "parentId"],
-    );
-    object(
-        &[
-            ("version", json!({"type":"integer","const":1})),
-            ("sourceRevision", text.clone()),
-            (
-                "nodes",
-                json!({"type":"array","minItems":1,"maxItems":1024,"items":node}),
-            ),
-            (
-                "memberships",
-                json!({"type":"array","maxItems":1024,"items":text}),
-            ),
-        ],
-        &["version", "sourceRevision", "nodes", "memberships"],
-    )
-    .try_into()
-    .expect("Identity department schema")
 }

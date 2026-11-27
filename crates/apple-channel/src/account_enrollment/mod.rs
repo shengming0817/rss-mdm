@@ -475,13 +475,7 @@ pub async fn progress_in(
     let reference =
         serde_json::from_value(reference).map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     let required = match sessions
-        .recheck(
-            execution,
-            &reference,
-            rss_request_context::Deadline::at(
-                std::time::Instant::now() + std::time::Duration::from_secs(10),
-            ),
-        )
+        .recheck(execution, &reference, sessions.reference_deadline())
         .await
     {
         Ok(_) => false,

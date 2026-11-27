@@ -565,9 +565,11 @@ async fn verify_access_recovery(
             c.execution(),
             &c.access().for_product(StorageProfile::Da),
             account.credential()?,
-            rss_request_context::Deadline::at(
-                std::time::Instant::now() + std::time::Duration::from_secs(8),
-            ),
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                std::time::Duration::from_secs(8),
+            )
+            .expect("bounded fixture deadline"),
         )
         .await?;
     let mut locator = rss_mdm_audit_integration::operation::OperationLocator {

@@ -23,3 +23,8 @@ slow-timeout = { period = "360s", terminate-after = 1 }
 [[profile.t2.overrides]]
 filter = 'test(=foundation_t2::shared_telemetry_on_a_running_installation)'
 slow-timeout = { period = "480s", terminate-after = 1 }
+
+# The DA host exercises two real Keycloak TOTP ceremonies and the full device lifecycle in one installation.
+[[profile.t2.overrides]]
+filter = 'test(=foundation::independent_registration_and_rolling_configuration_trust)'
+slow-timeout = { period = "420s", terminate-after = 1 }

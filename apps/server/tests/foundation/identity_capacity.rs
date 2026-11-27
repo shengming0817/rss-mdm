@@ -40,6 +40,7 @@ async fn configured_source_window_reaches_http_admission() -> Result<()> {
         origin,
     )?;
     let state = rss_mdm_identity_http::AppState {
+        wall_time: rss_mdm_audit_integration::budget::RuntimeTimer::wall_time,
         authority,
         config: rss_identity_web_credentials::HttpConfig::new(
             "https://mdm.example.test",

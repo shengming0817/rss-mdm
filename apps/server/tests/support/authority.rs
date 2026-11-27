@@ -17,7 +17,11 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 pub fn identity_cutoff() -> rss_request_context::Deadline {
-    rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10))
+    rss_request_context::Deadline::from_timeout(
+        &rss_mdm_audit_integration::budget::RuntimeTimer,
+        Duration::from_secs(10),
+    )
+    .expect("bounded fixture deadline")
 }
 
 pub fn deadline() -> OperationDeadline {
@@ -444,6 +448,10 @@ pub async fn seed_account(
     hash: &str,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
         "INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
     )

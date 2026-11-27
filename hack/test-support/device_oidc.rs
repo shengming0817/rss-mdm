@@ -187,6 +187,21 @@ impl Keycloak {
             callback.path(),
             callback.query().context("callback query")?
         );
+        let wrong_browser = client
+            .get(&url)
+            .header(
+                "cookie",
+                format!("{session}; __Host-identity-oidc-browser={}", "x".repeat(43)),
+            )
+            .send()
+            .await
+            .map_err(|e| e.without_url())?;
+        ensure!(
+            wrong_browser.status() == 303
+                && wrong_browser.headers()["location"] == "/auth/error?reason=failed"
+                && !wrong_browser.headers().contains_key("set-cookie"),
+            "a different browser received a callback grant"
+        );
         let response = client
             .get(url)
             .header("cookie", format!("{session}; {browser}"))

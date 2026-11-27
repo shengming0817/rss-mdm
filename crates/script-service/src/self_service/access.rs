@@ -122,13 +122,7 @@ pub(super) async fn qualify_on(
         (Some(Access::Device), Basis::Device) => Ok(Some(wire::SelfServiceSubject::Device {})),
         (Some(Access::AuthenticatedUser | Access::Users { .. }), Basis::User { reference }) => {
             let facts = match sessions
-                .recheck(
-                    execution,
-                    reference,
-                    rss_request_context::Deadline::at(
-                        std::time::Instant::now() + std::time::Duration::from_secs(10),
-                    ),
-                )
+                .recheck(execution, reference, sessions.reference_deadline())
                 .await
             {
                 Ok(facts) => facts,

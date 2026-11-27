@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import secrets
 import select
+import signal
 import socket
 import socketserver
 import ssl
@@ -34,6 +35,12 @@ class Relay(socketserver.ThreadingTCPServer):
 
 class Connection(socketserver.BaseRequestHandler):
     def handle(self):
+        try:
+            self.forward()
+        except (ConnectionError, TimeoutError):
+            pass
+
+    def forward(self):
         with socket.create_connection(("127.0.0.1", self.server.port), timeout=10) as upstream:
             peers = [self.request, upstream]
             while readable := select.select(peers, [], [], 60)[0]:
@@ -75,6 +82,9 @@ def serve(directory, callback):
                         "-addext","extendedKeyUsage=serverAuth"], check=True, capture_output=True, timeout=30)
         image = json.loads((Path(__file__).resolve().parents[2]/"deployment/providers.lock.json").read_text())["keycloak"]
         name = "rss-identity-t2-" + uuid.uuid4().hex
+        def stop(_signal, _frame):
+            raise SystemExit(0)
+        signal.signal(signal.SIGTERM, stop)
         try:
             # The containing directory is private. Bind only these three fixture inputs.
             mounts = []

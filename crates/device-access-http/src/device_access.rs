@@ -605,6 +605,7 @@ async fn oidc_step_up(
         return Err(Error::Forbidden.into());
     }
     let state = rss_mdm_identity_http::AppState {
+        wall_time: rss_mdm_audit_integration::budget::RuntimeTimer::wall_time,
         authority: s.identity.authority.clone(),
         config: s.identity.http.clone(),
     };

@@ -17,6 +17,14 @@ impl SessionAuthority {
     pub fn new(authority: Authority) -> Self {
         Self { authority }
     }
+    /// Existing self-service operations budget a single reference lookup on the authority clock.
+    pub fn reference_deadline(&self) -> rss_request_context::Deadline {
+        rss_request_context::Deadline::from_timeout(
+            self.authority.execution_timer(),
+            std::time::Duration::from_secs(10),
+        )
+        .expect("bounded session lookup")
+    }
     /// Recheck the trusted operation's locator without retaining credentials or renewing idle.
     pub async fn recheck(
         &self,

@@ -468,7 +468,7 @@ async fn callback_result(
         FederatedOutcome::Redirect(redirect) => (redirect.url, None),
         FederatedOutcome::StepUp { grant, return_url } => (
             return_url,
-            Some(operation_cookie(&grant, std::time::SystemTime::now())?),
+            Some(operation_cookie(&grant, (state.local.wall_time)())?),
         ),
         FederatedOutcome::Session {
             issued,
@@ -499,6 +499,23 @@ async fn callback_result(
     }
 
     Ok(response)
+}
+
+struct CallbackReply(Response);
+impl IntoResponse for CallbackReply {
+    fn into_response(self) -> Response {
+        self.0
+    }
+}
+impl rss_mdm_http_contract::signature::Output for CallbackReply {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Response, Schema};
+        let mut r = Response::empty(303);
+        for name in ["location", "set-cookie"] {
+            r.headers.insert(name.into(), Schema::response::<String>());
+        }
+        vec![r]
+    }
 }
 
 #[cfg(test)]
@@ -554,22 +571,5 @@ mod callback_tests {
                     .is_empty()
             );
         }
-    }
-}
-
-struct CallbackReply(Response);
-impl IntoResponse for CallbackReply {
-    fn into_response(self) -> Response {
-        self.0
-    }
-}
-impl rss_mdm_http_contract::signature::Output for CallbackReply {
-    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
-        use rss_mdm_http_contract::signature::{Response, Schema};
-        let mut r = Response::empty(303);
-        for name in ["location", "set-cookie"] {
-            r.headers.insert(name.into(), Schema::response::<String>());
-        }
-        vec![r]
     }
 }

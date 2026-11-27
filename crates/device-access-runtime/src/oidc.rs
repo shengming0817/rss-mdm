@@ -86,6 +86,6 @@ pub fn provider_clock() -> rss_identity_oidc::ProviderClock {
         rss_request_context::SharedExecutionTimer::new(
             rss_mdm_audit_integration::budget::RuntimeTimer,
         ),
-        std::time::SystemTime::now,
+        rss_mdm_audit_integration::budget::RuntimeTimer::wall_time,
     )
 }

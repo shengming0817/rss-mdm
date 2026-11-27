@@ -60,9 +60,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(token.clone())?,
             ),
-            rss_request_context::Deadline::at(
-                std::time::Instant::now() + std::time::Duration::from_secs(10),
-            ),
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                std::time::Duration::from_secs(10),
+            )
+            .expect("bounded fixture deadline"),
         )
         .await?;
     let audit = || {

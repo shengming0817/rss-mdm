@@ -59,9 +59,11 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
                     context.inputs.installation.execution(other, 1)?,
                     &context.access(),
                     reader.credential()?,
-                    rss_request_context::Deadline::at(
-                        std::time::Instant::now() + std::time::Duration::from_secs(8)
+                    rss_request_context::Deadline::from_timeout(
+                        &rss_mdm_audit_integration::budget::RuntimeTimer,
+                        std::time::Duration::from_secs(8)
                     )
+                    .expect("bounded fixture deadline")
                 )
                 .await,
             Err(access::Error::Unauthorized)
@@ -195,9 +197,11 @@ async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -
             .inspect_session(
                 c.execution(),
                 secret,
-                rss_request_context::Deadline::at(
-                    std::time::Instant::now() + std::time::Duration::from_secs(3),
-                ),
+                rss_request_context::Deadline::from_timeout(
+                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                    std::time::Duration::from_secs(3),
+                )
+                .expect("bounded fixture deadline"),
             )
             .await?;
         let bound = AuthorizedPrincipal::from_identity(
@@ -230,9 +234,11 @@ async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -
         c.authority
             .revoke_current_session(
                 revoked,
-                rss_request_context::Deadline::at(
-                    std::time::Instant::now() + std::time::Duration::from_secs(3),
-                ),
+                rss_request_context::Deadline::from_timeout(
+                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                    std::time::Duration::from_secs(3),
+                )
+                .expect("bounded fixture deadline"),
             )
             .await?;
         assert!(matches!(

@@ -235,7 +235,11 @@ impl Context {
                     &inputs.installation.instance_id,
                 )?,
             ),
-            rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10)),
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                Duration::from_secs(10),
+            )
+            .expect("bounded fixture deadline"),
         )
         .await?;
         let sessions =

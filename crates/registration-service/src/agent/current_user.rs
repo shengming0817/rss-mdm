@@ -116,13 +116,7 @@ pub async fn resolve(
         value.state = CurrentUserState::Invalidated;
         if binding.registration_valid {
             match sessions
-                .recheck(
-                    execution,
-                    reference,
-                    rss_request_context::Deadline::at(
-                        std::time::Instant::now() + std::time::Duration::from_secs(10),
-                    ),
-                )
+                .recheck(execution, reference, sessions.reference_deadline())
                 .await
             {
                 Ok(facts) => {
@@ -290,13 +284,7 @@ impl Service {
                     write_stage(*request_id, "identity_session_recheck");
                     if let Some(reference) = reference {
                         sessions
-                            .recheck(
-                                device.binding(),
-                                reference,
-                                rss_request_context::Deadline::at(
-                                    std::time::Instant::now() + std::time::Duration::from_secs(10),
-                                ),
-                            )
+                            .recheck(device.binding(), reference, sessions.reference_deadline())
                             .await?;
                     }
                     if let Some(user) = user {

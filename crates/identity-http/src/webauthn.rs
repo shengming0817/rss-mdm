@@ -20,6 +20,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct StateData {
     webauthn: WebauthnAuthority,
+    wall_time: fn() -> std::time::SystemTime,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -85,8 +86,11 @@ pub fn routes(
         ),
     }
     .assemble();
-    crate::browser(routes, state, 65536).bind_with(webauthn, |w| StateData {
-        webauthn: w.clone(),
+    crate::browser(routes, state, 65536).bind_with(state.zip(webauthn).as_ref(), |(s, w)| {
+        StateData {
+            wall_time: s.wall_time,
+            webauthn: (*w).clone(),
+        }
     })
 }
 
@@ -272,7 +276,7 @@ async fn auth_finish(
         body: Expires {
             expires_at: grant.expires_at,
         },
-        cookie: Some(operation_cookie(&grant, std::time::SystemTime::now())?),
+        cookie: Some(operation_cookie(&grant, (s.wall_time)())?),
     })
 }
 async fn remove(

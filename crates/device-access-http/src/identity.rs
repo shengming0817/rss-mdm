@@ -108,6 +108,7 @@ pub fn routes(
 ) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     use rss_mdm_identity_http as shared;
     let local = state.map(|s| shared::AppState {
+        wall_time: rss_mdm_audit_integration::budget::RuntimeTimer::wall_time,
         authority: s.authority.clone(),
         config: s.http.clone(),
     });

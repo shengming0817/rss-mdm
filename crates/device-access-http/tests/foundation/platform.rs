@@ -17,7 +17,11 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub fn deadline() -> rss_request_context::Deadline {
-    rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10))
+    rss_request_context::Deadline::from_timeout(
+        &rss_mdm_audit_integration::budget::RuntimeTimer,
+        Duration::from_secs(10),
+    )
+    .expect("bounded fixture deadline")
 }
 struct Key {
     private: PKey<Private>,

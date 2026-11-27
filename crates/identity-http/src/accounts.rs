@@ -309,6 +309,30 @@ async fn own_password(
             .await?,
     ))
 }
+impl rss_mdm_http_contract::signature::Output for Error {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        crate::error::describe_codes(&[
+            WireCode::AccountAlreadyExists,
+            WireCode::AccountCursorInvalidated,
+            WireCode::ConfigurationChanged,
+            WireCode::CsrfRejected,
+            WireCode::IdentityLinkConflict,
+            WireCode::IdentityUnavailable,
+            WireCode::InsufficientPrivilege,
+            WireCode::InvalidCredential,
+            WireCode::MalformedRequest,
+            WireCode::OperationConflict,
+            WireCode::ProfileOperationExpired,
+            WireCode::ProfileReceiptCapacityReached,
+            WireCode::ProviderLimitReached,
+            WireCode::RateLimited,
+            WireCode::ReauthenticationFailed,
+            WireCode::ReauthenticationRequired,
+            WireCode::RevisionConflict,
+        ])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,29 +400,5 @@ mod tests {
             assert_eq!(value.0.0.status(), status);
             assert_eq!(serde_json::to_value(value.0.0).unwrap(), code);
         }
-    }
-}
-
-impl rss_mdm_http_contract::signature::Output for Error {
-    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
-        crate::error::describe_codes(&[
-            WireCode::AccountAlreadyExists,
-            WireCode::AccountCursorInvalidated,
-            WireCode::ConfigurationChanged,
-            WireCode::CsrfRejected,
-            WireCode::IdentityLinkConflict,
-            WireCode::IdentityUnavailable,
-            WireCode::InsufficientPrivilege,
-            WireCode::InvalidCredential,
-            WireCode::MalformedRequest,
-            WireCode::OperationConflict,
-            WireCode::ProfileOperationExpired,
-            WireCode::ProfileReceiptCapacityReached,
-            WireCode::ProviderLimitReached,
-            WireCode::RateLimited,
-            WireCode::ReauthenticationFailed,
-            WireCode::ReauthenticationRequired,
-            WireCode::RevisionConflict,
-        ])
     }
 }

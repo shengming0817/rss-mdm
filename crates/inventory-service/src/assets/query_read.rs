@@ -204,9 +204,11 @@ impl AssetService {
                     .read(
                         binding,
                         &devices,
-                        rss_request_context::Deadline::at(
-                            std::time::Instant::now() + tx.deadline().timeout(),
-                        ),
+                        rss_request_context::Deadline::from_timeout(
+                            self.runtime.execution_timer(),
+                            tx.deadline().timeout(),
+                        )
+                        .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?,
                     )
                     .await?;
                 for u in users {

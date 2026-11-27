@@ -32,6 +32,7 @@ use rss_identity_postgres::{Authority, AuthorityError};
 pub struct AppState {
     pub authority: Authority,
     pub config: HttpConfig,
+    pub wall_time: fn() -> std::time::SystemTime,
 }
 
 #[cfg(test)]
@@ -80,6 +81,10 @@ mod webauthn;
 mod budget_tests {
     use super::*;
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "fixture chooses the origin for its controlled monotonic clock"
+    )]
     fn request_budget_validates_finite_time_and_overflow() {
         for seconds in [120, 3600] {
             let duration = std::time::Duration::from_secs(seconds);

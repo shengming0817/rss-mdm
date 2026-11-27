@@ -184,6 +184,10 @@ mod body_deadline_tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "fixture chooses the origin for its controlled monotonic clock"
+    )]
     async fn pending_body_expires_on_the_host_clock() {
         let now = Instant::now() + Duration::from_secs(3600);
         let deadline = Deadline::at(now + Duration::from_secs(30));

@@ -135,13 +135,19 @@ async fn administrator_for(
     use rss_identity_core::account::{LoginKey, Password};
     let principal = seed_administrator(c, device).await?;
     // This SDK future is nested inside the complete protocol proof; keep its state on the heap.
-    let issued = Box::pin(c.authority.login_local_bearer(
-        c.execution(),
-        LoginKey::parse(&format!("da-{principal}"))?,
-        Password::new("foundation-only-valid-password".into())?,
-        rss_identity_postgres::AttemptSource::parse("da-foundation")?,
-        rss_request_context::Deadline::at(std::time::Instant::now() + Duration::from_secs(10)),
-    ))
+    let issued = Box::pin(
+        c.authority.login_local_bearer(
+            c.execution(),
+            LoginKey::parse(&format!("da-{principal}"))?,
+            Password::new("foundation-only-valid-password".into())?,
+            rss_identity_postgres::AttemptSource::parse("da-foundation")?,
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                Duration::from_secs(10),
+            )
+            .expect("bounded fixture deadline"),
+        ),
+    )
     .await?;
     Ok(issued.secret().expose().into())
 }

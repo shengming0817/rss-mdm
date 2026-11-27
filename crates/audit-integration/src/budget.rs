@@ -143,6 +143,16 @@ mod tests;
 
 /// The concrete product timer; no transaction or runtime ownership is transferred.
 pub struct RuntimeTimer;
+impl RuntimeTimer {
+    /// System wall time for the host's OIDC checks and browser cookie expiry.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "concrete wall clock selected at host assembly"
+    )]
+    pub fn wall_time() -> std::time::SystemTime {
+        std::time::SystemTime::now()
+    }
+}
 impl rss_request_context::Clock for RuntimeTimer {
     #[allow(
         clippy::disallowed_methods,
