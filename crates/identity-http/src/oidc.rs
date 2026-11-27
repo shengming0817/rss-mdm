@@ -273,17 +273,13 @@ async fn step_up(
 
     let source = source(&request)?;
 
-    let host = request
-        .extensions()
-        .get::<rss_identity_core::step_up::StepUpContext>()
-        .cloned();
     let Json(input) = read_body(request, budget, |request| {
         Json::<BeginStepUp>::from_request(request, &state)
     })
     .await?;
 
     let actor = actor.ok_or(UNAUTH)?;
-    let context = input.operation.context(&actor, host)?;
+    let context = input.operation.context(&actor)?;
     let redirect = state
         .federation
         .begin_step_up(
@@ -413,6 +409,7 @@ pub(crate) fn callback_error_response(response: Response) -> Response {
     for name in [
         header::HeaderName::from_static("x-request-id"),
         header::X_CONTENT_TYPE_OPTIONS,
+        header::CONNECTION,
     ] {
         if let Some(value) = parts.headers.remove(&name) {
             projected.headers_mut().insert(name, value);
@@ -511,7 +508,13 @@ impl rss_mdm_http_contract::signature::Output for CallbackReply {
     fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
         use rss_mdm_http_contract::signature::{Response, Schema};
         let mut r = Response::empty(303);
-        for name in ["location", "set-cookie"] {
+        for name in [
+            "location",
+            "set-cookie",
+            "x-request-id",
+            "x-content-type-options",
+            "connection",
+        ] {
             r.headers.insert(name.into(), Schema::response::<String>());
         }
         vec![r]
@@ -547,7 +550,11 @@ mod callback_tests {
             response
                 .headers_mut()
                 .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
+            response
+                .headers_mut()
+                .insert(header::CONNECTION, "close".parse().unwrap());
             let response = callback_error_response(response);
+            assert_eq!(response.headers()[header::CONNECTION], "close");
             assert_eq!(response.headers()["x-request-id"], "rid");
             assert_eq!(
                 response.headers()[header::X_CONTENT_TYPE_OPTIONS],

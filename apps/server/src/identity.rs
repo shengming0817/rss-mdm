@@ -120,7 +120,7 @@ pub(crate) fn scope_rejections(
     path: &str,
 ) -> Vec<rss_mdm_http_contract::signature::Response> {
     if path == rss_mdm_identity_http::CALLBACK_PATH {
-        return vec![rss_mdm_management_http::boundary::capacity_rejection()];
+        return Vec::new();
     }
     let mut responses = vec![
         ScopeFailure::Unavailable.contract(path),

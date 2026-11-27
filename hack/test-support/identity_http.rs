@@ -49,6 +49,24 @@ pub fn surface(document: &serde_json::Value, raw_profile: bool) {
         .filter(|e| e["conditions"].as_array().is_some_and(|c| !c.is_empty()))
         .count();
     assert_eq!(conditional, 11);
+    for endpoint in endpoints {
+        let required = &endpoint["request"]["required_headers"];
+        let needs = |header: &str| required.as_array().unwrap().iter().any(|h| h == header);
+        let scheme = if needs("authorization") {
+            Some("bearer")
+        } else if needs("cookie") && endpoint["path"] != "/api/v1/identity/oidc/callback" {
+            Some("cookie")
+        } else {
+            None
+        };
+        if let Some(kind) = scheme {
+            let auth = &endpoint["authentication"]["alternatives"][0];
+            assert_eq!(auth["kind"], kind, "{}", endpoint["path"]);
+            assert_eq!(&auth["required_headers"], required);
+        } else {
+            assert!(endpoint["authentication"].is_null(), "{}", endpoint["path"]);
+        }
+    }
 }
 
 async fn verify_session(

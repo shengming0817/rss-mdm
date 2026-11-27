@@ -319,11 +319,12 @@ async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next)
             AuditIntent::Routine,
         ),
     };
+    let request_id = audit.request_id();
     let permit = match s.requests.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
             audit.finalize(None);
-            return Error::Unavailable.into_response();
+            return secure(Error::Unavailable.into_response(), request_id);
         }
     };
     let invalid = request.headers().get_all("host").iter().count() != 1
@@ -331,15 +332,27 @@ async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next)
         || request.uri().to_string().len() > 8192
         || request.headers().contains_key("x-client-certificate")
         || request.headers().contains_key("x-ssl-client-cert");
+    let Some((cutoff, _)) = rss_mdm_identity_http::settlement::lifetime(request.extensions())
+    else {
+        audit.finalize(None);
+        return secure(Error::Unavailable.into_response(), request_id);
+    };
+    let body_deadline = cutoff.capped(
+        s.identity.authority.execution_timer(),
+        Duration::from_secs(5),
+    );
     request.extensions_mut().insert(audit.clone());
-    tokio::spawn(async move {
+    let response = tokio::spawn(async move {
         let _permit = permit;
         let mut response = if invalid {
             Error::Malformed.into_response()
         } else {
             let (parts, body) = request.into_parts();
-            match tokio::time::timeout(Duration::from_secs(5), axum::body::to_bytes(body, 131072))
-                .await
+            match tokio::time::timeout_at(
+                body_deadline.instant().into(),
+                axum::body::to_bytes(body, 131072),
+            )
+            .await
             {
                 Ok(Ok(body)) => {
                     next.run(Request::from_parts(parts, axum::body::Body::from(body)))
@@ -391,20 +404,43 @@ async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next)
             }
             .into_response()
         }
-        response.headers_mut().insert(
-            "cache-control",
-            axum::http::HeaderValue::from_static("no-store"),
-        );
-        response.headers_mut().insert(
-            "x-content-type-options",
-            axum::http::HeaderValue::from_static("nosniff"),
-        );
-        response.headers_mut().insert(
-            "x-request-id",
-            axum::http::HeaderValue::from_str(&audit.request_id().to_string()).expect("UUID"),
-        );
         response
     })
     .await
-    .unwrap_or_else(|_| Error::CommitUnknown.into_response())
+    .unwrap_or_else(|_| Error::CommitUnknown.into_response());
+    secure(response, request_id)
+}
+const SECURITY_HEADERS: [(&str, &str); 2] = [
+    ("cache-control", "no-store"),
+    ("x-content-type-options", "nosniff"),
+];
+fn secure(mut response: Response, request_id: uuid::Uuid) -> Response {
+    for (name, value) in SECURITY_HEADERS {
+        response
+            .headers_mut()
+            .insert(name, axum::http::HeaderValue::from_static(value));
+    }
+    response.headers_mut().insert(
+        "x-request-id",
+        axum::http::HeaderValue::from_str(&request_id.to_string()).expect("UUID"),
+    );
+    response
+}
+pub(crate) fn rejection_headers(
+    mut response: rss_mdm_http_contract::signature::Response,
+    close: bool,
+) -> rss_mdm_http_contract::signature::Response {
+    use rss_mdm_http_contract::signature::Schema;
+    for (name, value) in SECURITY_HEADERS
+        .into_iter()
+        .chain(close.then_some(("connection", "close")))
+    {
+        let mut schema = Schema::response::<String>();
+        schema.value["const"] = value.into();
+        response.headers.insert(name.into(), schema);
+    }
+    response
+        .headers
+        .insert("x-request-id".into(), Schema::response::<uuid::Uuid>());
+    response
 }

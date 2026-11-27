@@ -3,6 +3,8 @@ use crate::signature::Schema;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+pub type Describe = fn(&str, &str) -> Description;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Description {
     pub owner: &'static str,

@@ -58,11 +58,20 @@ impl Keycloak {
             process,
         })
     }
-    pub async fn stop(mut self) -> Result<()> {
-        drop(self.process.stdin.take());
-        let exit = tokio::time::timeout(Duration::from_secs(60), self.process.wait()).await??;
-        ensure!(exit.success(), "Keycloak shutdown failed");
-        Ok(())
+    pub async fn finish(mut self, test: Result<()>) -> Result<()> {
+        let cleanup = async {
+            drop(self.process.stdin.take());
+            let exit = tokio::time::timeout(Duration::from_secs(60), self.process.wait()).await??;
+            ensure!(exit.success(), "Keycloak shutdown failed: {exit}");
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        match (test, cleanup) {
+            (Err(test), Err(cleanup)) => {
+                Err(test.context(format!("Keycloak cleanup also failed: {cleanup:#}")))
+            }
+            (result, Ok(())) | (Ok(()), result) => result,
+        }
     }
     pub fn configure(&self, config: &mut Value, tenant: &str) {
         let endpoint = json!({"issuer":self.info["issuer"],"client_id":"host","tenant_id":tenant});

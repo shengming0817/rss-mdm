@@ -100,7 +100,18 @@ fn scope_rejections(_: &str, path: &str) -> Vec<rss_mdm_http_contract::signature
             .into_iter()
             .filter(|r| matches!(r.status, 400 | 413 | 503)),
     );
-    responses
+    let mut secured: Vec<_> = responses
+        .into_iter()
+        .map(|r| {
+            let close = r.status == 413;
+            crate::browser::rejection_headers(r, close)
+        })
+        .collect();
+    // Reading the body can also time out with a closed connection before a transaction starts.
+    if let Some(deadline) = Error::responses().into_iter().find(|r| r.status == 503) {
+        secured.push(crate::browser::rejection_headers(deadline, true));
+    }
+    secured
 }
 pub fn routes(
     state: Option<&Identity>,

@@ -109,7 +109,7 @@ def serve(directory, callback):
             print(json.dumps(config),flush=True)
             sys.stdin.buffer.read()
         finally:
-            subprocess.run(["docker","rm","-f",name], stdout=subprocess.DEVNULL,check=False,timeout=60)
+            subprocess.run(["docker","rm","-f",name], stdout=subprocess.DEVNULL,check=True,timeout=60)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

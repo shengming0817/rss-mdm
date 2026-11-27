@@ -236,7 +236,8 @@ async fn embedded_status(
             Permission::AccountWrite,
         ])
         .await?;
-    crate::host_t2_support::run(config, |client, base| async move {
+    let keycloak = &oidc;
+    let result = crate::host_t2_support::run(config, |client, base| async move {
         let url = format!(
             "{base}/api/v1/tenants/{}/apple/platform-sso/status",
             c.tenant
@@ -259,24 +260,23 @@ async fn embedded_status(
         assert_eq!(status["deployment"], "unobserved");
         let employee_device =
             register_employee_device(c, &client, &base, &origin, &provider, &admin).await?;
-        let ceremony = Box::pin(embedded_step_up(
+        Box::pin(embedded_step_up(
             c,
             &client,
             &base,
             &admin,
             &employee_device,
-            &oidc,
+            keycloak,
         ))
         .await
-        .context("embedded OIDC employee operation");
-        oidc.stop().await?;
-        ceremony?;
+        .context("embedded OIDC employee operation")?;
         Box::pin(lifecycle_http(
             c, &client, &base, &origin, &provider, &admin, agent,
         ))
         .await
     })
-    .await
+    .await;
+    oidc.finish(result).await
 }
 
 async fn register_employee_device(

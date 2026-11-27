@@ -190,6 +190,20 @@ pub async fn verify(
         })
         .await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let too_large = client
+            .post(format!("{base}/login"))
+            .body(vec![0_u8; 131_073])
+            .send()
+            .await?;
+        assert_eq!(too_large.status(), 413);
+        for (name, value) in [
+            ("connection", "close"),
+            ("cache-control", "no-store"),
+            ("x-content-type-options", "nosniff"),
+        ] {
+            assert_eq!(too_large.headers()[name], value);
+        }
+        uuid::Uuid::parse_str(too_large.headers()["x-request-id"].to_str()?)?;
         identity_http::surface(&rss_da_app::http_contract()?, true);
         identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), true).await?;
         identity_http::anonymous_session(&client, &base).await?;

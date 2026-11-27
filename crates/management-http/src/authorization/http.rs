@@ -308,6 +308,7 @@ fn programmatic_allowed(path: &str, authorization: bool, management: bool) -> bo
         && authorization
         && !path.starts_with("/api/v1/tenants/{tenant}/self-")
         && !path.starts_with("/api/v1/identity-host/")
+        && !path.ends_with("/device-access/bindings/{id}/step-up/oidc/{provider}")
         && !(path.contains("/device-access/materials/")
             && (path.ends_with("/secret") || path.ends_with("/step-up")))
         && path != "/api/v1/tenants/{tenant}/registration-quotas/me"

@@ -68,7 +68,10 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
             settles_transaction: self.settles,
             conditions: Vec::new(),
             configured_path: None,
-            authentication: None,
+            authentication: match signature {
+                EndpointContract::Product(s) => s.request.authentication,
+                EndpointContract::External(_) => None,
+            },
             ingress_rejections: Vec::new(),
         }
     }

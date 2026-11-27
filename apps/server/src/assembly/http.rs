@@ -605,7 +605,8 @@ pub(crate) fn from_state(
         )),
     }
     .assemble()
-    .rejections(crate::identity::scope_rejections);
+    .rejections(crate::identity::scope_rejections)
+    .rejections(crate::native::gateway::callback_admission);
     let browser = browser.into_checked_axum(rss_mdm_http_contract::module::Listener::Browser);
     let browser = state
         .identity
@@ -860,7 +861,8 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
         ),
     }
     .assemble()
-    .rejections(crate::identity::scope_rejections);
+    .rejections(crate::identity::scope_rejections)
+    .rejections(crate::native::gateway::callback_admission);
     let agent = mount_agent(
         None,
         empty_da_agent_routes(),

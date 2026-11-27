@@ -180,7 +180,7 @@ pub struct Endpoint {
     pub configured_path: Option<ConfiguredSegment>,
     /// Resolved by the real middleware owner after all path prefixes are mounted.
     #[serde(skip)]
-    pub authentication: Option<fn(&str, &str) -> authentication::Description>,
+    pub authentication: Option<authentication::Describe>,
     pub ingress_rejections: Vec<signature::Response>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -7,7 +7,7 @@ from fnmatch import fnmatchcase
 PACKAGE = 'rss-mdm-app'
 IDENTITY_HTTP = ('crates/identity-http/*', 'hack/test-support/identity_http.rs')
 DEVICE_OIDC = (*IDENTITY_HTTP, 'hack/test-support/device_oidc.rs', 'hack/test-support/identity_keycloak.py',
-               'hack/test-support/keycloak-totp.json')
+               'hack/test-support/keycloak-totp.json', 'deployment/providers.lock.json')
 
 MODULES = {
     'webhook.relay': dict(prefix='assembly::webhook_relay_t2::', profiles=('shared',),
@@ -285,7 +285,7 @@ MODULES = {
 
     'foundation.authorization': dict(
         prefix='foundation_t2::authorization::', profiles=('shared', 'transaction', 'http_scope'),
-        inputs=(*IDENTITY_HTTP, 'crates/agent-wire/src/identity.rs', 'apps/server/src/identity.rs', 'apps/server/src/identity/*', 'apps/server/src/maintenance.rs', 'apps/server/src/authorization_bootstrap.rs', 'apps/server/src/installation/backup/accounts.rs', 'crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
+        inputs=(*IDENTITY_HTTP, 'crates/management-http/src/identity.rs', 'crates/agent-wire/src/identity.rs', 'apps/server/src/identity.rs', 'apps/server/src/identity/*', 'apps/server/src/maintenance.rs', 'apps/server/src/authorization_bootstrap.rs', 'apps/server/src/installation/backup/accounts.rs', 'crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
                 'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
                 'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs','crates/management-http/src/boundary.rs', 'crates/management-http/src/response.rs', 'apps/server/src/assembly/http.rs', 'apps/server/tests/support/host.rs', 'apps/server/tests/foundation/http_scope.rs', 'apps/server/src/diagnostic.rs',
                 'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs', 'apps/server/src/administration/user_profiles/*')),

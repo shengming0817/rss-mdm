@@ -1,6 +1,6 @@
 use crate::transport::*;
 use crate::{ACTION, Declaration, IDENTITY, Route, Router, get, post, route_module};
-// Same-origin self-service ceremonies. Host operation contexts enter through typed extensions.
+// Same-origin self-service credential management ceremonies.
 use crate::{boundary::*, *};
 use axum::{
     Extension, Json,
@@ -28,19 +28,13 @@ pub(crate) enum Operation {
     Register,
     Remove { credential: Uuid },
     Recover,
-    Host,
 }
 impl Operation {
-    pub(crate) fn context(
-        &self,
-        actor: &AuthenticatedSession,
-        host: Option<StepUpContext>,
-    ) -> Result<StepUpContext, HttpError> {
+    pub(crate) fn context(&self, actor: &AuthenticatedSession) -> Result<StepUpContext, HttpError> {
         let (op, credential) = match self {
             Self::Register => ("register", None),
             Self::Remove { credential } => ("remove", Some(*credential)),
             Self::Recover => ("recover", None),
-            Self::Host => return host.ok_or(BAD),
         };
         rss_identity_postgres::webauthn_management_context(actor.account(), op, credential)
             .map_err(Into::into)
@@ -250,9 +244,8 @@ async fn auth_begin(
     Deferred(request, _): Deferred<Begin, WRITE>,
 ) -> Result<Json<crate::TimedChallenge>, HttpError> {
     let actor = actor(&s, binding, request.headers(), b, true).await?;
-    let host = request.extensions().get::<StepUpContext>().cloned();
     let input: Begin = body(request, b).await?;
-    let context = input.operation.context(&actor, host)?;
+    let context = input.operation.context(&actor)?;
     Ok(Json(crate::TimedChallenge(
         s.webauthn
             .begin_authentication(actor, generation, context, b)

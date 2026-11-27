@@ -26,9 +26,39 @@ impl<S: Send + Sync, const MODE: u8> FromRequestParts<S> for Headers<MODE> {
         Ok(Self(p.headers.clone()))
     }
 }
+impl<const MODE: u8> Headers<MODE> {
+    fn credentials(_: &str, _: &str) -> rss_mdm_http_contract::authentication::Description {
+        use rss_mdm_http_contract::authentication::{Credential, Description};
+        let proof = Self::request();
+        let (kind, owner) = if MODE == PROGRAM_LOGOUT {
+            (
+                "bearer",
+                "rss-identity-web-credentials::bearer_presentation",
+            )
+        } else {
+            ("cookie", "rss-identity-web-credentials::cookie")
+        };
+        Description {
+            owner,
+            alternatives: vec![Credential {
+                kind,
+                owner,
+                headers: proof.headers,
+                required_headers: proof.required_headers,
+                constraints: vec![],
+            }],
+            rejections: vec![],
+            conditional_response_headers: vec![],
+        }
+    }
+}
 impl<const MODE: u8> Input for Headers<MODE> {
     fn request() -> Signature {
-        let mut request = Signature::default();
+        let mut request = Signature {
+            authentication: matches!(MODE, PASSIVE | WRITE | ROTATE | PROGRAM_LOGOUT)
+                .then_some(Self::credentials),
+            ..Signature::default()
+        };
         let mut add = |key: &'static str, required, constraint: serde_json::Value| {
             let mut schema = Schema::request::<String>();
             schema.value = constraint;
@@ -63,6 +93,7 @@ impl<const MODE: u8> Input for Headers<MODE> {
                 add("x-identity-request", true, serde_json::json!({"const":"1"}));
             }
         }
+        request.required_headers.sort_unstable();
         request
     }
 }

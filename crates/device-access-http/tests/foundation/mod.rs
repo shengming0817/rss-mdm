@@ -30,28 +30,34 @@ fn now() -> i64 {
 #[tokio::test]
 #[ignore = "T2: standalone DA owner installation, real TLS/PKI and rolling configuration trust"]
 async fn independent_registration_and_rolling_configuration_trust() -> Result<()> {
-    use rss_mdm_agent_wire::{
-        da, enroll, pki,
-        task_trust::{Acknowledgement, KeyState},
-    };
-    use rss_mdm_task_trust::{Use, service::Change};
     let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let protocol = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let browser_origin = format!("https://localhost:{}", browser.local_addr()?.port());
     let device_origin = format!("https://localhost:{}", protocol.local_addr()?.port());
     let mut c = Context::open(browser_origin).await?;
-    admission::verify_and_reject_drift(&c).await?;
-    let material = material::Material::new(&c).await?;
-    let registration = material.assemble(&c, &device_origin).await?;
-    let (installed_host, stop, running) = Box::pin(host::verify(
-        &c,
-        &material,
-        &registration,
-        browser,
-        protocol,
-    ))
-    .await?;
-    let token = material::administrator(&c).await?;
+    let result = Box::pin(installed_journey(&c, browser, protocol, device_origin)).await;
+    match c.oidc.take() {
+        Some(provider) => provider.finish(result).await,
+        None => result.and_then(|()| anyhow::bail!("standalone Keycloak fixture missing")),
+    }
+}
+async fn installed_journey(
+    c: &Context,
+    browser: tokio::net::TcpListener,
+    protocol: tokio::net::TcpListener,
+    device_origin: String,
+) -> Result<()> {
+    use rss_mdm_agent_wire::{
+        da, enroll, pki,
+        task_trust::{Acknowledgement, KeyState},
+    };
+    use rss_mdm_task_trust::{Use, service::Change};
+    admission::verify_and_reject_drift(c).await?;
+    let material = material::Material::new(c).await?;
+    let registration = material.assemble(c, &device_origin).await?;
+    let (installed_host, stop, running) =
+        Box::pin(host::verify(c, &material, &registration, browser, protocol)).await?;
+    let token = material::administrator(c).await?;
     let proof = c
         .sessions
         .authenticate(
@@ -280,7 +286,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         publication: publication.clone(),
     };
     let (cookie, csrf) =
-        credentials::login(&c, &client, Uuid::parse_str(proof.principal_id())?).await?;
+        credentials::login(c, &client, Uuid::parse_str(proof.principal_id())?).await?;
     let published: rss_mdm_agent_wire::da::Publication = material::success(
         client
             .post(format!(
@@ -320,7 +326,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         delivery: da::DeliveryPermission::Da,
         lifetime_seconds: 600,
     };
-    configuration::concurrent_export(&c, &client, &token, &proof, &export).await?;
+    configuration::concurrent_export(c, &client, &token, &proof, &export).await?;
     let signed: da::SignedConfiguration = material::success(
         client
             .post(format!("{management}/configurations"))
@@ -368,7 +374,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         401
     );
     material::verify(&signed, &trust_public)?;
-    let limited = material::device_administrator(&c, &receipt.device).await?;
+    let limited = material::device_administrator(c, &receipt.device).await?;
     let mut scoped = export.clone();
     scoped.operation_id = Uuid::new_v4();
     assert_eq!(
@@ -431,7 +437,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
     assert_eq!(fetched.signature, signed.signature);
-    reports::verify(&c, &client, &peer, base, &token, &receipt, &signed).await?;
+    reports::verify(c, &client, &peer, base, &token, &receipt, &signed).await?;
     let request_audit = audit();
     let prepared = trust
         .change_task_trust(
@@ -546,11 +552,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let retained:i64=sqlx::query_scalar("SELECT max_verify_until FROM rss_da.signing_keys WHERE tenant_id=$1::uuid AND usage='da_configuration' AND key_id=$2").bind(c.tenant.to_string()).bind(old_key).fetch_one(&c.operator).await?;
     assert!(retained >= signed.decode()?.expires_at);
     // Verify configuration trust before the business proof changes current policy selection.
-    Box::pin(business::verify(&c, &material, &receipt, &client, base))
+    Box::pin(business::verify(c, &material, &receipt, &client, base))
         .await
         .context("DA business owner proof")?;
     let (survivor, survivor_peer) = unknown_recovery(
-        &c,
+        c,
         &material,
         &client,
         base,
@@ -561,7 +567,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await?;
 
     let (account_registration, account_peer, account_policy) = Box::pin(accounts::verify(
-        &c,
+        c,
         &material,
         &client,
         base,
@@ -571,7 +577,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await
     .context("independent Windows account protocol")?;
     let pending_create = Box::pin(accounts::interrupted_create(
-        &c,
+        c,
         &client,
         &account_registration,
         &account_peer,
@@ -581,7 +587,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await
     .context("recover the original expired create permit")?;
     Box::pin(accounts::stopped_create(
-        &c,
+        c,
         &client,
         &account_registration,
         &account_peer,
@@ -591,7 +597,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await
     .context("reconcile the stopped native create after renewal")?;
     let pending = Box::pin(credentials::verify(
-        &c,
+        c,
         &material,
         &client,
         &survivor_peer,
@@ -629,7 +635,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     );
 
     let platform_session = Box::pin(platform::verify(
-        &c,
+        c,
         &material,
         &renewed_receipt,
         &renewed_peer,
@@ -699,14 +705,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "revoked DA registration cannot access the PSSO channel"
     );
 
-    reports::fenced_backpressure(&c, &client, &current_peer, base, &token, &current_survivor)
+    reports::fenced_backpressure(c, &client, &current_peer, base, &token, &current_survivor)
         .await?;
     stop.send(())
         .map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
     tokio::time::timeout(Duration::from_secs(50), running).await???;
     for rows in [65, 1] {
         Box::pin(reports::configured_page(
-            &c,
+            c,
             &installed_host.runtime_file,
             &current_peer,
             base,
@@ -717,7 +723,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         .context("configured DA projection page")?;
     }
     Box::pin(accounts::macos::verify(
-        &c,
+        c,
         &material,
         &installed_host.runtime_file,
         base,
@@ -726,11 +732,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await
     .context("standalone Mac account protocol")?;
     c.close().await;
-    Box::pin(inventory::verify(&c))
+    Box::pin(inventory::verify(c))
         .await
         .context("DA Inventory page settlement and restart")?;
 
-    let recovered = Box::pin(recovery::verify(
+    Box::pin(recovery::verify(
         &c.inputs,
         &material,
         installed_host,
@@ -747,14 +753,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         },
     ))
     .await
-    .context("DA cold recovery proof");
-    c.oidc
-        .take()
-        .context("standalone Keycloak fixture")?
-        .stop()
-        .await?;
-    drop(material);
-    recovered
+    .context("DA cold recovery proof")
 }
 
 async fn unknown_recovery(
