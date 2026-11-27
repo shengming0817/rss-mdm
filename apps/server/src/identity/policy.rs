@@ -189,8 +189,12 @@ impl RuntimePolicy {
         if self.provider_capacity.get() > rss_identity_core::federation::MAX_PROVIDERS {
             return Err(invalid());
         }
+        let write_budget =
+            rss_mdm_audit_integration::budget::write_budget(crate::background::ACCESS_CONNECTIONS)
+                .map_err(|_| invalid())?;
         Ok(Compiled {
-            authority: self.authority(instance, integrity)?,
+            authority: self.authority(instance, integrity, write_budget.clone())?,
+            write_budget,
             transport: self.transport.build()?,
             jwks: self.jwks.build()?,
             rp: self.rp()?,
@@ -231,15 +235,13 @@ impl RuntimePolicy {
         &self,
         instance: InstanceId,
         integrity: rss_audit_postgres::Integrity,
+        write_budget: rss_audit_postgres::WriteBudget,
     ) -> Result<AuthorityConfig, Error> {
         AuthorityConfig::new(
             instance,
             rss_identity_core::session::SessionPolicy::new(900, 14400).map_err(|_| invalid())?,
             integrity,
-            rss_mdm_audit_integration::budget::identity_write_budget(
-                crate::background::IDENTITY_CONNECTIONS,
-            )
-            .map_err(|_| invalid())?,
+            write_budget,
         )
         .map_err(super::failure)?
         .with_authentication_policy(self.authentication_policy()?)
@@ -256,6 +258,7 @@ impl RuntimePolicy {
 #[derive(Clone)]
 pub(crate) struct Compiled {
     pub kdf: std::sync::Arc<rss_identity_core::account::PasswordKdf>,
+    pub write_budget: rss_audit_postgres::WriteBudget,
     pub authority: AuthorityConfig,
     pub transport: rss_identity_oidc::TransportPolicy,
     pub jwks: rss_identity_oidc::entra::JwksCachePolicy,

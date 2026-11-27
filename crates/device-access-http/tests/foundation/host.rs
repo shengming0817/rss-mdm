@@ -140,11 +140,10 @@ pub async fn verify(
         "Inventory admission accepted a worker unable to acknowledge reports"
     );
     drop((browser, protocol));
-    let mut federated = value.clone();
-    federated["oidc"] = identity_http::federation_config(&m.directory, &origin, false)?;
+    let oidc = super::device_oidc::Keycloak::start(&m.directory, &origin).await?;
     let (end, end_requested) = tokio::sync::oneshot::channel();
     let federated_host = tokio::spawn(rss_da_app::host::serve(
-        serde_json::from_value(federated)?,
+        serde_json::from_value(value.clone())?,
         async move { end_requested.await.map_err(std::io::Error::other) },
     ));
     let client = m.client(None)?;
@@ -160,12 +159,16 @@ pub async fn verify(
             }
         })
         .await?;
-        identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), true).await
+        identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), false).await
     }
     .await;
     let _ = end.send(());
     federated_host.await??;
     probe?;
+    let mut value = value;
+    value["oidc"] = identity_http::federation_config(&m.directory, &origin, false)?;
+    oidc.configure(&mut value["oidc"], &c.tenant.to_string());
+    private(&runtime_file, &serde_json::to_vec(&value)?)?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let config = rss_da_app::config::load(&runtime_file)?;
     let running = tokio::spawn(rss_da_app::host::serve(config, async move {
@@ -185,7 +188,7 @@ pub async fn verify(
         .await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
         identity_http::surface(&rss_da_app::http_contract()?, true);
-        identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), false).await?;
+        identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), true).await?;
         identity_http::anonymous_session(&client, &base).await?;
         identity_http::session_lifecycle(&client, &base, &origin, &login, password).await?;
         assert_eq!(
@@ -251,6 +254,25 @@ pub async fn verify(
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let observed: rss_mdm_agent_wire::pki::Trust = response.json().await?;
         assert_eq!(observed.purpose, rss_mdm_agent_wire::pki::Purpose::DaDevice);
+        let csrf = rss_identity_core::session::SessionSecret::parse(
+            business_cookie
+                .split_once('=')
+                .context("session")?
+                .1
+                .to_owned(),
+        )?
+        .csrf();
+        oidc.install(
+            &client,
+            &origin,
+            &c.tenant.to_string(),
+            business_cookie,
+            &csrf,
+        )
+        .await?;
+        c.oidc
+            .set(oidc)
+            .map_err(|_| anyhow::anyhow!("Keycloak already running"))?;
         Box::pin(enterprise::verify(
             c,
             &client,

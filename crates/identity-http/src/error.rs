@@ -27,6 +27,10 @@ impl HttpError {
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let mut response = (self.0.status(), Json(ErrorBody { code: self.0 })).into_response();
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            header::HeaderValue::from_static("no-referrer"),
+        );
         if let Some(HttpFailure::Authority(AuthorityError::RateLimited {
             retry_after_seconds,
         })) = self.1
@@ -154,6 +158,9 @@ pub(crate) fn describe_codes(
             let mut r = Response::json::<ErrorBody>(code.status().as_u16());
             r.body.as_mut().expect("JSON error body").schema.value["properties"]["code"] =
                 serde_json::json!({"const":code});
+            let mut privacy = Schema::response::<String>();
+            privacy.value["const"] = "no-referrer".into();
+            r.headers.insert("referrer-policy".into(), privacy);
             if matches!(code, WireCode::RateLimited) {
                 r.headers
                     .insert("retry-after".into(), Schema::response::<String>());
@@ -176,4 +183,15 @@ impl rss_mdm_http_contract::signature::Output for HttpError {
             WireCode::RateLimited,
         ])
     }
+}
+
+/// Failures returned when inspecting credentials on a product route.
+pub fn credential_rejections() -> Vec<rss_mdm_http_contract::signature::Response> {
+    describe_codes(&[
+        WireCode::MalformedRequest,
+        WireCode::InvalidCredential,
+        WireCode::CsrfRejected,
+        WireCode::RateLimited,
+        WireCode::IdentityUnavailable,
+    ])
 }

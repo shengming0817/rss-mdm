@@ -89,6 +89,10 @@ pub struct CookieJson<T> {
 impl<T: Serialize> IntoResponse for CookieJson<T> {
     fn into_response(self) -> Response {
         let mut response = axum::Json(self.body).into_response();
+        response.headers_mut().insert(
+            axum::http::header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
         if let Some(cookie) = self.cookie {
             response
                 .headers_mut()
@@ -100,6 +104,9 @@ impl<T: Serialize> IntoResponse for CookieJson<T> {
 impl<T: JsonSchema> Output for CookieJson<T> {
     fn responses() -> Vec<Reply> {
         let mut r = Reply::json::<T>(200);
+        let mut policy = Schema::response::<String>();
+        policy.value["const"] = "no-referrer".into();
+        r.headers.insert("referrer-policy".into(), policy);
         r.headers
             .insert("set-cookie".into(), Schema::response::<String>());
         vec![r]

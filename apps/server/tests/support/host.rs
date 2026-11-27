@@ -83,6 +83,7 @@ where
     }
     let client = reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .default_headers(headers)
         .timeout(Duration::from_secs(10))
         .build()?;

@@ -983,6 +983,10 @@ async fn admit_trusts(runtime: &Value, tenant: Uuid, trusts: Vec<Trust>) -> Resu
         let audit = database
             .audit_store(
                 &config.audit,
+                rss_mdm_audit_integration::budget::write_budget(
+                    crate::background::ACCESS_CONNECTIONS,
+                )
+                .map_err(|_| Error::Input)?,
                 process.clone(),
                 config.management_binding().map_err(|_| Error::Input)?,
             )

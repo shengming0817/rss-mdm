@@ -73,18 +73,14 @@ async fn material_count(c: &Context, tenant: Uuid) -> Result<(i64, i64)> {
         .bind(tenant).fetch_one(&c.operator).await?)
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "one RSS material lifecycle proves wire AAD, DA custody, settlement and resolver behavior against the same committed and revoked delivery"
-)]
-pub(super) async fn verify(
-    c: &Context,
-    agent: &DevicePrincipal,
+pub(super) async fn seed_windows_binding(
+    tx: &mut sqlx::PgConnection,
+    tenant: Uuid,
+    installation: Uuid,
     da: &DaRegistration,
     person: Uuid,
-    management: &pg::Service,
-) -> Result<()> {
-    let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+    target: access::account_delivery::Target,
+) -> Result<(rss_mdm_agent_wire::da::Publication, access::Binding)> {
     let account = w::AccessAccount::Windows {
         sid: SID.into(),
         authority: w::AccessWindowsAuthority::Local,
@@ -107,7 +103,7 @@ pub(super) async fn verify(
         enabled: true,
         configuration: configuration.clone(),
     };
-    let mut binding = access::Binding {
+    let binding = access::Binding {
         operation_id: Uuid::new_v4(),
         account_disposition: w::AccessAccountDisposition::Keep,
         id: Uuid::new_v4(),
@@ -115,7 +111,7 @@ pub(super) async fn verify(
         device: da.device,
 
         person: rss_mdm_device_access::Person {
-            instance: agent.installation(),
+            instance: installation,
             principal: person,
         },
         origin: access::Origin::SelfEnrollment,
@@ -132,22 +128,14 @@ pub(super) async fn verify(
         configuration,
         received_revision: None,
         applied_revision: None,
-        account_delivery: Some(access::account_delivery::Target::Agent {
-            agent: pg::delivery::Agent {
-                installation: agent.installation(),
-                device: *agent.device(),
-            },
-            epoch: agent.epoch(),
-            revision: 1,
-        }),
+        account_delivery: Some(target),
         deployment_application: None,
         effect: None,
         applied_windows: None,
         created_by_rss: false,
     };
-    let mut tx = seed(c).await?;
     rss_mdm_policy_postgres::device_access::publish_on(
-        &mut tx,
+        tx,
         tenant,
         &publication,
         0,
@@ -155,7 +143,40 @@ pub(super) async fn verify(
         now(),
     )
     .await?;
-    access::storage::insert_in(&mut tx, &binding).await?;
+    access::storage::insert_in(tx, &binding).await?;
+    Ok((publication, binding))
+}
+
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one RSS material lifecycle proves wire AAD, DA custody, settlement and resolver behavior against the same committed and revoked delivery"
+)]
+pub(super) async fn verify(
+    c: &Context,
+    agent: &DevicePrincipal,
+    da: &DaRegistration,
+    person: Uuid,
+    management: &pg::Service,
+) -> Result<()> {
+    let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+    let mut tx = seed(c).await?;
+    let (publication, mut binding) = seed_windows_binding(
+        &mut tx,
+        tenant,
+        agent.installation(),
+        da,
+        person,
+        access::account_delivery::Target::Agent {
+            agent: pg::delivery::Agent {
+                installation: agent.installation(),
+                device: *agent.device(),
+            },
+            epoch: agent.epoch(),
+            revision: 1,
+        },
+    )
+    .await?;
+    let account = binding.account.clone().context("fixture account")?;
     let profile = rss_mdm_agent_wire::enroll::RuntimeProfile {
         capabilities: vec![
             w::Capability::InventoryCollectionV1,

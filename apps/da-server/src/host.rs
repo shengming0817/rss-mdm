@@ -282,9 +282,10 @@ pub async fn assemble(
     let audit_budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
 
     let audit = Arc::new(
-        rss_mdm_audit_integration::AuditStore::new(
+        rss_mdm_audit_integration::AuditStore::with_budget(
             pool.clone(),
             config.audit.integrity()?,
+            compiled.identity.write_budget.clone(),
             transactions,
             binding,
             &audit_budget.control(),
@@ -655,8 +656,7 @@ pub async fn assemble(
                 },
                 identity_execution,
             ));
-    let browser = http::browser::with_identity(Some(&state), identity_routes)
-        .into_checked_axum(rss_mdm_http_contract::module::Listener::Browser);
+    let browser = http::browser::with_identity(Some(&state), identity_routes);
 
     let browser_requests = state.requests.clone();
 

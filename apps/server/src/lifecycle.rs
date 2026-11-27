@@ -171,7 +171,7 @@ pub async fn serve(
                             AccessTransactionResource(source_runtime.clone()),
                         ));
                         let audit_store = access
-                            .audit_store(&compiled.config.audit, source_runtime.clone(), probe)
+                            .audit_store(&compiled.config.audit,compiled.identity.write_budget.clone(), source_runtime.clone(), probe)
                             .await
                             .map_err(|e| ProcessError::at("startup.audit", e))?;
                         let runtime = Arc::new(InventoryRuntime::new(
@@ -226,7 +226,7 @@ let asset_input_health=Arc::new(crate::local_delivery::Health::default());
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
-                        let da=if compiled.config.device_access.is_some() {Some(Arc::new(crate::assembly::device_access::open(&compiled.config,&identity,&access.authorization_store(),protection.clone(),&cursor_key,|resource|startup.stage_resource(resource)).await.map_err(assembly_error)?))} else {None};
+                        let da=if compiled.config.device_access.is_some() {Some(Arc::new(crate::assembly::device_access::open(&compiled.config,compiled.identity.write_budget.clone(),&identity,&access.authorization_store(),protection.clone(),&cursor_key,|resource|startup.stage_resource(resource)).await.map_err(assembly_error)?))} else {None};
                         let platform = da.as_ref().and_then(|d|d.runtime.platform.platform_sso.as_ref())
                             .map(|p|p.qualification_configuration()).transpose().map_err(|_|assembly_error(crate::Error::Configuration(crate::ConfigIssue::DeviceAccess)))?;
                         let users=Arc::new(rss_mdm_device_service::personnel::QualifiedUsers {

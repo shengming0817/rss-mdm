@@ -111,9 +111,10 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
         let integrity = config.integrity()?;
         let budget = AuditBudget::new(Duration::from_secs(30));
         let store = Arc::new(
-            AuditStore::new(
+            AuditStore::with_budget(
                 pool.clone(),
                 integrity,
+                rss_audit_postgres::WriteBudget::new(1, 256 * 1024, 512 * 1024)?,
                 c.runtime.clone(),
                 c.execution(),
                 &budget.control(),
@@ -142,6 +143,31 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
                 .with_details(details.clone())
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        // Each physical batch admits one row. The duplicate in batch two must roll back batch one.
+        let rejected = store
+            .write(
+                c.execution(),
+                &budget.source_control(),
+                (&store, &facts[0]),
+                |(store, fact), tx| {
+                    Box::pin(async move {
+                        store.append(tx, fact).await?;
+                        store.append(tx, fact).await?;
+                        Ok::<_, rss_mdm_audit_integration::Error>(())
+                    })
+                },
+            )
+            .await;
+        assert!(rejected.fold(
+            |_| false,
+            |_| false,
+            |_| true,
+            |_| false,
+            |_| false,
+            |_| false
+        ));
+        let persisted:bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2)").bind(c.tenant.to_string()).bind(facts[0].identity().event_id().as_str()).fetch_one(&c.operator).await?;
+        assert!(!persisted);
         let append = store
             .write(
                 c.execution(),
@@ -306,7 +332,7 @@ async fn verify_full_identity_restore(
             (&integrity, &prepared),
             |(integrity, prepared), tx| {
                 Box::pin(async move {
-                    rss_mdm_audit_integration::budget::identity_write_budget(1)?
+                    rss_mdm_audit_integration::budget::write_budget(1)?
                         .append_in(tx, integrity, prepared)
                         .await
                         .map_err(Into::into)
@@ -422,6 +448,7 @@ async fn request_timeout_is_projected_after_audit_settlement() -> Result<()> {
         }
     }
     async fn settled() -> Settled {
+        tokio::time::sleep(Duration::from_millis(45)).await;
         Settled
     }
     let c = Context::open("audit_plain", &[]).await?;
@@ -433,7 +460,7 @@ async fn request_timeout_is_projected_after_audit_settlement() -> Result<()> {
         ),
         settled: Route::new(
             "/settled",
-            get(settled, &catalog::AUDIT, &[Operation::List]),
+            get(settled, &catalog::AUDIT, &[Operation::List]).settles_transaction(),
         ),
     }
     .assemble();

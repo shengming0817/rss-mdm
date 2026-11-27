@@ -136,12 +136,9 @@ impl From<rss_identity_postgres::WebauthnCredentialView> for Credential {
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct RegistrationChallenge {
     id: Uuid,
-    #[schemars(schema_with = "registration_options")]
+    #[schemars(schema_with = "crate::challenge::registration_options")]
     options: webauthn_rs_proto::CreationChallengeResponse,
     expires_at: i64,
-}
-fn registration_options(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({"type":"object","required":["publicKey"],"properties":{"publicKey":{"type":"object","required":["rp","user","challenge","pubKeyCredParams"],"properties":{"rp":{"type":"object","required":["name","id"]},"user":{"type":"object","required":["id","name","displayName"]},"challenge":{"type":"string"},"pubKeyCredParams":{"type":"array","items":{"type":"object","required":["type","alg"]}}}}}})
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -191,7 +188,7 @@ async fn register_begin(
     let input: Register = body(request, b).await?;
     let authorization = match token {
         Some(token) => RegistrationAuthorization::StepUp(token),
-        None if input.recover => return Err(UNAUTH),
+        None if input.recover => return Err(BAD),
         None => RegistrationAuthorization::First,
     };
     let challenge = s

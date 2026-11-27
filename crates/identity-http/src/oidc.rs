@@ -71,7 +71,7 @@ pub fn callback_route(
     route_module! { struct CallbackRoute for [Browser] { callback } }
     let routes = CallbackRoute {
         callback: Route::new(
-            "/api/v1/identity/oidc/callback",
+            crate::CALLBACK_PATH,
             get(callback, &IDENTITY, ACTION).reject_head(),
         ),
     }
@@ -364,10 +364,15 @@ struct Callback {
 
 async fn callback(
     state: State<FederationState>,
-    budget: Extension<Deadline>,
+    budget: Option<Extension<Deadline>>,
     Headers(headers): Headers<CALLBACK>,
     query: Result<Query<Callback>, axum::extract::rejection::QueryRejection>,
 ) -> CallbackReply {
+    let Some(budget) = budget else {
+        return CallbackReply(callback_error_response(
+            HttpError::from(AuthorityError::Unavailable).into_response(),
+        ));
+    };
     CallbackReply(match callback_result(state, budget, headers, query).await {
         Ok(response) => response,
         Err(error) => callback_error_response(error.into_response()),
@@ -380,8 +385,8 @@ pub(crate) fn callback_failure(reason: &str) -> Response {
 
 /// Keep host diagnostics in response parts while replacing the browser projection.
 pub async fn protect_callback(request: Request, next: axum::middleware::Next) -> Response {
-    let callback = request.method() == axum::http::Method::GET
-        && request.uri().path() == "/api/v1/identity/oidc/callback";
+    let callback =
+        request.method() == axum::http::Method::GET && request.uri().path() == crate::CALLBACK_PATH;
     let response = next.run(request).await;
     if callback && (response.status().is_client_error() || response.status().is_server_error()) {
         return callback_error_response(response);
@@ -390,13 +395,13 @@ pub async fn protect_callback(request: Request, next: axum::middleware::Next) ->
 }
 
 pub(crate) fn callback_error_response(response: Response) -> Response {
-    let (parts, _) = response.into_parts();
+    let (mut parts, _) = response.into_parts();
     let reason = if parts.status == StatusCode::SERVICE_UNAVAILABLE {
         "unavailable"
     } else {
         "failed"
     };
-    (
+    let mut projected = (
         parts.extensions,
         [
             (header::CACHE_CONTROL, "no-store"),
@@ -404,7 +409,16 @@ pub(crate) fn callback_error_response(response: Response) -> Response {
         ],
         callback_failure(reason),
     )
-        .into_response()
+        .into_response();
+    for name in [
+        header::HeaderName::from_static("x-request-id"),
+        header::X_CONTENT_TYPE_OPTIONS,
+    ] {
+        if let Some(value) = parts.headers.remove(&name) {
+            projected.headers_mut().insert(name, value);
+        }
+    }
+    projected
 }
 
 async fn callback_result(
@@ -510,7 +524,18 @@ mod callback_tests {
                 header::SET_COOKIE,
                 "must-not-forward=secret".parse().unwrap(),
             );
+            response
+                .headers_mut()
+                .insert("x-request-id", "rid".parse().unwrap());
+            response
+                .headers_mut()
+                .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
             let response = callback_error_response(response);
+            assert_eq!(response.headers()["x-request-id"], "rid");
+            assert_eq!(
+                response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+                "nosniff"
+            );
             assert_eq!(response.status(), StatusCode::SEE_OTHER);
             assert_eq!(
                 response.headers()[header::LOCATION],

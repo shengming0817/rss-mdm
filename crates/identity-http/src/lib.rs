@@ -3,6 +3,7 @@
 mod bearer;
 mod boundary;
 pub mod challenge;
+pub mod settlement;
 mod transport;
 pub use bearer::bearer_routes;
 pub use challenge::TimedChallenge;
@@ -16,12 +17,13 @@ mod dto;
 mod error;
 mod oidc;
 pub use oidc::protect_callback;
+pub const CALLBACK_PATH: &str = "/api/v1/identity/oidc/callback";
 mod accounts;
 mod profiles;
 mod providers;
 mod session;
 use axum::middleware;
-pub use error::{HttpError, HttpFailure};
+pub use error::{HttpError, HttpFailure, credential_rejections};
 use rss_identity_web_credentials::HttpConfig;
 
 use rss_identity_postgres::{Authority, AuthorityError};
@@ -128,6 +130,7 @@ fn browser<S: Clone + Send + Sync + 'static, M: Declaration>(
 ) -> Router<S, M> {
     let routes = routes
         .layer(axum::extract::DefaultBodyLimit::max(limit))
+        .settles_transactions()
         .fixed_response_headers(&[
             ("cache-control", "no-store"),
             ("referrer-policy", "no-referrer"),

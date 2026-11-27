@@ -91,7 +91,7 @@ startup.stage_resource(DynManagedResource::new_box(host::RuntimeResource(transac
 
   let budget=rss_mdm_audit_integration::budget::AuditBudget::until(cutoff);
 
-  let store=rss_mdm_audit_integration::AuditStore::new(pool,config.audit.integrity()?,transactions,binding,&budget.control()).await.map_err(|_| Error::AdmissionAt("account Audit"))?;
+  let store=rss_mdm_audit_integration::AuditStore::with_budget(pool,config.audit.integrity()?,compiled.identity.write_budget.clone(),transactions,binding,&budget.control()).await.map_err(|_| Error::AdmissionAt("account Audit"))?;
 
   let audit=rss_mdm_audit_integration::RequestAudit::new(rss_mdm_audit_integration::Origin::Background, StorageProfile::Da,binding,"da_initialize",rss_mdm_audit_integration::AuditIntent::Management);
 

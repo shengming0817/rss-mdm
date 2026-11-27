@@ -81,9 +81,9 @@ post_nonce: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-ss
 post_token: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-sso/{tenant}/token", post(token, &contracts::PROTOCOL_APPLE_CHANNEL,
                 &[RouteOperation::Action])),
 post_begin: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-sso/{tenant}/browser/begin", post(begin, &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action])),
+                &[RouteOperation::Action]).settles_transaction()),
 post_complete: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-sso/{tenant}/browser/complete", post(complete, &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action])) }.assemble()
+                &[RouteOperation::Action]).settles_transaction()) }.assemble()
 }
         .layer(DefaultBodyLimit::max(65536))
         .fixed_response_headers(&[
@@ -374,7 +374,7 @@ fn identity_error(e: rss_identity_postgres::AuthorityError) -> Error {
     }
 }
 async fn begin(
-    Extension(control): Extension<rss_axum::RequestControl>,
+    Extension(deadline): Extension<rss_request_context::Deadline>,
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
     BeginHeaders(headers): BeginHeaders,
@@ -393,7 +393,7 @@ async fn begin(
             browser.clone(),
             rss_identity_postgres::AttemptSource::parse("mdm-platform-sso")
                 .map_err(|_| Error::Malformed)?,
-            control.deadline(),
+            deadline,
         )
         .await
         .map_err(identity_error)?;
@@ -414,7 +414,7 @@ async fn begin(
 }
 
 async fn complete(
-    Extension(control): Extension<rss_axum::RequestControl>,
+    Extension(deadline): Extension<rss_request_context::Deadline>,
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
     CompleteHeaders(headers): CompleteHeaders,
@@ -446,7 +446,7 @@ async fn complete(
             input.nonce,
             secret.into(),
             input.proof.into_bytes(),
-            control.deadline(),
+            deadline,
         )
         .await
         .map_err(identity_error)?;

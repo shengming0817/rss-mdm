@@ -139,7 +139,8 @@ fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Decla
                     oidc_step_up,
                     &contracts::DEVICE_ACCESS,
                     &[RouteOperation::Action],
-                ),
+                )
+                .settles_transaction(),
             ),
             post_step_up: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/device-access/bindings/{id}/step-up",
@@ -568,7 +569,6 @@ async fn oidc_step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(peer): Extension<rss_mdm_identity_http::ClientAddress>,
-    Extension(control): Extension<rss_axum::RequestControl>,
     Path((_tenant, device, id, provider)): Path<(Uuid, rss_mdm_agent_wire::DeviceId, Uuid, Uuid)>,
     crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     body: Result<Json<FederatedChange>, axum::extract::rejection::JsonRejection>,
@@ -577,18 +577,26 @@ async fn oidc_step_up(
     let input = body.map_err(Error::from)?.0;
     let federation = s.identity.federation.as_ref().ok_or(Error::Unsupported)?;
     let change = input.change.into_change();
-    let (context, employee) = s
-        .registration
-        .change_step_up_context(
+    let deadline = auth.cutoff().capped(
+        s.identity.authority.execution_timer(),
+        s.identity.http.timeout(),
+    );
+    let (context, employee) = tokio::time::timeout_at(
+        deadline.instant().into(),
+        s.registration.change_step_up_context(
             &auth.proof,
             &device,
             id,
             &change,
             &offboarding_providers(&s, auth.proof.binding(), &change),
             s.admission.as_ref(),
-        )
-        .await
-        .map_err(Error::from)?;
+        ),
+    )
+    .await
+    .map_err(|_| {
+        Error::Classified(rss_mdm_audit_integration::completion::ResponseFailure::Deadline)
+    })?
+    .map_err(Error::from)?;
     if employee.is_none() {
         return Err(Error::Forbidden.into());
     }
@@ -596,7 +604,6 @@ async fn oidc_step_up(
     if s.identity.excluded_federation_tenant == Some(binding.tenant()) {
         return Err(Error::Forbidden.into());
     }
-    let deadline = control.deadline();
     let state = rss_mdm_identity_http::AppState {
         authority: s.identity.authority.clone(),
         config: s.identity.http.clone(),

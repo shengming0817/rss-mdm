@@ -167,13 +167,13 @@ impl rss_request_context::CancellationObserver for AuditBudget {
     }
 }
 
-/// Identity emits up to eight full records in one mutation.
-pub fn identity_write_budget(
+/// Canonical bytes shared across the identity and business writers of this host.
+pub fn write_budget(
     connections: u32,
 ) -> Result<rss_audit_postgres::WriteBudget, rss_audit_postgres::Error> {
-    let batch = 8 * rss_audit_core::MAX_RECORD_BYTES as u32;
+    let batch: u32 = 8 * 1024 * 1024;
     let capacity = batch
         .checked_mul(connections)
         .ok_or(rss_audit_postgres::Error::WriteLimit)?;
-    rss_audit_postgres::WriteBudget::new(8, batch, capacity)
+    rss_audit_postgres::WriteBudget::new(4096, batch, capacity)
 }

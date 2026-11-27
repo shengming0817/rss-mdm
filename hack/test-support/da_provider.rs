@@ -79,6 +79,7 @@ impl Provider {
     pub fn client(&self, peer: Option<(&enroll::Candidate, u8)>) -> Result<reqwest::Client> {
         let mut builder = reqwest::Client::builder()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .tls_built_in_root_certs(false)
             .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
                 self.directory.join("task-trust-ca/ca.pem"),

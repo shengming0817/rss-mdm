@@ -221,11 +221,17 @@ async fn embedded_status(
     });
     config["recovery_credentials"] = serde_json::json!({"active_key":"native","key_files":{"native":c.inputs.directory.join("native.key")},
         "recipients":[{"certificate_file":c.inputs.directory.join("task-trust-ca/ca.pem"),"private_key_file":c.inputs.directory.join("task-trust-ca/ca.key")}]});
+    let oidc =
+        device_oidc::Keycloak::start(&provider.directory, "https://mdm.example.test").await?;
+    config["identity"]["oidc"] =
+        identity_http::federation_config(&provider.directory, "https://mdm.example.test", true)?;
+    oidc.configure(&mut config["identity"]["oidc"], &c.tenant.to_string());
     let admin = c
         .account(&[
             Permission::OperationRead,
             Permission::Enrollment,
             Permission::Credentials,
+            Permission::IdentityProvidersManage,
             Permission::PolicyWrite,
             Permission::AccountWrite,
         ])
@@ -251,6 +257,9 @@ async fn embedded_status(
         assert_eq!(status["device"], serde_json::json!(da.device));
         assert_eq!(status["login"], "unknown");
         assert_eq!(status["deployment"], "unobserved");
+        Box::pin(embedded_step_up(c, &client, &base, &admin, da, &oidc))
+            .await
+            .context("embedded OIDC employee operation")?;
         Box::pin(lifecycle_http(
             c, &client, &base, &origin, &provider, &admin, agent,
         ))
@@ -259,6 +268,99 @@ async fn embedded_status(
     .await
 }
 
+async fn embedded_step_up(
+    c: &Context,
+    client: &reqwest::Client,
+    base: &str,
+    admin: &crate::authority_t2_support::Account,
+    da: &rss_mdm_registration_service::device::endpoints::DaRegistration,
+    oidc: &device_oidc::Keycloak,
+) -> Result<()> {
+    use rss_mdm_authorization_service::credential::RequestCredential;
+    let RequestCredential::Cookie(admin_session) = admin.credential()? else {
+        anyhow::bail!("admin session required")
+    };
+    let tenant = c.tenant.to_string();
+    oidc.install(
+        client,
+        base,
+        &tenant,
+        &format!("__Host-identity-session={}", admin_session.expose()),
+        &admin_session.csrf(),
+    )
+    .await?;
+    let employee = c
+        .account(&[rss_mdm_authorization_service::Permission::OperationRead])
+        .await?;
+    let RequestCredential::Cookie(session) = employee.credential()? else {
+        anyhow::bail!("employee session required")
+    };
+    let principal = Uuid::parse_str(&employee.user.principal_id)?;
+    oidc.link_employee(&c.operator, &tenant, principal).await?;
+    let mut tx = seed(c).await?;
+    let epoch = rss_mdm_registration_service::device::endpoints::current_da_epoch_in(
+        &mut tx, &tenant, &da.device,
+    )
+    .await?;
+    let installation = Uuid::parse_str(&c.inputs.installation.instance_id)?;
+    let (_, binding) = super::da_materials::seed_windows_binding(
+        &mut tx,
+        Uuid::parse_str(&tenant)?,
+        installation,
+        da,
+        principal,
+        rss_mdm_device_access_postgres::device_access::account_delivery::Target::Da {
+            installation,
+            epoch,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    let resource = format!(
+        "{base}/api/v1/tenants/{tenant}/devices/{}/device-access/bindings/{}",
+        da.device, binding.id
+    );
+    let cookie = format!("__Host-identity-session={}", session.expose());
+    let input = serde_json::json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"repair_binding"}});
+    let grant = oidc
+        .grant(client, base, &resource, &cookie, &session.csrf(), &input)
+        .await?;
+    let put = |change: &serde_json::Value, grant: &str| {
+        client
+            .put(&resource)
+            .header("origin", "https://mdm.example.test")
+            .header("cookie", format!("{cookie}; {grant}"))
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", session.csrf())
+            .json(change)
+            .send()
+    };
+    oidc.expire_grant(&c.operator, &tenant, principal).await?;
+    assert_eq!(put(&input, &grant).await?.status(), 401);
+    let grant = oidc
+        .grant(client, base, &resource, &cookie, &session.csrf(), &input)
+        .await?;
+    let mut wrong = input.clone();
+    wrong["operationId"] = Uuid::new_v4().to_string().into();
+    assert_eq!(put(&wrong, &grant).await?.status(), 401);
+    let saved: serde_json::Value = put(&input, &grant)
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(saved["revision"], 2);
+    assert_eq!(saved["operationId"], input["operationId"]);
+    Ok(())
+}
+
+#[path = "../../../../hack/test-support/device_oidc.rs"]
+mod device_oidc;
+#[allow(
+    dead_code,
+    reason = "the embedded fixture shares federation configuration with both host surface tests"
+)]
+#[path = "../../../../hack/test-support/identity_http.rs"]
+mod identity_http;
 #[path = "../../../../hack/test-support/da_provider.rs"]
 mod provider;
 

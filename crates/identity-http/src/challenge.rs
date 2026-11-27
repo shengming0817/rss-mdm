@@ -12,12 +12,8 @@ fn object(fields: &[(&str, Value)], required: &[&str]) -> Value {
 fn vocabulary<T: Serialize>(values: impl IntoIterator<Item = T>) -> Value {
     json!({"type":"string","enum":values.into_iter().map(|v|serde_json::to_value(v).expect("external enum serialization")).collect::<Vec<_>>()})
 }
-fn options(_: &mut SchemaGenerator) -> Schema {
-    use w::{
-        AuthenticatorTransport as T, PublicKeyCredentialHints as H, UserVerificationPolicy as U,
-    };
-    let bytes =
-        json!({"type":"string","pattern":"^[A-Za-z0-9_-]*$","description":"URL_SAFE_NO_PAD bytes"});
+fn descriptor(bytes: &Value) -> Value {
+    use w::AuthenticatorTransport as T;
     let transport = vocabulary([
         T::Usb,
         T::Nfc,
@@ -27,6 +23,105 @@ fn options(_: &mut SchemaGenerator) -> Schema {
         T::Test,
         T::Unknown,
     ]);
+    object(
+        &[
+            ("type", json!({"type":"string"})),
+            ("id", bytes.clone()),
+            ("transports", json!({"type":"array","items":transport})),
+        ],
+        &["type", "id"],
+    )
+}
+
+pub(crate) fn registration_options(_: &mut SchemaGenerator) -> Schema {
+    let text = json!({"type":"string"});
+    let boolean = json!({"type":"boolean"});
+    let bytes = json!({"type":"string","pattern":"^[A-Za-z0-9_-]*$"});
+    let rp = object(
+        &[("name", text.clone()), ("id", text.clone())],
+        &["id", "name"],
+    );
+    let user = object(
+        &[
+            ("name", text.clone()),
+            ("id", bytes.clone()),
+            ("displayName", text.clone()),
+        ],
+        &["id", "name", "displayName"],
+    );
+    let param = object(
+        &[("type", text.clone()), ("alg", json!({"type":"integer"}))],
+        &["type", "alg"],
+    );
+    let selection = object(
+        &[
+            (
+                "authenticatorAttachment",
+                json!({"enum":["platform","cross-platform"]}),
+            ),
+            (
+                "residentKey",
+                json!({"enum":["discouraged","preferred","required"]}),
+            ),
+            ("requireResidentKey", boolean.clone()),
+            (
+                "userVerification",
+                json!({"enum":["discouraged","preferred","required"]}),
+            ),
+        ],
+        &["requireResidentKey", "userVerification"],
+    );
+    let extensions = object(
+        &[
+            (
+                "credentialProtectionPolicy",
+                vocabulary([
+                    w::CredentialProtectionPolicy::UserVerificationOptional,
+                    w::CredentialProtectionPolicy::UserVerificationOptionalWithCredentialIDList,
+                    w::CredentialProtectionPolicy::UserVerificationRequired,
+                ]),
+            ),
+            ("enforceCredentialProtectionPolicy", boolean.clone()),
+            ("uvm", boolean.clone()),
+            ("credProps", boolean.clone()),
+            ("minPinLength", boolean.clone()),
+            ("hmacCreateSecret", boolean),
+        ],
+        &[],
+    );
+    let key = object(
+        &[
+            ("rp", rp),
+            ("user", user),
+            ("challenge", bytes.clone()),
+            ("pubKeyCredParams", json!({"type":"array","items":param})),
+            (
+                "timeout",
+                json!({"type":"integer","minimum":0,"maximum":u32::MAX}),
+            ),
+            (
+                "excludeCredentials",
+                json!({"type":"array","items":descriptor(&bytes)}),
+            ),
+            ("authenticatorSelection", selection),
+            (
+                "hints",
+                json!({"type":"array","items":{"enum":["security-key","client-device","hybrid"]}}),
+            ),
+            ("attestation", json!({"enum":["none","direct","indirect"]})),
+            ("attestationFormats", json!({"type":"array","items":text})),
+            ("extensions", extensions),
+        ],
+        &["rp", "user", "challenge", "pubKeyCredParams"],
+    );
+    object(&[("publicKey", key)], &["publicKey"])
+        .try_into()
+        .expect("WebAuthn registration schema")
+}
+fn options(_: &mut SchemaGenerator) -> Schema {
+    use w::{PublicKeyCredentialHints as H, UserVerificationPolicy as U};
+    let bytes =
+        json!({"type":"string","pattern":"^[A-Za-z0-9_-]*$","description":"URL_SAFE_NO_PAD bytes"});
     let hmac = object(
         &[
             ("output1", bytes.clone()),
@@ -42,21 +137,13 @@ fn options(_: &mut SchemaGenerator) -> Schema {
         ],
         &[],
     );
-    let credential = object(
-        &[
-            ("type", json!({"type":"string"})),
-            ("id", bytes.clone()),
-            ("transports", json!({"type":"array","items":transport})),
-        ],
-        &["type", "id"],
-    );
     let key = object(
         &[
-            ("challenge", bytes),
+            ("challenge", bytes.clone()),
             ("rpId", json!({"type":"string"})),
             (
                 "allowCredentials",
-                json!({"type":"array","items":credential}),
+                json!({"type":"array","items":descriptor(&bytes)}),
             ),
             (
                 "userVerification",
@@ -123,6 +210,22 @@ mod tests {
             .into_root_schema_for::<T>()
             .to_value();
         jsonschema::validator_for(&schema).unwrap()
+    }
+    #[test]
+    fn registration_options_validate_the_external_encoder() {
+        let challenge: w::CreationChallengeResponse = serde_json::from_value(json!({"publicKey":{
+            "rp":{"name":"MDM","id":"mdm.test"},"user":{"id":"AA","name":"member","displayName":"Member"},
+            "challenge":"AA","pubKeyCredParams":[{"type":"public-key","alg":-7}],"timeout":60000,
+            "authenticatorSelection":{"requireResidentKey":false,"userVerification":"required"},
+            "excludeCredentials":[{"id":"AA","type":"public-key"}],"attestation":"none",
+            "extensions":{"credProps":true}
+        }})).unwrap();
+        let mut encoded = serde_json::to_value(challenge).unwrap();
+        let schema = registration_options(&mut SchemaGenerator::default()).to_value();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert!(validator.is_valid(&encoded));
+        encoded["publicKey"]["user"]["id"] = 123.into();
+        assert!(!validator.is_valid(&encoded));
     }
     #[test]
     fn fixed_webauthn_serialization_keeps_optional_omission_and_required_nullable_output2() {

@@ -94,6 +94,7 @@ impl IdentityPolicy {
         &self,
         installation: &super::Installation,
         integrity: rss_audit_postgres::Integrity,
+        write_budget: rss_audit_postgres::WriteBudget,
     ) -> Result<rss_identity_postgres::AuthorityConfig> {
         use rss_identity_postgres::{AttemptWindow, AuthenticationPolicy};
         if self.claim_seconds < self.request_seconds.max(self.maintenance_seconds) {
@@ -116,8 +117,7 @@ impl IdentityPolicy {
             rss_identity_core::session::SessionPolicy::new(900, 14400)
                 .map_err(|_| Error::Configuration)?,
             integrity,
-            rss_mdm_audit_integration::budget::identity_write_budget(4)
-                .map_err(|_| Error::Configuration)?,
+            write_budget,
         )
         .map_err(bad)?
         .with_authentication_policy(authentication)
@@ -139,6 +139,7 @@ impl IdentityPolicy {
 
 pub struct Compiled {
     pub kdf: std::sync::Arc<rss_identity_core::account::PasswordKdf>,
+    pub write_budget: rss_audit_postgres::WriteBudget,
     pub authority: rss_identity_postgres::AuthorityConfig,
     pub transport: rss_identity_oidc::TransportPolicy,
     pub rp: rss_identity_postgres::RpGeneration,
@@ -155,8 +156,11 @@ impl IdentityPolicy {
     ) -> Result<Compiled> {
         seconds(self.audit_recovery_seconds)?;
         self.audit_limit()?;
+        let write_budget =
+            rss_mdm_audit_integration::budget::write_budget(4).map_err(|_| Error::Configuration)?;
         Ok(Compiled {
-            authority: self.authority(installation, integrity)?,
+            authority: self.authority(installation, integrity, write_budget.clone())?,
+            write_budget,
             transport: self.transport()?,
             rp: self.rp()?,
             request: self.request()?,

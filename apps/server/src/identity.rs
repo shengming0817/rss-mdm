@@ -119,8 +119,8 @@ pub(crate) fn scope_rejections(
     _: &str,
     path: &str,
 ) -> Vec<rss_mdm_http_contract::signature::Response> {
-    if path == "/api/v1/identity/oidc/callback" {
-        return Vec::new();
+    if path == rss_mdm_identity_http::CALLBACK_PATH {
+        return vec![rss_mdm_management_http::boundary::capacity_rejection()];
     }
     let mut responses = vec![
         ScopeFailure::Unavailable.contract(path),

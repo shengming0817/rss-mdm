@@ -5,6 +5,7 @@ mod business;
 mod configuration;
 mod context;
 mod credentials;
+use context::device_oidc;
 mod enterprise;
 mod exports;
 mod host;

@@ -183,8 +183,18 @@ impl Context {
         .await
         .map_err(|e| anyhow::anyhow!("MDM messaging runtime: {e:?}"))?;
         let binding = inputs.installation.execution(tenant, 1)?;
+        let policy = identity::policy::RuntimePolicy::installation();
+        let compiled = policy.compile(
+            InstanceId::parse(&inputs.installation.instance_id)?,
+            audit_config.integrity()?,
+        )?;
         let audit = database
-            .audit_store(audit_config, runtime.clone(), binding)
+            .audit_store(
+                audit_config,
+                compiled.write_budget.clone(),
+                runtime.clone(),
+                binding,
+            )
             .await?;
         let identity_runtime = identity::open_runtime(
             &inputs.database(profile, "mdm_identity_runtime"),
@@ -193,11 +203,6 @@ impl Context {
             4,
         )
         .await?;
-        let policy = identity::policy::RuntimePolicy::installation();
-        let compiled = policy.compile(
-            InstanceId::parse(&inputs.installation.instance_id)?,
-            audit_config.integrity()?,
-        )?;
         let kdf = compiled.kdf.clone();
         let authority = Authority::connect_runtime(
             identity_runtime.clone(),

@@ -91,7 +91,7 @@ impl rss_mdm_http_contract::signature::Input for CeremonyHeaders {
 
 fn scope_rejections(_: &str, path: &str) -> Vec<rss_mdm_http_contract::signature::Response> {
     use rss_mdm_http_contract::signature::{Output, Response};
-    if path == "/api/v1/identity/oidc/callback" {
+    if path == rss_mdm_identity_http::CALLBACK_PATH {
         return Vec::new();
     }
     let mut responses = vec![Response::empty(400), Response::empty(403)];

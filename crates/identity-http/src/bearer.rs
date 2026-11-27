@@ -5,7 +5,7 @@ use crate::{AppState, boundary::*};
 use axum::{
     Extension, Json,
     extract::{FromRequest, Request, State},
-    http::{StatusCode, header},
+    http::header,
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
@@ -29,49 +29,33 @@ pub fn bearer_routes(state: Option<&AppState>) -> Router<(), impl Declaration + 
         ),
     }
     .assemble();
-    let routes = routes
-        .layer(axum::extract::DefaultBodyLimit::max(4096))
-        .fixed_response_headers(&[
-            ("cache-control", "no-store"),
-            ("referrer-policy", "no-referrer"),
-        ]);
+    let routes = routes.layer(axum::extract::DefaultBodyLimit::max(4096));
     let routes = match state {
         Some(s) => routes.route_layer(middleware::from_fn_with_state(s.clone(), boundary)),
         None => routes,
     };
-    routes.bind_with(state, Clone::clone)
-}
-
-fn secure(mut response: Response) -> Response {
-    if response.status() == StatusCode::UNAUTHORIZED {
-        response.headers_mut().insert(
-            header::WWW_AUTHENTICATE,
-            header::HeaderValue::from_static("Bearer"),
-        );
-    }
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static("no-store"),
-    );
-    response.headers_mut().insert(
-        header::REFERRER_POLICY,
-        header::HeaderValue::from_static("no-referrer"),
-    );
-    response
+    routes
+        .settles_transactions()
+        .fixed_response_headers(&[
+            ("cache-control", "no-store"),
+            ("referrer-policy", "no-referrer"),
+        ])
+        .response_headers(Some(401), &[("www-authenticate", "Bearer")])
+        .bind_with(state, Clone::clone)
 }
 async fn boundary(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
     if let Err(error) = bind_deadline(&mut request, &state) {
-        return secure(error.into_response());
+        return error.into_response();
     }
     let admitted = if request.uri().to_string().len() > 8192 || request.uri().query().is_some() {
         Err(BAD)
     } else {
         bearer_presentation(request.headers()).map_err(HttpError::from)
     };
-    secure(match admitted {
+    match admitted {
         Ok(()) => next.run(request).await,
         Err(error) => error.into_response(),
-    })
+    }
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

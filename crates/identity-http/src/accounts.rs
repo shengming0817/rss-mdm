@@ -118,8 +118,8 @@ pub fn routes(state: Option<&AppState>) -> Router<(), impl Declaration + use<>> 
     })
 }
 
-async fn actor(
-    s: &Management,
+pub(crate) async fn management_actor(
+    authority: &Authority,
     binding: ExecutionBinding,
     h: &HeaderMap,
     b: Deadline,
@@ -132,7 +132,7 @@ async fn actor(
         }
         csrf(h, &secret)?;
     }
-    Ok(s.authority.inspect_session(binding, secret, b).await?)
+    Ok(authority.inspect_session(binding, secret, b).await?)
 }
 pub(crate) async fn body<T: DeserializeOwned>(request: Request, b: Deadline) -> Result<T> {
     let bytes = read_body(request, b, |request| {
@@ -179,7 +179,7 @@ async fn accounts(
         page.limit.unwrap_or(50),
     )
     .map_err(|_| BAD)?;
-    let actor = actor(&s, binding, &h, b, false).await?;
+    let actor = management_actor(&s.authority, binding, &h, b, false).await?;
     Ok(Json(crate::dto::AccountPage::from(
         s.authority
             .list_accounts(actor, query, page.cursor, b)
@@ -193,7 +193,7 @@ async fn read_account(
     Extension(b): Extension<Deadline>,
     Headers(h): Headers<PASSIVE>,
 ) -> Result<Json<crate::dto::Account>> {
-    let actor = actor(&s, binding, &h, b, false).await?;
+    let actor = management_actor(&s.authority, binding, &h, b, false).await?;
     Ok(Json(crate::dto::Account::from(
         s.authority.read_account(actor, target(&t, &p)?, b).await?,
     )))
@@ -210,7 +210,7 @@ async fn create_account(
     Extension(b): Extension<Deadline>,
     Deferred(r, _): Deferred<CreateAccount, WRITE>,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, Json<crate::dto::Account>>> {
-    let actor = actor(&s, binding, r.headers(), b, true).await?;
+    let actor = management_actor(&s.authority, binding, r.headers(), b, true).await?;
     let v: CreateAccount = body(r, b).await?;
     let name = LoginKey::parse(&v.login).map_err(|_| BAD)?;
     let canonical_login = name.as_str().to_owned();
@@ -234,7 +234,7 @@ async fn enabled(
     Extension(b): Extension<Deadline>,
     Deferred(r, _): Deferred<Toggle, WRITE>,
 ) -> Result<Json<crate::dto::Account>> {
-    let actor = actor(&s, binding, r.headers(), b, true).await?;
+    let actor = management_actor(&s.authority, binding, r.headers(), b, true).await?;
     let v: Toggle = body(r, b).await?;
     Ok(account(
         s.authority
@@ -249,7 +249,7 @@ async fn membership(
     Extension(b): Extension<Deadline>,
     Deferred(r, _): Deferred<Toggle, WRITE>,
 ) -> Result<Json<crate::dto::Account>> {
-    let actor = actor(&s, binding, r.headers(), b, true).await?;
+    let actor = management_actor(&s.authority, binding, r.headers(), b, true).await?;
     let v: Toggle = body(r, b).await?;
     Ok(account(
         s.authority
@@ -269,7 +269,7 @@ async fn reset_password(
     Extension(b): Extension<Deadline>,
     Deferred(r, _): Deferred<Reset, WRITE>,
 ) -> Result<Json<crate::dto::Account>> {
-    let actor = actor(&s, binding, r.headers(), b, true).await?;
+    let actor = management_actor(&s.authority, binding, r.headers(), b, true).await?;
     let v: Reset = body(r, b).await?;
     Ok(account(
         s.authority
@@ -289,7 +289,7 @@ async fn own_password(
     Extension(b): Extension<Deadline>,
     Deferred(r, _): Deferred<ChangePassword, WRITE>,
 ) -> Result<Json<crate::dto::Account>> {
-    let actor = actor(&s, binding, r.headers(), b, true).await?;
+    let actor = management_actor(&s.authority, binding, r.headers(), b, true).await?;
     let peer = r
         .extensions()
         .get::<crate::ClientAddress>()

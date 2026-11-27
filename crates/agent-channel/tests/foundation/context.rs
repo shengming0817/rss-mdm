@@ -226,7 +226,7 @@ impl Context {
                 rss_identity_core::InstanceId::parse(&inputs.installation.instance_id)?,
                 rss_identity_core::session::SessionPolicy::new(900, 14400)?,
                 rss_audit_postgres::Integrity::Plain,
-                rss_mdm_audit_integration::budget::identity_write_budget(4)?,
+                rss_mdm_audit_integration::budget::write_budget(4)?,
             )?,
             binding,
             Arc::new(

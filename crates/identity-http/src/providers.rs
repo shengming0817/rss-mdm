@@ -10,11 +10,9 @@ use crate::{
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    http::HeaderMap,
 };
 use rss_identity_core::federation::*;
-use rss_identity_postgres::{AuthenticatedSession, AuthorityError, Federation};
-use rss_transactional_messaging::fence::ExecutionBinding;
+use rss_identity_postgres::{AuthorityError, Federation};
 use serde::Deserialize;
 type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone)]
@@ -53,32 +51,14 @@ pub fn routes(runtime: Option<(&Federation, &AppState)>) -> Router<(), impl Decl
     })
 }
 
-async fn actor(
-    s: &Management,
-    binding: ExecutionBinding,
-    h: &HeaderMap,
-    b: Deadline,
-    write: bool,
-) -> Result<AuthenticatedSession> {
-    let secret = cookie(h)?.ok_or(UNAUTH)?;
-    if write {
-        if !request_marker(h)? {
-            return Err(FORBIDDEN.into());
-        }
-        csrf(h, &secret)?;
-    }
-    Ok(s.federation
-        .authority()
-        .inspect_session(binding, secret, b)
-        .await?)
-}
 async fn providers(
     State(s): State<Management>,
     Execution(binding): Execution,
     Extension(b): Extension<Deadline>,
     Headers(h): Headers<PASSIVE>,
 ) -> Result<Json<dto::Providers>> {
-    let actor = actor(&s, binding, &h, b, false).await?;
+    let actor =
+        crate::accounts::management_actor(&s.federation.authority(), binding, &h, b, false).await?;
     Ok(Json(dto::Providers {
         providers: s
             .federation
@@ -102,7 +82,9 @@ async fn create_provider(
     Extension(b): Extension<Deadline>,
     Deferred(r, _): Deferred<CreateProvider, WRITE>,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, Json<dto::Provider>>> {
-    let actor = actor(&s, binding, r.headers(), b, true).await?;
+    let actor =
+        crate::accounts::management_actor(&s.federation.authority(), binding, r.headers(), b, true)
+            .await?;
     let v: CreateProvider = body(r, b).await?;
     let credentials =
         ProviderCredentials::new(v.client_secret, v.ca_pem).map_err(AuthorityError::from)?;
@@ -130,7 +112,9 @@ async fn update_provider(
     Extension(b): Extension<Deadline>,
     Deferred(r, _): Deferred<UpdateProvider, WRITE>,
 ) -> Result<Json<dto::Provider>> {
-    let actor = actor(&s, binding, r.headers(), b, true).await?;
+    let actor =
+        crate::accounts::management_actor(&s.federation.authority(), binding, r.headers(), b, true)
+            .await?;
     let v: UpdateProvider = body(r, b).await?;
     let credentials =
         ProviderCredentials::new(v.client_secret, v.ca_pem).map_err(AuthorityError::from)?;
@@ -154,7 +138,9 @@ async fn provider_enabled(
     Extension(b): Extension<Deadline>,
     Deferred(r, _): Deferred<ProviderToggle, WRITE>,
 ) -> Result<Json<dto::Provider>> {
-    let actor = actor(&s, binding, r.headers(), b, true).await?;
+    let actor =
+        crate::accounts::management_actor(&s.federation.authority(), binding, r.headers(), b, true)
+            .await?;
     let v: ProviderToggle = body(r, b).await?;
     Ok(Json(dto::Provider::from(
         s.federation
@@ -169,7 +155,8 @@ async fn test_provider(
     Extension(b): Extension<Deadline>,
     Headers(h): Headers<WRITE>,
 ) -> Result<Json<TestReport>> {
-    let actor = actor(&s, binding, &h, b, true).await?;
+    let actor =
+        crate::accounts::management_actor(&s.federation.authority(), binding, &h, b, true).await?;
     match s.federation.test_provider(actor, p, b).await {
         Ok(report) => Ok(Json(TestReport::Passed {
             passed: true,

@@ -115,6 +115,12 @@ impl<S: Clone + Send + Sync + 'static, M: Declaration> Router<S, M> {
         }
         self
     }
+    pub fn settles_transactions(mut self) -> Self {
+        for endpoint in &mut self.endpoints {
+            endpoint.settles_transaction = true;
+        }
+        self
+    }
     pub fn endpoints(&self) -> &[Endpoint] {
         &self.endpoints
     }
@@ -186,8 +192,13 @@ impl<S: Clone + Send + Sync + 'static, M: Declaration> Router<S, M> {
         self
     }
     /// Apply fixed response headers through Axum and describe those same values on every response.
-    pub fn fixed_response_headers(
+    pub fn fixed_response_headers(self, headers: &'static [(&'static str, &'static str)]) -> Self {
+        self.response_headers(None, headers)
+    }
+    /// Apply and describe values for one status, including extractor rejections.
+    pub fn response_headers(
         mut self,
+        status: Option<u16>,
         headers: &'static [(&'static str, &'static str)],
     ) -> Self {
         let parsed = headers
@@ -205,6 +216,7 @@ impl<S: Clone + Send + Sync + 'static, M: Declaration> Router<S, M> {
                     .responses
                     .iter_mut()
                     .chain(signature.request.rejections.iter_mut())
+                    .filter(|reply| status.is_none_or(|s| s == reply.status))
                 {
                     for (name, value) in headers {
                         let mut schema = crate::signature::Schema::response::<String>();
@@ -219,6 +231,9 @@ impl<S: Clone + Send + Sync + 'static, M: Declaration> Router<S, M> {
                 move |mut response: axum::response::Response| {
                     let headers = parsed.clone();
                     async move {
+                        if status.is_some_and(|s| s != response.status().as_u16()) {
+                            return response;
+                        }
                         for (name, value) in headers {
                             response.headers_mut().insert(name, value);
                         }

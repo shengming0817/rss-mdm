@@ -4289,6 +4289,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "jsonschema",
+ "rss-axum",
  "rss-identity-core",
  "rss-identity-postgres",
  "rss-identity-web-credentials",
@@ -4299,6 +4300,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "url",
  "uuid",
  "webauthn-rs-proto",

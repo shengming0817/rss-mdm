@@ -37,6 +37,7 @@ impl rss_mdm_registration_service::certificate_issuance::Clock for Clock {
 }
 pub(crate) async fn open(
     config: &crate::config::Config,
+    write_budget: rss_audit_postgres::WriteBudget,
     identity: &crate::identity::Identity,
     authorization: &rss_mdm_authorization_service::Store,
     protection: Arc<rss_mdm_native_protection::Protector>,
@@ -89,9 +90,10 @@ pub(crate) async fn open(
     ));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
     let audit = Arc::new(
-        rss_mdm_audit_integration::AuditStore::new(
+        rss_mdm_audit_integration::AuditStore::with_budget(
             pool.clone(),
             config.audit.integrity()?,
+            write_budget,
             runtime,
             identity.management_binding,
             &budget.control(),

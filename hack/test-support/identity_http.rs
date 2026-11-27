@@ -86,6 +86,20 @@ pub async fn session_lifecycle(
         .send()
         .await?;
     let (cookie, body) = issued(signed_in).await?;
+    let recovery = client
+        .post(format!("{base}/webauthn/register/begin"))
+        .header("cookie", &cookie)
+        .header("origin", origin)
+        .header("x-identity-request", "1")
+        .header("x-csrf-token", body["csrfToken"].as_str().unwrap())
+        .json(&serde_json::json!({"label":"recovery","recover":true}))
+        .send()
+        .await?;
+    assert_eq!(recovery.status(), 400);
+    assert_eq!(
+        recovery.json::<serde_json::Value>().await?["code"],
+        "malformed_request"
+    );
     let request = |method: &str, cookie: &str, csrf: &str| {
         client
             .post(format!("{base}/session/{method}"))

@@ -137,7 +137,24 @@ pub(super) async fn recover(
         let input =
             json!({"operationId":operation,"expectedRevision":revision,"action":{"kind":action}});
         assert!(put(&input, &cookie).await?.status().is_client_error());
-        let grant = browser.grant(&input).await?;
+        let grant = if revision == 2 {
+            let oidc = c.oidc.get().context("standalone Keycloak")?;
+            oidc.link_employee(&c.operator, &c.tenant.to_string(), employee)
+                .await?;
+            let grant = oidc
+                .grant(client, &c.browser_origin, &resource, &cookie, &csrf, &input)
+                .await?;
+            oidc.expire_grant(&c.operator, &c.tenant.to_string(), employee)
+                .await?;
+            assert_eq!(
+                put(&input, &format!("{cookie}; {grant}")).await?.status(),
+                401
+            );
+            oidc.grant(client, &c.browser_origin, &resource, &cookie, &csrf, &input)
+                .await?
+        } else {
+            browser.grant(&input).await?
+        };
         let wrong = json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"action":{"kind":action}});
         assert_eq!(
             put(&wrong, &format!("{cookie}; {grant}")).await?.status(),

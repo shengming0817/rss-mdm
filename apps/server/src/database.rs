@@ -85,14 +85,16 @@ impl Database {
     pub(crate) async fn audit_store(
         &self,
         config: &crate::config::AuditConfig,
+        write_budget: rss_audit_postgres::WriteBudget,
         runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
     ) -> Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>, Error> {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
         let control = budget.control();
-        rss_mdm_audit_integration::AuditStore::new(
+        rss_mdm_audit_integration::AuditStore::with_budget(
             self.pool.clone(),
             config.integrity()?,
+            write_budget,
             runtime,
             binding,
             &control,

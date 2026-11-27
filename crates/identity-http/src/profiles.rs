@@ -5,10 +5,8 @@ use crate::{AppState, accounts::Error, boundary::*};
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    http::HeaderMap,
 };
 use rss_identity_core::{PrincipalId, account::AccountKey};
-use rss_transactional_messaging::fence::ExecutionBinding;
 use uuid::Uuid;
 mod dto;
 
@@ -43,22 +41,6 @@ pub fn raw_profile_route(state: Option<&AppState>) -> Router<(), impl Declaratio
     crate::browser(routes, state, 98304).bind_with(state, Clone::clone)
 }
 
-async fn actor(
-    s: &AppState,
-    binding: ExecutionBinding,
-    h: &HeaderMap,
-    b: Deadline,
-    write: bool,
-) -> Result<rss_identity_postgres::AuthenticatedSession, Error> {
-    let secret = cookie(h)?.ok_or(UNAUTH)?;
-    if write {
-        if !request_marker(h)? {
-            return Err(FORBIDDEN.into());
-        }
-        csrf(h, &secret)?;
-    }
-    Ok(s.authority.inspect_session(binding, secret, b).await?)
-}
 fn target(t: &str, p: &str) -> Result<AccountKey, Error> {
     Ok(AccountKey {
         tenant: tenant(t)?,
@@ -71,7 +53,7 @@ async fn current(
     Extension(b): Extension<Deadline>,
     Headers(h): Headers<PASSIVE>,
 ) -> Result<Json<dto::Observation>, Error> {
-    let actor = actor(&s, binding, &h, b, false).await?;
+    let actor = crate::accounts::management_actor(&s.authority, binding, &h, b, false).await?;
     let profile = s.authority.current_profile(&actor, b).await?;
     Ok(Json(dto::Observation::from(profile.view()?)))
 }
@@ -82,7 +64,7 @@ async fn local(
     Extension(b): Extension<Deadline>,
     Headers(h): Headers<PASSIVE>,
 ) -> Result<Json<dto::Local>, Error> {
-    let actor = actor(&s, binding, &h, b, false).await?;
+    let actor = crate::accounts::management_actor(&s.authority, binding, &h, b, false).await?;
     Ok(Json(dto::Local::from(
         s.authority
             .read_local_profile(&actor, target(&t, &p)?, b)
@@ -96,7 +78,9 @@ async fn update(
     Extension(b): Extension<Deadline>,
     Deferred(request, _): Deferred<dto::Change, WRITE>,
 ) -> Result<Json<dto::Receipt>, Error> {
-    let actor = actor(&s, binding, request.headers(), b, true).await?;
+    let actor =
+        crate::accounts::management_actor(&s.authority, binding, request.headers(), b, true)
+            .await?;
     let bytes = read_body(request, b, |request| {
         axum::body::to_bytes(request.into_body(), 98_304)
     })
@@ -116,7 +100,7 @@ async fn receipt(
     Extension(b): Extension<Deadline>,
     Headers(h): Headers<PASSIVE>,
 ) -> Result<Json<Option<dto::Receipt>>, Error> {
-    let actor = actor(&s, binding, &h, b, false).await?;
+    let actor = crate::accounts::management_actor(&s.authority, binding, &h, b, false).await?;
     let operation = Uuid::parse_str(&o)
         .map_err(|_| BAD)?
         .try_into()

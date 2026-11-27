@@ -7,14 +7,28 @@ use uuid::Uuid;
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = require_value)]
 pub(super) struct Change {
-    #[schemars(with = "Uuid")]
+    #[schemars(
+        with = "Uuid",
+        regex(
+            pattern = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        )
+    )]
     operation_id: pg::ProfileOperationId,
     expected_revision: i64,
     #[serde(deserialize_with = "Option::deserialize")]
     #[schemars(with = "Option<LocalValue>")]
     value: Option<LocalValue>,
 }
+fn require_value(schema: &mut schemars::Schema) {
+    let required = schema
+        .get_mut("required")
+        .and_then(Value::as_array_mut)
+        .expect("profile change has required identifiers");
+    required.push("value".into());
+}
+
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LocalValue {
@@ -73,7 +87,12 @@ impl From<pg::LocalProfileView> for Local {
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Receipt {
-    #[schemars(with = "Uuid")]
+    #[schemars(
+        with = "Uuid",
+        regex(
+            pattern = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        )
+    )]
     operation_id: pg::ProfileOperationId,
     revision: i64,
 }
@@ -186,4 +205,26 @@ impl From<&pg::ProfileView> for Observation {
 struct ExtensionObject(#[schemars(schema_with = "extensions_schema")] Value);
 fn extensions_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"type":"object","x-rss-extension":"Named tenant profile attributes validated by Identity Extensions and ProfileLimits"})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn clearing_a_local_profile_requires_an_explicit_value() {
+        let schema = schemars::schema_for!(Change).to_value();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let mut request =
+            serde_json::json!({"operationId":pg::ProfileOperationId::now(),"expectedRevision":1});
+        assert!(!validator.is_valid(&request));
+        assert!(serde_json::from_value::<Change>(request.clone()).is_err());
+        for value in [
+            Value::Null,
+            serde_json::json!({"extensions":{},"maxAgeSeconds":60}),
+        ] {
+            request["value"] = value;
+            assert!(validator.is_valid(&request));
+            assert!(serde_json::from_value::<Change>(request.clone()).is_ok());
+        }
+    }
 }

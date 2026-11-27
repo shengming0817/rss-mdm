@@ -97,7 +97,14 @@ pub fn initialize(
         let mut result = bounded(
             &audit,
             deadline,
-            initialize_owned(config, compiled.authority, &mut owned, &audit, deadline),
+            initialize_owned(
+                config,
+                compiled.authority,
+                compiled.write_budget,
+                &mut owned,
+                &audit,
+                deadline,
+            ),
         )
         .await;
         owned.kdf.close();
@@ -153,6 +160,7 @@ pub(crate) async fn bounded<T, E: Into<Error>>(
 async fn initialize_owned(
     config: Initialize,
     authority_config: rss_identity_postgres::AuthorityConfig,
+    write_budget: rss_audit_postgres::WriteBudget,
     owned: &mut Resources,
     audit: &RequestAudit,
     cutoff: Deadline,
@@ -231,9 +239,10 @@ async fn initialize_owned(
     .await?;
     owned.source_runtime = Some(source_runtime.clone());
     let budget = rss_mdm_audit_integration::budget::AuditBudget::until(cutoff);
-    let store = rss_mdm_audit_integration::AuditStore::new(
+    let store = rss_mdm_audit_integration::AuditStore::with_budget(
         database.clone(),
         config.audit.integrity()?,
+        write_budget,
         source_runtime,
         config
             .installation

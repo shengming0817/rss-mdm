@@ -305,29 +305,42 @@ async fn browser_session(
         .send()
         .await?
         .error_for_status()?;
-    let issued = response
+    let cookies = response
         .headers()
         .get_all("set-cookie")
         .iter()
-        .filter_map(|h| h.to_str().ok())
-        .filter_map(|h| {
-            h.split(';')
-                .next()?
-                .strip_prefix("__Host-identity-session=")
-        })
-        .next()
+        .map(|v| v.to_str())
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(cookies.len(), 2);
+    assert!(
+        cookies.contains(&"__Host-rss-psso=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0")
+    );
+    let session = cookies
+        .iter()
+        .find_map(|v| v.strip_prefix("__Host-identity-session="))
         .context("Identity session cookie")?;
+    let (issued, flags) = session.split_once(';').context("session flags")?;
+    for flag in ["Path=/", "Secure", "HttpOnly", "SameSite=Lax"] {
+        assert!(flags.split(';').any(|part| part.trim() == flag));
+    }
     let secret = SessionSecret::parse(issued.to_owned())?;
+    let body: Value = response.json().await?;
+    assert_eq!(body["csrfToken"], secret.csrf());
     assert_eq!(
         complete().header("cookie", &cookie).send().await?.status(),
         401
     );
-    Box::pin(c.authority.inspect_session(
+    let checked = Box::pin(c.authority.inspect_session(
         c.execution(),
         SessionSecret::parse(secret.expose().into())?,
         deadline(),
     ))
     .await?;
+    assert_eq!(body["session"]["id"], checked.view().id.to_string());
+    assert_eq!(
+        body["identity"]["principalId"],
+        checked.identity().principal_id.as_uuid().to_string()
+    );
     Ok(secret)
 }
 
