@@ -282,7 +282,10 @@ pub fn capture_inputs(journal: &Journal, values: &[serde_json::Value]) -> Result
                         paths.insert(PathBuf::from(value.as_str().ok_or(Error::Input)?));
                     } else if matches!(
                         name.as_str(),
-                        "key_files" | "credential_keys" | "signing_keys"
+                        "key_files"
+                            | "credential_keys"
+                            | "signing_keys"
+                            | "command_projection_password_files"
                     ) {
                         for value in value.as_object().ok_or(Error::Input)?.values() {
                             paths.insert(PathBuf::from(value.as_str().ok_or(Error::Input)?));

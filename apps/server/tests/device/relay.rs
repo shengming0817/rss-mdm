@@ -11,11 +11,10 @@ use rss_reconcile::ErrorKind;
 async fn device_relay_recovers_its_original() -> Result<()> {
     let c = Context::open("command_projection_outage", &[]).await?;
     let device = windows_control_device(&c).await?;
-    let principal = c
-        .authenticate(&c.account(&[Permission::DeviceWipe]).await?)
-        .await?;
+    let account = c.account(&[Permission::DeviceWipe]).await?;
     let a = Fixture::open(&c).await?;
     let submit = async |id: Uuid| -> Result<()> {
+        let principal = c.authenticate(&account).await?;
         let audit = c.request(&principal)?;
         audit.owned_operation(
             OperationOwner::DeviceControl,

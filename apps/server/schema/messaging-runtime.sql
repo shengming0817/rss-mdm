@@ -159,3 +159,10 @@ COMMIT;
 CREATE INDEX mdm_local_projection_scopes
  ON rss_transactional_messaging.outbox(domain,tenant_id,claim_epoch)
  WHERE domain IN ('mdm-group','mdm-assets') AND status IN ('pending','publishing','dead_letter');
+
+-- Outbound Telemetry and Webhook still share this host runtime. Policy is producer-only.
+GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_scan_budget integer, p_ttl_ms bigint) TO mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION rss_transactional_messaging.next_outbox_wakeup(uuid,text) TO mdm_command_runtime;
+GRANT ALL ON FUNCTION rss_transactional_messaging.outbox_lease(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_extend_ms bigint, p_dr uuid) TO mdm_command_runtime;
+GRANT ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) TO mdm_command_runtime;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE rss_transactional_messaging.inbox TO mdm_command_runtime;

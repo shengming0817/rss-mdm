@@ -371,7 +371,7 @@ docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 
 Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，Group→Scope 和资产事实投影各使用独立的 4 连接池。每条投影通道支持最多 3 个并发队首，同租户最多 2 个，预留 1 条连接续租。App 负责关闭这些池。运行配置必须提供 `scope_group_database`，登录角色为 `mdm_scope_group_consumer`，指向同一产品数据库。部署时为该实际连接角色启用 LOGIN 并设置独立秘密，再执行迁移；安装只授予固定 Group domain / Scope consumer group 的 RSS 消费能力和 Scope 接收状态写权限，不授予 Group 生产者权限。资产/对象事实投影配置 `asset_input_database` 与独立登录角色 `mdm_asset_ingress_consumer`。
 
-命令投影使用 command_database 的主机、库与 CA。command_projection_password_files 按固定的投递登录名指定密码文件，安装器为每个消息域创建对应登录并绑定一个 Inbox 消费组。启用的通道共享进程及租户的领取配额，每个消费连接池另为在途投影保留续租容量。具体登录名见配置示例。
+命令投影使用 command_database 的主机、库与 CA。command_projection_password_files 按固定的投递登录名指定密码文件，安装器为每个消息域创建对应登录并绑定一个 Inbox 消费组。启用的通道共享进程及租户的领取配额，每个消费连接池另为在途投影保留续租容量。宿主命令数据库账号还运行 Telemetry 和 Webhook 出站投递，拥有这两条正式路径所需的 RSS runtime 权限；Policy 写入账号按 producer 准入。具体登录名见配置示例。
 
 该角色仅具备固定 `mdm-assets` domain / `mdm-asset-inputs` consumer 的 RSS 消费权限与 Reconcile runtime 权限，
 不具备资产或各业务 owner 表写权限，也不具备消息生产权限；原子登记的固定输入目标由产品代码绑定。

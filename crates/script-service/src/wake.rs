@@ -80,7 +80,12 @@ pub(crate) async fn resources_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        let device = crate::storage::read_run(tx, id).await?.target.device;
+        let device: Uuid = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT device FROM mdm_script.runs WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND id=$1")
+                .bind(id).fetch_one(c).await
+        })).await?;
+        let device =
+            rss_mdm_agent_wire::DeviceId::try_from(device).map_err(|_| Error::Invariant)?;
         return Ok(rss_mdm_registration_service::lifecycle::resources::device(
             tx.tenant_id(),
             &device,

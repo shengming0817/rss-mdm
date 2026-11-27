@@ -70,7 +70,7 @@ impl Owners {
             &c.inputs.installation.lineage,
         )?;
         let runtime = Arc::new(
-            rss_transactional_messaging_postgres::PgRuntime::connect_producer(
+            rss_transactional_messaging_postgres::PgRuntime::connect(
                 pg.with_pool_limits(0, 4),
                 crate::lifecycle::RuntimeTimer,
                 binding,

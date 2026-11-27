@@ -178,7 +178,7 @@ async fn detail_capabilities_are_authorized_read_only_facts() -> Result<()> {
         sqlx::query("UPDATE mdm_access.authorization_rules SET revision=revision+1,document=jsonb_set(document,'{grants}', $3) WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(account.rule).bind(json!([{"operation":"inventory_read","scope":{"kind":"device","id":other.device}}])).execute(&c.operator).await?;
         // Scope change is reflected by the real current authorization snapshot.
-        assert_eq!(http.get(&c,p,&n.device).await?.0,403);
+        assert_eq!(http.get(&c,Arc::new(c.authenticate(&account).await?),&n.device).await?.0,403);
         Ok(())
     }.await;
     drop(http);

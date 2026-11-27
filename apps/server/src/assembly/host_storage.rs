@@ -120,7 +120,7 @@ impl Storage {
             &config.storage_binding.lineage,
         )?;
         let runtime = Arc::new(
-            PgRuntime::connect_producer(
+            PgRuntime::connect(
                 pg.with_pool_limits(0, background.command_connections),
                 crate::lifecycle::RuntimeTimer,
                 binding,
