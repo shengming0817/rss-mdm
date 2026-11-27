@@ -338,19 +338,16 @@ pub async fn verify(
     unreachable!("bounded quota proof exits with a result")
 }
 
-/// Queue both kinds behind the real projection checkpoint before releasing the worker.
-async fn mixed_page(
+async fn checkpoint(c: &Context, tenant: Uuid) -> sqlx::Result<i64> {
+    sqlx::query_scalar("SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1 AND projection_id='da-inventory'")
+        .bind(tenant).fetch_one(&c.operator).await
+}
+
+async fn pause_projection(
     c: &Context,
-    peer: &reqwest::Client,
-    base: &str,
-    mut status: da::StatusReport,
-    mut application: da::ApplicationReport,
-) -> Result<()> {
-    use anyhow::{Context as _, ensure};
-    let tenant = Uuid::parse_str(&c.tenant.to_string())?;
-    let checkpoint = || {
-        sqlx::query_scalar::<_,i64>("SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1 AND projection_id='da-inventory'").bind(tenant).fetch_one(&c.operator)
-    };
+    tenant: Uuid,
+) -> Result<(i64, sqlx::Transaction<'static, sqlx::Postgres>)> {
+    use anyhow::Context as _;
     tokio::time::timeout(Duration::from_secs(20),async{
         loop{
             let caught:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM rss_da.report_history WHERE tenant_id=$1 AND delivery_pending) AND (SELECT position FROM rss_projection.checkpoints WHERE tenant_id=$1 AND projection_id='da-inventory')=(SELECT last_position FROM rss_observation.journals WHERE tenant_id=$1)").bind(tenant).fetch_one(&c.operator).await?;
@@ -358,12 +355,7 @@ async fn mixed_page(
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }).await??;
-    let before = checkpoint().await?;
-    sqlx::raw_sql(include_str!(
-        "../../../../hack/test-support/inventory-pages.sql"
-    ))
-    .execute(&c.operator)
-    .await?;
+    let before = checkpoint(c, tenant).await?;
     let mut gate = c.operator.begin().await?;
     sqlx::query("LOCK TABLE rss_projection.checkpoints IN ACCESS EXCLUSIVE MODE")
         .execute(&mut *gate)
@@ -382,6 +374,25 @@ async fn mixed_page(
         .bind(tenant)
         .execute(&c.operator)
         .await?;
+    Ok((before, gate))
+}
+
+/// Queue both kinds behind the real projection checkpoint before releasing the worker.
+async fn mixed_page(
+    c: &Context,
+    peer: &reqwest::Client,
+    base: &str,
+    mut status: da::StatusReport,
+    mut application: da::ApplicationReport,
+) -> Result<()> {
+    use anyhow::{Context as _, ensure};
+    let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+    sqlx::raw_sql(include_str!(
+        "../../../../hack/test-support/inventory-pages.sql"
+    ))
+    .execute(&c.operator)
+    .await?;
+    let (before, gate) = pause_projection(c, tenant).await?;
     status.sequence += 10;
     let large = status.clone();
     let mut small = status;
@@ -410,7 +421,7 @@ async fn mixed_page(
     gate.commit().await?;
     tokio::time::timeout(Duration::from_secs(25), async {
         loop {
-            if checkpoint().await? == before + 3 {
+            if checkpoint(c, tenant).await? == before + 3 {
                 return Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -434,6 +445,55 @@ async fn mixed_page(
     eprintln!("da_formal_mixed_pages coordinates={rows:?}, checkpoint_base={before}");
     sqlx::raw_sql("DROP TRIGGER t2_inventory_page ON rss_projection.checkpoints; DROP FUNCTION public.t2_inventory_page(); DROP TABLE public.t2_inventory_pages").execute(&c.operator).await?;
     Ok(())
+}
+
+/// Resume the two pinned reports, then verify the configured 65-row page with genuine pending input.
+pub(super) async fn configured_page(
+    c: &Context,
+    runtime_file: &std::path::Path,
+    peer: &reqwest::Client,
+    base: &str,
+    device: &da::Registration,
+) -> Result<()> {
+    const ROWS: u32 = 65;
+    let mut config: rss_da_app::config::Config = rss_da_app::config::load(runtime_file)?;
+    config.projection_batch = ROWS;
+    config.reports.history_count = ROWS;
+    config.reports.reports_per_minute = ROWS;
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let host = tokio::spawn(rss_da_app::host::serve(config, async move {
+        stopped.await.map_err(std::io::Error::other)
+    }));
+    let result = async {
+        let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+        let (before, gate) = pause_projection(c, tenant).await?;
+        let document: serde_json::Value = sqlx::query_scalar(
+            "SELECT document FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2 AND kind='status'",
+        ).bind(tenant).bind(device.device.into_uuid()).fetch_one(&c.operator).await?;
+        let mut report: da::StatusReport = serde_json::from_value(document)?;
+        for _ in 0..ROWS {
+            report.sequence += 1;
+            material::success::<serde_json::Value>(
+                peer.post(format!("{base}/status-reports")).json(&report).send().await?
+            ).await?;
+        }
+        gate.commit().await?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while checkpoint(c, tenant).await? < before + i64::from(ROWS) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        }).await??;
+        let receipts: (i64,i64) = sqlx::query_as(
+            "SELECT count(*),count(DISTINCT r.xmin::text) FROM rss_observation.batches b JOIN rss_projection.receipts r ON r.tenant_id=b.tenant_id AND r.projection_id='da-inventory' AND r.event_id=encode(b.fingerprint,'hex') WHERE b.tenant_id=$1 AND b.log_position>$2"
+        ).bind(tenant).bind(before).fetch_one(&c.operator).await?;
+        anyhow::ensure!(receipts == (i64::from(ROWS), 1), "configured {ROWS}-row page produced {receipts:?}");
+        eprintln!("da_configured_page rows={ROWS} receipts={} writer_xids={}", receipts.0,receipts.1);
+        Ok(())
+    }.await;
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(50), host).await???;
+    result
 }
 
 /// A second owner fences this tenant. The original serving process must stop clearing its pins.

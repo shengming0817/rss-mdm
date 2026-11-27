@@ -294,7 +294,8 @@ impl Worker {
             let page =
                 rss_projection::PageBudget::new(rows, rss_projection::Event::MAX_PAYLOAD_BYTES)
                     .expect("positive reference budget");
-            let limit = rss_projection::RunLimit::new(page, 64).expect("positive pass");
+            let limit = rss_projection::RunLimit::new(page, u64::from(max_rows.get()))
+                .expect("positive pass");
             let started = rss_projection::Timer::now(&self.clock);
             let report = self.project(&stop, limit).await;
             let healthy = !matches!(&report.stop, rss_projection::Stop::Failed(_));
@@ -347,7 +348,7 @@ impl Worker {
             }
             if healthy {
                 let deadline = Deadline::at(rss_observation::Clock::now(&self.clock) + PASS);
-                for _ in 0..64 {
+                for _ in 0..max_rows.get() {
                     let delivery = tokio::select! {
                         biased;
                         ()=stop.cancelled()=>return Ok(()),
