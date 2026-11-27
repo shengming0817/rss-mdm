@@ -75,8 +75,11 @@ pub async fn verify(
                 .unwrap(),
         }
     });
+    // The registration, browser and cold-restore clients all originate at the same loopback peer.
+    let mut identity_policy = example["identity_policy"].clone();
+    identity_policy["source_attempts"] = 64.into();
     let value = serde_json::json!({
-        "identity_policy":example["identity_policy"],
+        "identity_policy":identity_policy,
         "http":http,
         "installation":{"instance":c.inputs.installation.instance_id,"tenant":c.tenant.to_string(),
           "management_tenant":management,"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1},

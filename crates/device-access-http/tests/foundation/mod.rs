@@ -39,7 +39,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let protocol = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let browser_origin = format!("https://localhost:{}", browser.local_addr()?.port());
     let device_origin = format!("https://localhost:{}", protocol.local_addr()?.port());
-    let c = Context::open(browser_origin).await?;
+    let mut c = Context::open(browser_origin).await?;
     admission::verify_and_reject_drift(&c).await?;
     let material = material::Material::new(&c).await?;
     let registration = material.assemble(&c, &device_origin).await?;
@@ -730,7 +730,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         .await
         .context("DA Inventory page settlement and restart")?;
 
-    Box::pin(recovery::verify(
+    let recovered = Box::pin(recovery::verify(
         &c.inputs,
         &material,
         installed_host,
@@ -747,9 +747,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         },
     ))
     .await
-    .context("DA cold recovery proof")?;
+    .context("DA cold recovery proof");
+    c.oidc
+        .take()
+        .context("standalone Keycloak fixture")?
+        .stop()
+        .await?;
     drop(material);
-    Ok(())
+    recovered
 }
 
 async fn unknown_recovery(

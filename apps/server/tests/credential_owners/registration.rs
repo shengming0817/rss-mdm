@@ -259,7 +259,7 @@ async fn embedded_status(
         assert_eq!(status["deployment"], "unobserved");
         let employee_device =
             register_employee_device(c, &client, &base, &origin, &provider, &admin).await?;
-        Box::pin(embedded_step_up(
+        let ceremony = Box::pin(embedded_step_up(
             c,
             &client,
             &base,
@@ -268,7 +268,9 @@ async fn embedded_status(
             &oidc,
         ))
         .await
-        .context("embedded OIDC employee operation")?;
+        .context("embedded OIDC employee operation");
+        oidc.stop().await?;
+        ceremony?;
         Box::pin(lifecycle_http(
             c, &client, &base, &origin, &provider, &admin, agent,
         ))

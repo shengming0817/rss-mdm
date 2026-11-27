@@ -123,10 +123,26 @@ fn authentication(method: &str, path: &str) -> rss_mdm_http_contract::authentica
         },
     }
 }
-async fn authenticate(
-    State(s): State<Arc<Services>>,
+async fn authenticate(State(s): State<Arc<Services>>, request: Request, next: Next) -> Response {
+    let bearer = request.headers().contains_key("authorization")
+        && request
+            .extensions()
+            .get::<axum::extract::MatchedPath>()
+            .is_some_and(|p| bearer_allowed(p.as_str()));
+    let mut response = authenticate_request(s, request, next, bearer).await;
+    if bearer && response.status() == axum::http::StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            axum::http::HeaderValue::from_static("Bearer"),
+        );
+    }
+    response
+}
+async fn authenticate_request(
+    s: Arc<Services>,
     mut request: Request,
     next: Next,
+    bearer: bool,
 ) -> Response {
     let Some((cutoff, cancellation)) =
         rss_mdm_identity_http::settlement::lifetime(request.extensions())
@@ -154,12 +170,7 @@ async fn authenticate(
         return Error::Forbidden.into_response();
     }
     let authenticated = if headers.contains_key("authorization") {
-        let path = request
-            .extensions()
-            .get::<axum::extract::MatchedPath>()
-            .map(|v| v.as_str())
-            .unwrap_or_default();
-        if !bearer_allowed(path) {
+        if !bearer {
             return Error::Forbidden.into_response();
         }
         let Some(address) = request
@@ -194,18 +205,7 @@ async fn authenticate(
     };
     let session = match authenticated {
         Ok(s) => s,
-        Err(error) => {
-            let mut response = rss_mdm_identity_http::HttpError::from(error).into_response();
-            if headers.contains_key("authorization")
-                && response.status() == axum::http::StatusCode::UNAUTHORIZED
-            {
-                response.headers_mut().insert(
-                    axum::http::header::WWW_AUTHENTICATE,
-                    axum::http::HeaderValue::from_static("Bearer"),
-                );
-            }
-            return response;
-        }
+        Err(error) => return rss_mdm_identity_http::HttpError::from(error).into_response(),
     };
     let audit = request.extensions().get::<RequestAudit>().cloned();
     let deadline = cutoff.instant();

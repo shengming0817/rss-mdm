@@ -6,6 +6,7 @@ pub async fn access(c: &Context) -> Result<()> {
         registration::access_contract(DA),
         registration::enrollment_access_contract(DA),
         rss_mdm_authorization_service::access_contract(DA),
+        rss_mdm_authorization_service::session::PLATFORM_SUBJECT_ACCESS,
         rss_mdm_agent_channel::access_contract(DA),
         rss_mdm_task_trust::access_contract(DA),
         rss_mdm_pki_service::access_contract(DA),

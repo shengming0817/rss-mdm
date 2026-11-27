@@ -32,7 +32,7 @@ pub struct Keycloak {
     info: Value,
     origin: String,
     provider: std::sync::OnceLock<Uuid>,
-    _process: Child,
+    process: Child,
 }
 impl Keycloak {
     pub async fn start(parent: &Path, origin: &str) -> Result<Self> {
@@ -55,8 +55,14 @@ impl Keycloak {
             info: serde_json::from_str(&ready)?,
             origin: origin.into(),
             provider: Default::default(),
-            _process: process,
+            process,
         })
+    }
+    pub async fn stop(mut self) -> Result<()> {
+        drop(self.process.stdin.take());
+        let exit = tokio::time::timeout(Duration::from_secs(60), self.process.wait()).await??;
+        ensure!(exit.success(), "Keycloak shutdown failed");
+        Ok(())
     }
     pub fn configure(&self, config: &mut Value, tenant: &str) {
         let endpoint = json!({"issuer":self.info["issuer"],"client_id":"host","tenant_id":tenant});
