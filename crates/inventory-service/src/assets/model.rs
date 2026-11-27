@@ -443,7 +443,6 @@ pub struct QualityRun {
     pub run_id: Uuid,
     pub sequence: i64,
     pub result: crate::collection::RunResult,
-    pub delivery_pending: bool,
     pub fields: Vec<QualityField>,
 }
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]

@@ -23,7 +23,7 @@ use sqlx::{
 use std::{
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -37,7 +37,8 @@ pub struct Policy {
     drain: Duration,
     delivery: BatchLimit,
     delivery_bytes: i64,
-    run: RunLimit,
+    max_page: BatchLimit,
+    max_events: std::num::NonZeroU64,
 }
 impl Policy {
     pub fn new(
@@ -66,11 +67,8 @@ impl Policy {
             drain,
             delivery_bytes,
             delivery: BatchLimit::new(delivery).map_err(|_| Error::Malformed)?,
-            run: RunLimit::new(
-                BatchLimit::new(batch).map_err(|_| Error::Malformed)?,
-                events,
-            )
-            .map_err(|_| Error::Malformed)?,
+            max_page: BatchLimit::new(batch).map_err(|_| Error::Malformed)?,
+            max_events: std::num::NonZeroU64::new(events).ok_or(Error::Malformed)?,
         })
     }
 }
@@ -98,6 +96,25 @@ pub enum ReceiptStatus {
     Expired,
     NotFound,
     NoBatch,
+}
+/// Observation receipt state without report data; safe for operation diagnostics.
+#[derive(Clone, Copy, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptState {
+    Found,
+    Expired,
+    NotFound,
+    NoBatch,
+}
+impl ReceiptStatus {
+    pub fn state(&self) -> ReceiptState {
+        match self {
+            Self::Found { .. } => ReceiptState::Found,
+            Self::Expired => ReceiptState::Expired,
+            Self::NotFound => ReceiptState::NotFound,
+            Self::NoBatch => ReceiptState::NoBatch,
+        }
+    }
 }
 #[derive(Clone, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct DeliveryStatus {
@@ -378,15 +395,49 @@ pub enum WorkerFailure {
     DeliveryProgress,
     PendingReports,
     ProjectionInitialize,
+    HistoryExpired,
     ProjectionTakeover,
     ProjectionCompose,
     ProjectionRun,
 }
 
-type ProjectionHandles = (
-    Arc<PgSource<Clock>>,
-    rss_projection_postgres::PgProjection<rss_mdm_inventory_postgres::Inventory<Clock>>,
-);
+struct ProjectionHandles {
+    source: Arc<PgSource<Clock>>,
+    execution: rss_projection_postgres::PgProjection<rss_mdm_inventory_postgres::Inventory<Clock>>,
+    page_size: AtomicU32,
+}
+impl ProjectionHandles {
+    fn limit(&self, policy: Policy) -> RunLimit {
+        let batch = BatchLimit::new(self.page_size.load(Ordering::Relaxed))
+            .expect("bounded projection page");
+        RunLimit::new(batch, policy.max_events.get()).expect("nonzero run budget")
+    }
+    fn next_page(&self, report: &rss_projection::Report, policy: Policy, elapsed: bool) {
+        use rss_projection::{ErrorKind, Stop};
+        match &report.stop {
+            Stop::Failed(e)
+                if e.kind() == ErrorKind::Deadline
+                    || e.diagnostic().and_then(|d| d.sqlstate()) == Some("57014")
+                    || (elapsed
+                        && matches!(
+                            e.kind(),
+                            ErrorKind::CommitUnknown
+                                | ErrorKind::RollbackFailed
+                                | ErrorKind::Unavailable
+                        )) =>
+            {
+                // The next run reloads the durable checkpoint, including after a lost
+                // COMMIT response. Only shrink its page, never infer transaction state.
+                let size = self.page_size.load(Ordering::Relaxed);
+                self.page_size.store(size.div_ceil(2), Ordering::Relaxed);
+            }
+            Stop::CaughtUp => self
+                .page_size
+                .store(policy.max_page.get(), Ordering::Relaxed),
+            _ => {}
+        }
+    }
+}
 
 pub struct InventoryRuntime {
     observation: Arc<Observation<Clock>>,
@@ -668,7 +719,23 @@ impl InventoryRuntime {
         let handles = match cached {
             Some(handles) => handles,
             None => {
-                let handles = Arc::new(self.projection_handles(current, token).await?);
+                let handles = Arc::new(self.projection_handles(current, token).await.inspect_err(
+                    |failure| {
+                        if matches!(failure, WorkerFailure::HistoryExpired) {
+                            self.latest_projection
+                                .lock()
+                                .expect("projection observation")
+                                .insert(
+                                    tenant_id,
+                                    diagnostics::ProjectionObservation {
+                                        run: None,
+                                        started_at: self.clock.now.now(),
+                                        last_completed_at: None,
+                                    },
+                                );
+                        }
+                    },
+                )?);
                 self.projections
                     .lock()
                     .expect("projection handles")
@@ -679,7 +746,6 @@ impl InventoryRuntime {
         if token.is_cancelled() {
             return Ok(());
         }
-        let (source, execution) = handles.as_ref();
         let deadline = self.clock.deadline();
         let control = Control::new(
             &self.clock,
@@ -688,7 +754,12 @@ impl InventoryRuntime {
                 .saturating_duration_since(self.clock.origin),
             &drain,
         );
-        let run = rss_projection::run(source.as_ref(), execution, &control, self.clock.policy.run);
+        let run = rss_projection::run_batched(
+            handles.source.as_ref(),
+            &handles.execution,
+            &control,
+            handles.limit(self.clock.policy),
+        );
         {
             let mut latest = self
                 .latest_projection
@@ -698,13 +769,19 @@ impl InventoryRuntime {
             latest.insert(
                 tenant_id,
                 diagnostics::ProjectionObservation {
-                    run: run.observation(),
+                    run: Some(run.observation()),
                     started_at: self.clock.now.now(),
                     last_completed_at,
                 },
             );
         }
-        let result = run.await.into_result();
+        let report = run.await;
+        handles.next_page(
+            &report,
+            self.clock.policy,
+            self.clock.now.now() >= deadline.instant(),
+        );
+        let result = report.into_result();
         if let Some(latest) = self
             .latest_projection
             .lock()
@@ -739,13 +816,7 @@ impl InventoryRuntime {
         &self,
         binding: ExecutionBinding,
         token: &CancellationToken,
-    ) -> Result<
-        (
-            Arc<PgSource<Clock>>,
-            rss_projection_postgres::PgProjection<rss_mdm_inventory_postgres::Inventory<Clock>>,
-        ),
-        WorkerFailure,
-    > {
+    ) -> Result<ProjectionHandles, WorkerFailure> {
         let scope = rss_mdm_inventory_postgres::projection_scope(binding.tenant());
         let source = Arc::new(
             PgSource::new(
@@ -764,16 +835,45 @@ impl InventoryRuntime {
         );
         let control = Control::new(&self.clock, self.clock.startup_cutoff(), token);
         let definition = rss_mdm_inventory_postgres::definition();
-        self.projection
-            .initialize(
-                &scope,
-                &definition,
-                GenerationStart::beginning(),
-                ReplayBound::Live,
-                &control,
-            )
+        // Revision 4 exposes the durable generation through receipt_status. Both pending
+        // and settled carry the same checkpoint, independent of the queried event ID.
+        let probe =
+            rss_projection::ReceiptQuery::new(scope.clone(), definition, scope.generation())
+                .map_err(|_| WorkerFailure::ProjectionInitialize)?;
+        match self
+            .projection
+            .receipt_status(&probe, &control)
             .await
-            .map_err(|_| WorkerFailure::ProjectionInitialize)?;
+            .map_err(|_| WorkerFailure::ProjectionInitialize)?
+        {
+            rss_projection::ReceiptStatus::Uninitialized => {
+                if source
+                    .bounds(&control)
+                    .await
+                    .map_err(|_| WorkerFailure::ProjectionInitialize)?
+                    .expired_through
+                    .is_some()
+                {
+                    return Err(WorkerFailure::HistoryExpired);
+                }
+                self.projection
+                    .initialize(
+                        &scope,
+                        &definition,
+                        GenerationStart::beginning(),
+                        ReplayBound::Live,
+                        &control,
+                    )
+                    .await
+                    .map_err(|_| WorkerFailure::ProjectionInitialize)?;
+            }
+            rss_projection::ReceiptStatus::Pending(checkpoint)
+            | rss_projection::ReceiptStatus::Settled(checkpoint) => {
+                if checkpoint.bound != ReplayBound::Live {
+                    return Err(WorkerFailure::ProjectionInitialize);
+                }
+            }
+        }
         let claim = self
             .projection
             .takeover(&scope, &definition, &control)
@@ -786,7 +886,11 @@ impl InventoryRuntime {
                 rss_mdm_inventory_postgres::Inventory::new(source.clone(), binding),
             )
             .map_err(|_| WorkerFailure::ProjectionCompose)?;
-        Ok((source, execution))
+        Ok(ProjectionHandles {
+            source,
+            execution,
+            page_size: AtomicU32::new(self.clock.policy.max_page.get()),
+        })
     }
     /// Called only after product permission and current scope resolution. Inspect authoritative RSS facts.
     pub async fn inspect(
@@ -826,6 +930,10 @@ impl InventoryRuntime {
                 .lookup(&grant, batch.id(), deadline)
                 .await
                 .map_err(|_| unavailable())?;
+            if matches!(&receipt,rss_observation::LookupOutcome::Found(record) if record.scope()!=scope || record.batch()!=batch)
+            {
+                return Err(unavailable());
+            }
             let event = batch
                 .fingerprint(scope)
                 .map_err(|_| unavailable())?

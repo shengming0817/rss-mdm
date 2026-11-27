@@ -24,6 +24,17 @@ pub async fn verify(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<rss_da_app::Result<()>>,
 )> {
+    // The standalone host has no Inventory worker. Verify its real logins through
+    // pg_catalog OIDs so resolving a qualified function name needs no schema grant.
+    for role in ["da_access", "da_identity_runtime"] {
+        let login = c.inputs.database(role).pool().await?;
+        let permitted: bool = sqlx::query_scalar(
+            "SELECT has_function_privilege(current_user,p.oid,'EXECUTE') FROM pg_proc p
+             JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='rss_observation' AND p.proname='reclaim'")
+            .fetch_one(&login).await?;
+        assert!(!permitted);
+        login.close().await;
+    }
     let management: Uuid =
         sqlx::query_scalar("SELECT management_tenant_id FROM rss_da.authorization_installation")
             .fetch_one(&c.operator)

@@ -297,8 +297,10 @@ class Candidate:
         self.private_values=[PASSWORD,"candidate-fixture"]
     def command(self,*args,stage,**kwargs):
         return docker(*args,stage=stage,**kwargs)
+    def psql_args(self):
+        return ("exec", "-i", self.pg, "psql", "-X", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "mdm_test")
     def sql(self,statement):
-        return self.command("exec","-i",self.pg,"psql","-X","-At","-v","ON_ERROR_STOP=1","-U","postgres","-d","mdm_test",input=statement,timeout=15,stage=Stage.SQL)
+        return self.command(*self.psql_args(),input=statement,timeout=15,stage=Stage.SQL)
     def run_once(self,*args,stage,**kwargs):
         return run_owned(self.created,self.name,*args,stage=stage,**kwargs)
     def register_private_files(self):

@@ -149,6 +149,12 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
                     .unwrap()
                     .iter()
                     .all(|(key, value)| &body["originalResult"]["value"][key] == value);
+            if *owner == "collection" {
+                assert_eq!(
+                    body["executionEvidence"],
+                    json!({"availability":"available","value":{"owner":"inventory_report","observation":"no_batch","projection":"not_applicable"}})
+                );
+            }
             if *owner == "enterprise_configuration" {
                 let receipt = &body["originalResult"]["value"];
                 let mut summary =

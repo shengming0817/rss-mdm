@@ -20,34 +20,177 @@ pub struct RunView {
     pub finished_at: Option<i64>,
     pub result: crate::collection::RunResult,
     pub reason: Option<crate::collection::FinishReason>,
-    pub delivery_pending: bool,
     pub fields: Vec<QualityField>,
     #[serde(skip)]
     array_fields: BTreeSet<FieldKey>,
 }
+struct RunEvidence {
+    id: Uuid,
+    row: sqlx::postgres::PgRow,
+    tenant: TenantId,
+    device: rss_mdm_agent_wire::DeviceId,
+}
+
+impl RunEvidence {
+    async fn read(
+        tx: &mut PgTransaction<'_>,
+        device: rss_mdm_agent_wire::DeviceId,
+        id: Uuid,
+        fields: bool,
+    ) -> Result<Option<Self>> {
+        let tenant = tx.tenant_id();
+        let row = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("SELECT c.device, c.source, c.sequence, c.started_at, c.sealed_at, c.result, c.reason, c.scope, c.batch, c.digest, c.progress_version, CASE WHEN v.metadata_bytes <= 67108864 THEN CAST(v.metadata AS text) END AS metadata FROM mdm_access.collection_runs AS c LEFT JOIN mdm_access.collection_versions AS v ON $4 AND (v.tenant_id, v.version) = (c.tenant_id, c.progress_version) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
+                .bind(tenant.to_string()).bind(id).bind(device.into_uuid()).bind(fields).fetch_optional(c).await
+        })).await?;
+        Ok(row.map(|row| Self {
+            id,
+            row,
+            tenant,
+            device,
+        }))
+    }
+
+    fn scope(&self) -> Result<rss_observation::Scope> {
+        let scope: rss_observation::Scope =
+            stored(serde_json::from_str(self.row.try_get("scope")?))?;
+        if scope.tenant() != self.tenant || scope.registration().as_str() != self.device.to_string()
+        {
+            return Err(Error::Unavailable(Failure::CollectionQuery).into());
+        }
+        Ok(scope)
+    }
+
+    async fn delivery(
+        &self,
+        inventory: &crate::inventory_runtime::InventoryRuntime,
+        definition: Option<&rss_mdm_inventory::CollectionDefinition>,
+        control: (
+            rss_request_context::Deadline,
+            rss_request_context::Cancellation<'_>,
+        ),
+    ) -> Result<crate::inventory_runtime::DeliveryStatus> {
+        let Some(bytes) = self.row.try_get::<Option<&[u8]>, _>("batch")? else {
+            return Ok(crate::inventory_runtime::DeliveryStatus::NO_BATCH);
+        };
+        let batch = stored(rss_observation::Batch::decode(bytes))?;
+        let scope = self.scope()?;
+        if let Some(definition) = definition {
+            let reference = stored(rss_mdm_inventory::CollectionReference::from_batch(
+                definition, &batch,
+            ))?;
+            if reference.digest() != self.row.try_get::<&str, _>("progress_version")? {
+                return Err(Error::Unavailable(Failure::CollectionQuery).into());
+            }
+        }
+        if batch.id().as_str() != self.id.to_string()
+            || u64::try_from(self.row.try_get::<i64, _>("sequence")?).ok() != Some(batch.sequence())
+            || crate::collection::store::fingerprint(&batch, &scope)?
+                != self.row.try_get::<&str, _>("digest")?
+            || batch.encode() != bytes
+        {
+            return Err(Error::Unavailable(Failure::CollectionQuery).into());
+        }
+        Ok(inventory
+            .inspect_report(self.tenant, &scope, &batch, control.0, control.1)
+            .await?)
+    }
+}
+
+pub struct ReportDiagnostics {
+    pub original: rss_mdm_audit_integration::operation::ReceiptSummary,
+    pub delivery: std::result::Result<crate::inventory_runtime::DeliveryStatus, Error>,
+}
+
 impl AssetService {
-    /// Only non-field collection evidence is exposed; inventory values retain their own scopes.
+    /// Read the original authorized collection before observing current delivery evidence.
     pub async fn collection_receipt(
         &self,
-        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
-    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
-    {
-        crate::transaction::inspect(&self.runtime,p.binding(),(self,p,device),|ctx,tx|Box::pin(async move{
-            let(_,p,device)=*ctx;
-            query_authority(tx,p).await?.require(p,rss_mdm_authorization_service::Permission::InventoryRead,Some(device))?;
-            let tenant=p.binding().tenant().to_string();let device_key=device.into_uuid();
-            let row=tx.with_connection(move|c|Box::pin(async move{
-                sqlx::query("SELECT c.started_at, c.sealed_at, c.result FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
-                    .bind(tenant).bind(id).bind(device_key).fetch_optional(c).await
-            })).await?;
-            p.check_live()?;
-            row.map(|row|{
-                let mut value=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                value.object=Some(device.to_string());value.recorded_at=Some(row.try_get("started_at")?);value.completed_at=row.try_get("sealed_at")?;value.state=Some(row.try_get("result")?);value.executions.push(id);Ok(value)
-            }).transpose()
-        }),crate::transaction::TransactionOwner::Assets).await
+    ) -> std::result::Result<Option<ReportDiagnostics>, Error> {
+        let principal = &request.proof;
+        let original = crate::transaction::inspect_budget(
+            &self.runtime,
+            principal.binding(),
+            request.remaining()?,
+            (principal, *device),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (principal, device) = *ctx;
+                    let access =
+                        query_authority_with_lock(tx, principal, AuthorityLock::Shared).await?;
+                    access.require(
+                        principal,
+                        rss_mdm_authorization_service::Permission::InventoryRead,
+                        Some(&device),
+                    )?;
+                    let Some(evidence) = RunEvidence::read(tx, device, id, false).await? else {
+                        return Ok(None);
+                    };
+                    let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    summary.object = Some(device.to_string());
+                    summary.recorded_at = Some(evidence.row.try_get("started_at")?);
+                    summary.completed_at = evidence.row.try_get("sealed_at")?;
+                    summary.state = Some(evidence.row.try_get("result")?);
+                    summary.executions.push(id);
+                    Ok(Some((summary, evidence, access.query_binding(principal)?)))
+                })
+            },
+            crate::transaction::TransactionOwner::Assets,
+        )
+        .await?;
+        let Some((original, evidence, binding)) = original else {
+            return Ok(None);
+        };
+        let remaining = request.remaining()?.timeout();
+        let reserve = remaining - (remaining / 2).min(std::time::Duration::from_secs(1));
+        let probe_cutoff = request.deadline - reserve;
+        let probe = evidence.delivery(
+            &self.inventory,
+            None,
+            (
+                rss_request_context::Deadline::at(probe_cutoff),
+                rss_request_context::Cancellation::observe(request.cancellation.as_ref()),
+            ),
+        );
+        let delivery = tokio::time::timeout_at(probe_cutoff.into(), probe)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::RequestDeadline))
+            .and_then(|result| {
+                result.map_err(|e| match e {
+                    Fault::Request(error) => error,
+                    _ => Error::Unavailable(Failure::CollectionQuery),
+                })
+            });
+        let fresh = request.revalidate().await?;
+        crate::transaction::inspect_budget(
+            &self.runtime,
+            principal.binding(),
+            request.remaining()?,
+            (request, *device, fresh, binding),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (request, device, fresh, binding) = ctx;
+                    let current =
+                        query_authority_with_lock(tx, &request.proof, AuthorityLock::Shared)
+                            .await?;
+                    current.require(
+                        &request.proof,
+                        rss_mdm_authorization_service::Permission::InventoryRead,
+                        Some(device),
+                    )?;
+                    if request.current_binding(&current, fresh.as_ref())? != *binding {
+                        return Err(Error::Forbidden.into());
+                    }
+                    Ok(())
+                })
+            },
+            crate::transaction::TransactionOwner::Assets,
+        )
+        .await?;
+        Ok(Some(ReportDiagnostics { original, delivery }))
     }
     pub(super) async fn collection_run(
         &self,
@@ -67,15 +210,15 @@ impl AssetService {
         {
             return Err(Error::Forbidden.into());
         }
-        let tenant = tx.tenant_id();
-        let device = device.to_owned();
-        let row=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT c.device, c.source, c.sequence, c.started_at, c.sealed_at, c.result, c.reason, c.delivery_pending, c.scope, c.batch, c.digest, c.progress_version, CASE WHEN v.metadata_bytes <= 67108864 THEN CAST(v.metadata AS text) END AS metadata FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.collection_versions AS v ON (v.tenant_id, v.version) = (c.tenant_id, c.progress_version) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
-                .bind(tenant.to_string()).bind(id).bind(device.into_uuid()).fetch_optional(c).await
-        })).await?.ok_or(Error::NotFound)?;
-        let progress: crate::collection::summary::Summary = stored(
-            crate::collection::summary::Summary::decode(row.try_get("metadata")?),
-        )?;
+        let evidence = RunEvidence::read(tx, *device, id, true)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let row = &evidence.row;
+        let coordinate = evidence.scope()?;
+        let progress = stored(crate::collection::summary::Summary::decode(
+            row.try_get("metadata")?,
+        ))?;
+        stored(progress.definition.validate_scope(&coordinate))?;
         let definition = &progress.definition;
         if !definition
             .bindings()
@@ -104,33 +247,9 @@ impl AssetService {
                 received_at: attempt.received_at,
             })
             .collect();
-        let coordinate: rss_observation::Scope =
-            stored(serde_json::from_str(row.try_get("scope")?))?;
-        stored(definition.validate_scope(&coordinate))?;
-        let delivery = if let Some(bytes) = row.try_get::<Option<Vec<u8>>, _>("batch")? {
-            let batch = stored(rss_observation::Batch::decode(&bytes))?;
-            let reference = stored(rss_mdm_inventory::CollectionReference::from_batch(
-                definition, &batch,
-            ))?;
-            if batch.id().as_str() != id.to_string()
-                || batch.sequence() != row.try_get::<i64, _>("sequence")? as u64
-                || reference.digest() != row.try_get::<String, _>("progress_version")?
-                || batch.encode() != bytes
-            {
-                return Err(Error::Unavailable(Failure::CollectionQuery).into());
-            }
-            self.inventory
-                .inspect_report(
-                    tx.tenant_id(),
-                    &coordinate,
-                    &batch,
-                    read_control.0,
-                    read_control.1,
-                )
-                .await?
-        } else {
-            crate::inventory_runtime::DeliveryStatus::NO_BATCH
-        };
+        let delivery = evidence
+            .delivery(&self.inventory, Some(definition), read_control)
+            .await?;
         Ok(RunView {
             epoch: stored(Uuid::parse_str(coordinate.epoch().as_str()))?,
             delivery,
@@ -155,7 +274,6 @@ impl AssetService {
                 .as_deref()
                 .map(crate::collection::FinishReason::parse)
                 .transpose()?,
-            delivery_pending: row.try_get("delivery_pending")?,
             array_fields: definition
                 .bindings()
                 .iter()

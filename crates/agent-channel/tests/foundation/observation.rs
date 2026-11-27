@@ -170,7 +170,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         claim,
         rss_mdm_inventory_postgres::Inventory::new(source.clone(), c.execution()),
     )?;
-    let report = rss_projection::run(
+    let report = rss_projection::run_batched(
         source.as_ref(),
         &execution,
         &control,

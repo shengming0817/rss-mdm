@@ -223,7 +223,7 @@ impl App {
         let (mut applied, mut duplicates, mut filtered) = (0_u64, 0_u64, 0_u64);
         loop {
             let control = Control::new(&self.clock, cutoff, cancel);
-            let report = rss_projection::run(
+            let report = rss_projection::run_batched(
                 &window,
                 &execution,
                 &control,

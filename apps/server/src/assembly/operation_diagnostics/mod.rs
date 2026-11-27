@@ -169,6 +169,30 @@ impl Diagnostics {
         l: &Lookup<'_>,
         da_owner: bool,
     ) -> Result<OperationSections, Error> {
+        if !da_owner && l.owner == O::Collection {
+            let device = l.query.device.as_ref().ok_or(Error::Malformed)?;
+            let Some(report) = self
+                .state
+                .assets
+                .collection_receipt(l.auth, device, l.operation)
+                .await?
+            else {
+                return Ok((Evidence::NotFound, Evidence::NotFound));
+            };
+            let delivery = section(
+                report
+                    .delivery
+                    .map(|status| {
+                        Some(
+                rss_mdm_management_http::execution::operations::Evidence::InventoryReport {
+                    observation: status.receipt.state(), projection: status.projection,
+                }
+            )
+                    })
+                    .map_err(Into::into),
+            )?;
+            return Ok((Evidence::Available(report.original), delivery));
+        }
         let receipt = if da_owner {
             self.da_receipt(l, p).await
         } else {
@@ -462,11 +486,6 @@ impl Diagnostics {
                 .operation_receipt(p, q.device.as_ref().ok_or(Error::Malformed)?, id)
                 .await
                 .map_err(Into::into),
-            O::Collection => s
-                .assets
-                .collection_receipt(p, q.device.as_ref().ok_or(Error::Malformed)?, id)
-                .await
-                .map_err(Into::into),
             O::Policy => {
                 rss_mdm_policy_service::management::read::operation_receipt(&s.policies, p, id)
                     .await
@@ -738,6 +757,7 @@ impl Diagnostics {
                 Ok(Some(result))
             }
             O::Retirement
+            | O::Collection
             | O::PkiSigning
             | O::PkiRevocation
             | O::ScriptInvocation

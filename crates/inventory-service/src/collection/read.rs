@@ -4,7 +4,7 @@ pub async fn latest_quality(
     tenant: String,
     scopes: Vec<String>,
 ) -> Result<Vec<sqlx::postgres::PgRow>, sqlx::Error> {
-    sqlx::query("SELECT DISTINCT ON(r.scope) r.scope,r.id::text,r.sequence,r.result,CASE WHEN v.metadata_bytes<=67108864 THEN v.metadata::text END AS metadata,r.delivery_pending FROM mdm_access.collection_runs r JOIN mdm_access.collection_versions v ON (v.tenant_id,v.version)=(r.tenant_id,r.progress_version) WHERE r.tenant_id=$1::uuid AND r.scope=ANY($2) ORDER BY r.scope,r.sequence DESC,r.id DESC")
+    sqlx::query("SELECT DISTINCT ON(r.scope) r.scope,r.id::text,r.sequence,r.result,CASE WHEN v.metadata_bytes<=67108864 THEN v.metadata::text END AS metadata FROM mdm_access.collection_runs r JOIN mdm_access.collection_versions v ON (v.tenant_id,v.version)=(r.tenant_id,r.progress_version) WHERE r.tenant_id=$1::uuid AND r.scope=ANY($2) ORDER BY r.scope,r.sequence DESC,r.id DESC")
                 .bind(tenant).bind(scopes).fetch_all(c).await
 }
 

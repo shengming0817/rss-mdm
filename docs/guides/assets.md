@@ -211,6 +211,10 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 `GET /api/v1/tenants/{tenant}/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v1/tenants/{tenant}/devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=…` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
 
+采集详情的 `delivery.receipt.status` 区分已接收（`found`）、已过期（`expired`）、尚未找到回执（`not_found`）和未形成报告（`no_batch`）。`delivery.projection` 独立反映投影回执。过期报告仍可有已确认的投影；显示 `unconfirmed` 时，可按原报告 ID 查询，保留原交付身份。任务进度和固定资产切面提供报告 ID，实时回执由采集详情读取。
+
+运行诊断的 `expiredThrough` 是租户日志已释放到的位置，`confirmedPosition` 是当前运行最后确认的位置。出现 `history_expired` 时，保留落后目标的 checkpoint 和业务事实。恢复方在独立恢复库中准备覆盖缺失前缀的业务快照、对应的完整去重回执和一致的保留后缀；开放流量前先核验目标的租户、日志、定义和 checkpoint。普通全库还原会带回既有 generation 及固定起点，重新初始化不能覆盖它。请为恢复的业务前缀准备尚未初始化的投影目标，仅在独立恢复库确认占位 checkpoint 从未前进、没有回执和业务写入时才可移除该空占位。在该库按当前产品固定的 `inventory-projection-v1` 创建实时 generation 并校验基线。正式 worker 接管该 generation，资产查询和报告回执读取同一范围。此流程要求可信的恢复材料；没有完整基线时应保持阻断。
+
 资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v1/tenants/{tenant}/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产切面；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
 
 `MDM_SCOPE_FILE` 包含 `scope` 及安装材料固定的 `target`、`lineage`、`epoch`；投影按原执行代际验证，不从数据库重新读取 epoch。本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v1 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。

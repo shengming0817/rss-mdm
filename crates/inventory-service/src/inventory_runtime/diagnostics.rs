@@ -1,6 +1,6 @@
 //! Read-only observations of the actual Inventory owner. No checkpoint or queue engine.
 use super::*;
-use rss_projection::{ObservationStatus, RunObservation, Source};
+use rss_projection::{ObservationStatus, RunObservation};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Health {
@@ -15,7 +15,8 @@ impl Health {
 }
 #[derive(Clone)]
 pub(super) struct ProjectionObservation {
-    pub run: RunObservation,
+    // None records a refused empty start below the retained journal floor.
+    pub run: Option<RunObservation>,
     pub started_at: Instant,
     pub last_completed_at: Option<Instant>,
 }
@@ -27,8 +28,9 @@ pub enum ProbeFailure {
 }
 pub struct Diagnostics {
     pub delivery: Result<u64, ProbeFailure>,
-    pub source_head: Result<Option<u64>, ProbeFailure>,
+    pub journal: Result<rss_observation_postgres::JournalBounds, ProbeFailure>,
     pub projection: Option<ObservationStatus>,
+    pub baseline_required: bool,
     pub invocation_age_ms: Option<u64>,
     pub completed_age_ms: Option<u64>,
     pub head_age_ms: Option<u64>,
@@ -43,7 +45,7 @@ impl InventoryRuntime {
         let tenant = binding.tenant().to_string();
         let (delivery, head) = tokio::join!(
             tokio::time::timeout_at(cutoff.into(), self.delivery.pending_count(&tenant)),
-            self.source_head(binding, cutoff),
+            self.journal_bounds(binding, cutoff),
         );
         let now = self.clock.now.now();
         let local = self
@@ -56,20 +58,24 @@ impl InventoryRuntime {
             delivery: delivery
                 .map_err(|_| ProbeFailure::Deadline)
                 .and_then(|value| value.map_err(|_| ProbeFailure::Storage)),
-            source_head: head.as_ref().map(|(position, _)| *position).map_err(|e| *e),
+            journal: head.map(|(bounds, _)| bounds),
             head_age_ms: head.ok().map(|(_, at)| age_ms(now, at)),
-            projection: local.as_ref().map(|p| p.run.read()),
+            projection: local
+                .as_ref()
+                .and_then(|p| p.run.as_ref())
+                .map(RunObservation::read),
+            baseline_required: local.as_ref().is_some_and(|p| p.run.is_none()),
             invocation_age_ms: local.as_ref().map(|p| age_ms(now, p.started_at)),
             completed_age_ms: local
                 .and_then(|p| p.last_completed_at)
                 .map(|at| age_ms(now, at)),
         }
     }
-    async fn source_head(
+    async fn journal_bounds(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: Instant,
-    ) -> Result<(Option<u64>, Instant), ProbeFailure> {
+    ) -> Result<(rss_observation_postgres::JournalBounds, Instant), ProbeFailure> {
         let cancel = CancellationToken::new();
         let scope = rss_mdm_inventory_postgres::projection_scope(binding.tenant());
         let source = PgSource::new(
@@ -90,12 +96,11 @@ impl InventoryRuntime {
             cutoff.saturating_duration_since(self.clock.origin),
             &cancel,
         );
-        let head =
-            tokio::time::timeout_at(cutoff.into(), source.high_water(scope.source(), &control))
-                .await
-                .map_err(|_| ProbeFailure::Deadline)?
-                .map_err(|_| ProbeFailure::Storage)?;
-        Ok((head.map(|position| position.get()), self.clock.now.now()))
+        let head = tokio::time::timeout_at(cutoff.into(), source.bounds(&control))
+            .await
+            .map_err(|_| ProbeFailure::Deadline)?
+            .map_err(|_| ProbeFailure::Storage)?;
+        Ok((head, self.clock.now.now()))
     }
 }
 fn age_ms(now: Instant, at: Instant) -> u64 {

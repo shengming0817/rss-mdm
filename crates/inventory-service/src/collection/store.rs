@@ -112,7 +112,7 @@ impl Run {
         self.batch.as_ref()
     }
 }
-pub(super) fn fingerprint(batch: &Batch, scope: &Scope) -> Result<String, Error> {
+pub(crate) fn fingerprint(batch: &Batch, scope: &Scope) -> Result<String, Error> {
     Ok(batch
         .fingerprint(scope)
         .map_err(|_| corrupt())?
