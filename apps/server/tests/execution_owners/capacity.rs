@@ -379,14 +379,19 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
             .len(),
         4096
     );
-    for (field, state, value) in &rows {
+    for ((key, state, value), field) in rows.iter().zip(&fields) {
+        assert_eq!(key, field.key.as_str());
         assert_eq!(state, "known");
-        if field != fields[0].key.as_str() && field != fields[1].key.as_str() {
-            assert_eq!(
-                serde_json::from_str::<Scalar>(value.as_ref().unwrap())?,
-                Scalar::Boolean(true)
-            );
-        }
+        let expected = match &field.value_type {
+            ValueType::Boolean => Scalar::Boolean(true),
+            ValueType::Enum { values } => Scalar::String(values.first().unwrap().clone()),
+            ValueType::Array { .. } => continue,
+            _ => anyhow::bail!("unexpected fixture field"),
+        };
+        assert_eq!(
+            serde_json::from_str::<Scalar>(value.as_ref().unwrap())?,
+            expected
+        );
     }
     let projected = rss_mdm_inventory_postgres::read_in(
         &mut tx,
