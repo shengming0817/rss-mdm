@@ -396,7 +396,9 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     let report = CURRENT
         .scope((scope.clone(), store.round.clone()), execution)
         .await?;
-    if report.converged > 0 {
+    // A confirmed deferral releases the same resource hold as convergence. Give other
+    // due tickets a chance before this target reaches its own reobservation deadline.
+    if report.converged > 0 || report.deferred > 0 {
         store.round.request_scan();
     }
     Ok(())
