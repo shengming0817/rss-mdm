@@ -5,7 +5,9 @@ use std::sync::Arc;
 pub(super) struct Fixture {
     pub(super) resources: Prepared,
     pub(super) service: Arc<rss_mdm_device_service::control::Service>,
-    pub(super) task_reads: Arc<assembly::task_reads::Reads>,
+    pub(super) snapshot: assembly::query_snapshot::QuerySnapshot,
+    pub(super) software: Arc<rss_mdm_software_service::deployment::queries::Queries>,
+    pub(super) device_control: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub(super) devices: Arc<rss_mdm_registration_service::DeviceService>,
 }
 impl Fixture {
@@ -87,30 +89,22 @@ impl Fixture {
                 rss_device_command_postgres::CommandClock::Postgres,
             )
             .await?;
-            let task_reads = assembly::task_reads::assemble(
-                config,
-                storage,
-                protection.clone(),
-                None,
-                false,
-                source.clone(),
-                configuration,
-                software.queries.clone(),
-                registration.materials,
-                queries,
-            );
+            let snapshot = assembly::query_snapshot::QuerySnapshot::new(storage.read_pool.clone());
             let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(
                 c.database.registration(),
                 c.audit.clone(),
             ));
-            Ok((service, task_reads, devices))
+            Ok((service, snapshot, software.queries, queries, devices))
         }
         .await;
-        let (resources, (service, task_reads, devices)) = resources.finish(result).await?;
+        let (resources, (service, snapshot, software, device_control, devices)) =
+            resources.finish(result).await?;
         Ok(Self {
             resources,
             service,
-            task_reads,
+            snapshot,
+            software,
+            device_control,
             devices,
         })
     }

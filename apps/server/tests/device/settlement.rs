@@ -25,7 +25,7 @@ async fn evidence(c: &Context, id: Uuid, expected: i64) -> Result<()> {
     );
     Ok(())
 }
-pub(super) async fn check_create(
+async fn check_create(
     c: &Context,
     fixture: &Fixture,
     proof: &AuthorizedPrincipal,
@@ -84,4 +84,25 @@ pub(super) async fn check_create(
     );
     assert_eq!(outcome, WriteOutcome::Committed);
     evidence(c, id, 1).await
+}
+
+#[tokio::test]
+#[ignore = "T2: device command, receipt, outbox and audit settle on the original transaction"]
+async fn device_creation_settles_with_its_audit_and_receipt() -> Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_device_service::control::device_control::Action;
+    let c = Context::open("device_command_settlement", &[]).await?;
+    let device = windows_control_device(&c).await?;
+    let account = c.account(&[Permission::DeviceWipe]).await?;
+    let proof = c.authenticate(&account).await?;
+    let fixture = Fixture::open(&c).await?;
+    let input = Input {
+        operation_id: Uuid::new_v4(),
+        deadline: time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+        action: Action::Wipe { confirmed: true },
+    };
+    let checked = check_create(&c, &fixture, &proof, &device, &input).await;
+    fixture.close().await?;
+    c.close().await;
+    checked
 }

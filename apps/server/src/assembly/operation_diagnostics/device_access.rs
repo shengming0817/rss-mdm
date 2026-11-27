@@ -49,7 +49,7 @@ impl Diagnostics {
     ) -> Result<
         (
             Evidence<ReceiptSummary>,
-            Evidence<rss_mdm_management_http::execution::operations::Evidence>,
+            Evidence<rss_mdm_management_http::operation_reads::Evidence>,
         ),
         Error,
     > {
@@ -89,7 +89,7 @@ impl Diagnostics {
                                         c, p, &grant, locator,
                                     )
                                     .await
-                                    .map_err(super::super::task_reads::credential_fault)?;
+                                    .map_err(super::super::owner_errors::credential_fault)?;
                                 p.check_live()?;
                                 Ok::<_, Error>(value)
                             })
@@ -115,7 +115,7 @@ impl Diagnostics {
                 (
                     Evidence::Available(result),
                     Evidence::Available(
-                        rss_mdm_management_http::execution::operations::Evidence::Credential(value),
+                        rss_mdm_management_http::operation_reads::Evidence::Credential(value),
                     ),
                 )
             }
@@ -127,7 +127,7 @@ impl Diagnostics {
         p: &AuthorizedPrincipal,
         device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
-    ) -> Result<Evidence<rss_mdm_management_http::execution::operations::Evidence>, Error> {
+    ) -> Result<Evidence<rss_mdm_management_http::operation_reads::Evidence>, Error> {
         let da = self
             .state
             .da
@@ -140,7 +140,7 @@ impl Diagnostics {
             .await
         {
             Ok(value) => Ok(Evidence::Available(
-                rss_mdm_management_http::execution::operations::Evidence::Offboarding(
+                rss_mdm_management_http::operation_reads::Evidence::Offboarding(
                     rss_mdm_device_access_postgres::device_access::lifecycle::DiagnosticProgress {
                         identity: value.operation.identity,
                         devices: value.devices,

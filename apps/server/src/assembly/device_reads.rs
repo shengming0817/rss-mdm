@@ -3,7 +3,11 @@ use rss_mdm_authorization_service::{Permission as Required, context::AuthorizedP
 use rss_mdm_management_http::{Error, enrollment::directory::*};
 use std::sync::Arc;
 pub(crate) struct Devices {
-    pub tasks: Arc<super::task_reads::Reads>,
+    pub snapshot: super::query_snapshot::QuerySnapshot,
+    pub device_control: Arc<rss_mdm_device_service::control::queries::Queries>,
+    pub software: Arc<rss_mdm_software_service::deployment::queries::Queries>,
+    pub content_available: bool,
+    pub recovery_enabled: bool,
     pub devices: Arc<rss_mdm_registration_service::DeviceService>,
     pub windows: bool,
     pub apple: bool,
@@ -13,11 +17,11 @@ impl DeviceReads for Devices {
         &'a self,
         request: &'a rss_mdm_authorization_service::context::RequestAuth,
         device: &'a rss_mdm_agent_wire::DeviceId,
-    ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, DeviceDetail> {
+    ) -> rss_mdm_management_http::Pending<'a, DeviceDetail> {
         let proof = request.proof.as_ref();
         Box::pin(async move {
-            self.tasks
-                .snapshot_registered(
+            self.snapshot
+                .read_registered(
                     request,
                     (self, proof, device),
                     |ctx, c, grant, _, registration| {
@@ -55,13 +59,12 @@ impl DeviceReads for Devices {
                                     .await?,
                             );
                             capabilities.extend(
-                                s.tasks
-                                    .software
+                                s.software
                                     .directory_capabilities_on(
                                         c, p, grant, device, s.windows, s.apple,
                                     )
                                     .await
-                                    .map_err(super::task_reads::software_fault)?
+                                    .map_err(super::owner_errors::software_fault)?
                                     .into_iter()
                                     .map(software_capability),
                             );
@@ -137,7 +140,7 @@ impl Devices {
         } else {
             None
         };
-        let supported = self.tasks.content_available;
+        let supported = self.content_available;
         let result = vec![
             capability(
                 current,
@@ -240,7 +243,7 @@ impl Devices {
             let source =
                 device_control::source_on(c, proof.binding().tenant(), &registration.device)
                     .await
-                    .map_err(super::task_reads::history::execution_fault)?;
+                    .map_err(super::owner_errors::device_control_fault)?;
             if let Some(source) = source {
                 let checks = kinds.map(|action| Check {
                     device: registration.device,
@@ -249,11 +252,10 @@ impl Devices {
                     action,
                 });
                 let states = self
-                    .tasks
-                    .execution
+                    .device_control
                     .control_applicability_on(proof.binding(), c, &checks)
                     .await
-                    .map_err(super::task_reads::history::execution_fault)?;
+                    .map_err(super::owner_errors::device_control_fault)?;
                 (Some(source), states)
             } else {
                 (None, Vec::new())
@@ -267,7 +269,7 @@ impl Devices {
             .enumerate()
             .map(|(index, kind)| {
                 let product = match (source, kind) {
-                    (_, Kind::Lock) => self.apple && self.tasks.recovery_enabled,
+                    (_, Kind::Lock) => self.apple && self.recovery_enabled,
                     (Some(ReportSource::MdmApple), _) => self.apple,
                     (Some(ReportSource::MdmWindows), _) => self.windows,
                     (None, _) => self.apple || self.windows,

@@ -5,7 +5,7 @@ use rss_mdm_policy_service::management::scopes::Qualification;
 pub struct StateServices {
     pub policies: Arc<Policies>,
     pub configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
-    pub tasks: Arc<dyn crate::execution::task_reads::Reads>,
+    pub tasks: Arc<dyn crate::policy_task_reads::Reads>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
 }
 pub async fn preview(
@@ -70,6 +70,6 @@ impl rss_mdm_http_contract::query::WindowOwner for PreviewQuery {
 #[serde(untagged)]
 pub enum PreviewResponse {
     Configuration(rss_mdm_policy_service::configuration::preview::Response),
-    Execution(crate::execution::task_reads::Preview),
+    Execution(crate::policy_task_reads::Preview),
     Telemetry(rss_mdm_telemetry_service::preview::PreviewResponse),
 }

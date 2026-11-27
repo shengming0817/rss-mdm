@@ -19,7 +19,7 @@ pub(crate) struct AgentTasks {
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
 
     pub requests: Arc<super::self_service::Requests>,
-    pub execution: Arc<rss_mdm_device_service::control::Service>,
+    pub device_control: Arc<rss_mdm_device_service::control::Service>,
     pub scripts: Arc<rss_mdm_script_service::ScriptService>,
     pub collections: Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
 }
@@ -349,7 +349,7 @@ impl Tasks for AgentTasks {
                         .await
                         .map_err(credential_fault)?,
                     Owner::Device => self
-                        .execution
+                        .device_control
                         .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
                         .await
                         .map_err(fault)?,
@@ -412,7 +412,7 @@ impl Tasks for AgentTasks {
                     .await
                     .map_err(credential_fault),
                 Owner::Device => self
-                    .execution
+                    .device_control
                     .agent_replay_offer_in(tx, p, signed, audit)
                     .await
                     .map_err(fault),
@@ -463,7 +463,7 @@ impl Tasks for AgentTasks {
                     .await
                     .map_err(credential_fault),
                 Owner::Device => self
-                    .execution
+                    .device_control
                     .agent_replay_event_in(tx, p, task, input, audit)
                     .await
                     .map_err(fault),
@@ -531,7 +531,7 @@ impl Tasks for AgentTasks {
                 }
                 Owner::Device => {
                     let e = self
-                        .execution
+                        .device_control
                         .agent_event_in(tx, p, task, input, audit)
                         .await
                         .map_err(fault)?;

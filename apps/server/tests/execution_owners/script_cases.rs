@@ -140,7 +140,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
     ));
 
     use rss_mdm_authorization_service::Permission;
-    use rss_mdm_management_http::execution::task_reads::{RUNS_SCHEMA, Reads};
+    use rss_mdm_management_http::policy_task_reads::{RUNS_SCHEMA, Reads};
     let account =
         h.c.account(&[Permission::PolicyRead, Permission::OperationRead])
             .await?;
@@ -148,7 +148,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
     let page = RUNS_SCHEMA.page(Some(10), None, 4096)?;
     let codec = rss_mdm_query::cursor::CursorCodec::new(&[3; 32])?;
     let summaries = Reads::runs(
-        h.a.task_reads.as_ref(),
+        h.a.policy_task_reads.as_ref(),
         &h.c.read_auth(proof.clone()),
         &h.c.request(&proof)?,
         policy,
@@ -169,7 +169,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
 #[ignore = "T2: periodic assignment separates historical success, current trigger evidence and scoped read permission without writes"]
 async fn periodic_assignment_keeps_history_separate_from_current_admission() -> Result<()> {
     use rss_mdm_authorization_service::Permission;
-    use rss_mdm_management_http::execution::task_reads::Reads;
+    use rss_mdm_management_http::policy_task_reads::Reads;
     let h = Harness::open().await?;
     let result=async {
         let (policy,version)=h.policy("periodic-assignment").await?;
@@ -184,7 +184,7 @@ async fn periodic_assignment_keeps_history_separate_from_current_admission() -> 
         let query=rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.page(Some(10),None,4096)?;
         let codec=rss_mdm_query::cursor::CursorCodec::new(&[9;32])?;
         let read=||async {
-            Ok::<Value,anyhow::Error>(serde_json::to_value(Reads::assignments(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,policy,&query,&codec).await?)?)
+            Ok::<Value,anyhow::Error>(serde_json::to_value(Reads::assignments(h.a.policy_task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,policy,&query,&codec).await?)?)
         };
         let first=read().await?;
         assert_eq!(first["items"].as_array().unwrap().len(),1);
@@ -210,7 +210,7 @@ async fn periodic_assignment_keeps_history_separate_from_current_admission() -> 
         assert_ne!(version,current);
         let restricted=h.c.account(&[Permission::PolicyRead,Permission::InventoryRead]).await?;
         let restricted=std::sync::Arc::new(h.c.authenticate(&restricted).await?);
-        let restricted=serde_json::to_value(Reads::assignments(h.a.task_reads.as_ref(),&h.c.read_auth(restricted.clone()),&h.c.request(&restricted)?,policy,&query,&codec).await?)?;
+        let restricted=serde_json::to_value(Reads::assignments(h.a.policy_task_reads.as_ref(),&h.c.read_auth(restricted.clone()),&h.c.request(&restricted)?,policy,&query,&codec).await?)?;
         assert_eq!(restricted["items"][0]["execution"],json!({"kind":"restricted"}));
         assert!(restricted["items"][0]["taskAdmission"].is_null());
         assert_eq!(restricted["items"][0]["availability"],next["items"][0]["availability"]);

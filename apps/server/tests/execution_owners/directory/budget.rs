@@ -250,13 +250,18 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
         },
     ));
     let codec = CursorCodec::new(&[8; 32])?;
-    let router = rss_mdm_management_http::execution::http::read_routes()
-        .with_state::<()>(operations.clone())
-        .layer(axum::Extension(codec.clone()))
-        .layer(axum::Extension(h.c.read_auth(proof.clone())))
-        .layer(axum::Extension(h.c.request(&proof)?))
-        .into_axum();
-    let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
+    let make_router = |c: &Context,
+                       proof: Arc<rss_mdm_authorization_service::context::AuthorizedPrincipal>|
+     -> Result<axum::Router> {
+        let routes = rss_mdm_management_http::operation_reads::http::read_routes()
+            .with_state::<()>(operations.clone())
+            .layer(axum::Extension(codec.clone()))
+            .layer(axum::Extension(c.read_auth(proof.clone())))
+            .layer(axum::Extension(c.request(&proof)?))
+            .into_axum();
+        Ok(axum::Router::new().nest("/api/v1/tenants/{tenant}", routes))
+    };
+    let router = make_router(&h.c, proof.clone())?;
     let path = format!("/api/v1/tenants/{}/operations", h.c.tenant);
     let stats_path = format!("{path}/statistics");
     let matching = format!(
@@ -305,6 +310,11 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     // A conflicting owner on a hidden device remains detectable even when the
     // query selects only commands, and even for an id-only response.
     runs(&h.c, version, &hidden, &[command_id]).await?;
+    // The large setup above is outside the new requests' authentication and query budgets.
+    let proof = Arc::new(h.c.authenticate(&account).await?);
+    let request = h.c.read_auth(proof.clone());
+    let audit = h.c.request(&proof)?;
+    let router = make_router(&h.c, proof.clone())?;
     let q = SCHEMA.parse("filter=kind==command&fields=id&limit=1")?;
     assert!(matches!(
         operations.directory(&request, &q, &codec, &audit).await,
@@ -438,10 +448,12 @@ fn directory(h: &Harness, budgets: Budgets) -> Operations {
         apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: h.a.resources.protection.clone(),
         }),
-        tasks: h.a.task_reads.clone(),
+        snapshot: h.a.snapshot.clone(),
+        configuration: h.a.configuration.clone(),
+        software: h.a.software.queries.clone(),
+        device_control: h.a.device_queries.clone(),
         registration: h.a.registration.native.clone(),
         recovery: None,
-        execution: h.a.service.clone(),
     }
 }
 
@@ -477,7 +489,7 @@ async fn independent_statistics(h: &Harness, busy: &DeviceObject, version: Uuid)
             statistics: 4097,
         },
     ));
-    let router = rss_mdm_management_http::execution::http::read_routes()
+    let router = rss_mdm_management_http::operation_reads::http::read_routes()
         .with_state::<()>(operations.clone())
         .layer(axum::Extension(CursorCodec::new(&[8; 32])?))
         .layer(axum::Extension(h.c.read_auth(proof.clone())))

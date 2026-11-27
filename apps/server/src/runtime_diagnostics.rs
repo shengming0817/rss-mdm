@@ -23,7 +23,7 @@ pub(crate) struct RuntimeDiagnostics {
     pub compliance: Arc<rss_mdm_compliance_service::Compliance>,
     pub scope_group_health: Arc<crate::local_delivery::Health>,
     pub(crate) asset_input_health: Arc<crate::local_delivery::Health>,
-    pub execution: Arc<rss_mdm_device_service::control::Service>,
+    pub device_control: Arc<rss_mdm_device_service::control::Service>,
     pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub installation: Arc<rss_mdm_registration_service::installation::Service>,
@@ -261,7 +261,7 @@ impl RuntimeDiagnostics {
                 latest_failure: None,
             });
             let mut control =
-                recovery_component(ComponentName::DeviceControl, &self.execution.health());
+                recovery_component(ComponentName::DeviceControl, &self.device_control.health());
             let mut software =
                 recovery_component(ComponentName::SoftwareDeployment, &self.software.health());
             if let Some(binding) = binding {
@@ -282,7 +282,7 @@ impl RuntimeDiagnostics {
                     self.scopes.input_failed(binding, remaining()),
                     self.compliance.input_failed(binding, remaining()),
                     self.planning.configuration_input_suspended(binding, cutoff),
-                    self.execution.ingress_health(binding, cutoff),
+                    self.device_control.ingress_health(binding, cutoff),
                     self.software.ingress_health(binding, cutoff)
                 );
                 apply_configuration_input(
@@ -343,7 +343,7 @@ impl RuntimeDiagnostics {
                         self.scopes.queue_health(binding, remaining()),
                         self.assets.queue_health(binding, remaining()),
                         self.compliance.queue_health(binding, remaining()),
-                        self.execution.input_pending_count(binding, cutoff),
+                        self.device_control.input_pending_count(binding, cutoff),
                         self.software.input_pending_count(binding, cutoff)
                     );
                     apply_queues(&mut policy, p);

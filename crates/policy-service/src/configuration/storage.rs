@@ -316,14 +316,17 @@ pub async fn association_on(
 }
 
 /// Bounded immutable ownership probe; authorization does not affect persistent membership.
-pub async fn owned_ids_on(
+pub async fn owned_devices_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     ids: &[Uuid],
-) -> std::result::Result<std::collections::BTreeSet<Uuid>, sqlx::Error> {
+) -> std::result::Result<std::collections::BTreeMap<Uuid, Uuid>, sqlx::Error> {
     if ids.len() > 1024 {
         return Err(sqlx::Error::Protocol("ownership batch limit".into()));
     }
-    let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(tenant.to_string()).bind(ids).fetch_all(c).await?;
-    Ok(ids.into_iter().collect())
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT id, device FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND id=ANY($2)",
+    )
+    .bind(tenant.to_string()).bind(ids).fetch_all(c).await?;
+    Ok(rows.into_iter().collect())
 }

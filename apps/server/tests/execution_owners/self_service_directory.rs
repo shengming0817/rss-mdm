@@ -68,7 +68,7 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
         registration: h.a.registration.enrollment.clone(),
         content: None,
         requests: h.a.self_service.clone(),
-        execution: h.a.service.clone(),
+        device_control: h.a.service.clone(),
         scripts: h.a.scripts.clone(),
         collections: h.a.collections.clone(),
     });
