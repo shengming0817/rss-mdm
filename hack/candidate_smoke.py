@@ -101,7 +101,7 @@ def verify_request_slots(browser):
         for connection in held:
             connection.close()
 
-def ingress_capacity(browser, principal, deployed):
+def ingress_capacity(browser, principal, deployed, inventory_report=None):
     profile = f'/api/v1/identity/tenants/{TENANT}/accounts/{principal}/profile'
     status, original = browser.call('GET', profile)
     require(status == 200, 'local profile read')
@@ -183,6 +183,12 @@ def ingress_capacity(browser, principal, deployed):
     definition = dict(key=key, version=1, valueType=dict(kind='enum', values=members),
                       nullable=False, manual=False, sources={'agent.builtin': 0}, platforms=['windows'],
                       sensitivity='standard', unit=None, searchable=False, itemKey=None, timeSeries=None)
+    if inventory_report is not None:
+        # Publish one member of the same complete collection through the management API.
+        definition = json.loads(inventory_report.read_bytes())['fields'][1]
+        key = definition['key']
+        path = f'/api/v1/tenants/{TENANT}/asset-fields/' + key
+        members = definition['valueType']['values']
     change = dict(operationId=str(uuid.uuid4()), expectedRevision=0, input=dict(action='put', definition=definition))
     status, _ = browser.call('PUT', path, change)
     require(status in (200, 202), 'large field publication')
@@ -314,7 +320,8 @@ def installed_capacity_report(deployed, path, call):
                set_config('rss.execution_epoch',e.epoch::text,true)
         FROM rss_transactional_messaging.storage_lineage s JOIN rss_transactional_messaging.tenant_epoch e ON e.tenant_id='{tenant}';
         SELECT count(mdm.append_field_version('{tenant}',f->>'key',1,f))
-          FROM jsonb_array_elements(convert_from(decode('{fields}','base64'),'UTF8')::jsonb) f;
+          FROM jsonb_array_elements(convert_from(decode('{fields}','base64'),'UTF8')::jsonb) f
+          WHERE NOT EXISTS (SELECT FROM mdm.field_versions v WHERE v.tenant_id='{tenant}' AND v.field=f->>'key' AND v.version=1 AND v.definition=f);
         INSERT INTO mdm.collection_definitions
           SELECT (jsonb_populate_record(NULL::mdm.collection_definitions,
              convert_from(decode('{definition}','base64'),'UTF8')::jsonb || jsonb_build_object('tenant_id','{tenant}'))).*;
@@ -439,7 +446,7 @@ def run_smoke(directory,inventory_report=None):
         status,account=administrator.call('POST',tenant+'/accounts',dict(login='scoped',password=PASSWORD))
         require(status==201 and isinstance(account.get('principalId'),str),'candidate scoped account creation')
         verify_request_slots(administrator)
-        memory = ingress_capacity(administrator, account["principalId"], deployed)
+        memory = ingress_capacity(administrator, account["principalId"], deployed,inventory_report)
         browser=Browser(deployed.port,deployed.root/'ca.crt')
         require(browser.call('POST',tenant+'/login',dict(login='scoped',password=PASSWORD))[0]==200,
                 'candidate scoped account login')
