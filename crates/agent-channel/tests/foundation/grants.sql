@@ -33,8 +33,8 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.archive_record(p_op uuid, p_t
 REVOKE ALL ON FUNCTION rss_transactional_messaging.check_execution() FROM PUBLIC;
 GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO da_policy_runtime;
 GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO da_command_runtime;
-REVOKE ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_ttl_ms bigint) FROM PUBLIC;
-GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_ttl_ms bigint) TO da_command_runtime;
+REVOKE ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_scan_budget integer, p_ttl_ms bigint) FROM PUBLIC;
+GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_scan_budget integer, p_ttl_ms bigint) TO da_command_runtime;
 GRANT EXECUTE ON FUNCTION rss_transactional_messaging.next_outbox_wakeup(uuid,text) TO da_command_runtime;
 REVOKE ALL ON FUNCTION rss_transactional_messaging.decode_outbox_message(data bytea) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rss_transactional_messaging.guard_archive_generation() FROM PUBLIC;

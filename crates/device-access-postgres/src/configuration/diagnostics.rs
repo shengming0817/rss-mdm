@@ -179,16 +179,17 @@ impl Service {
                 };
                 if let Some((signed, config)) = qualified {
                     artifact_id = Some(config.operation_id);
+                    let epoch=endpoints::current_da_epoch_in(c,p.tenant_id(),device).await?;
                     let head: Option<serde_json::Value> = sqlx::query_scalar(
-                        "SELECT document FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2 AND kind='application'")
-                        .bind(tenant).bind(device.into_uuid()).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+                        "SELECT document FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2 AND kind='application' AND registration_epoch=$3")
+                        .bind(tenant).bind(device.into_uuid()).bind(epoch).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
                     if let Some(head) = head {
                         let value: da::ApplicationReport = serde_json::from_value(head).map_err(|_| Error::Corrupt)?;
                         if value.artifact == config.operation_id && value.digest == signed.digest { reported = Some(value.state); }
                     }
                     let seen: Option<i64> = sqlx::query_scalar(
-                        "SELECT max((receipt->>'receivedAt')::bigint) FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2")
-                        .bind(tenant).bind(device.into_uuid()).fetch_one(&mut *c).await.map_err(crate::database::db)?;
+                        "SELECT max((receipt->>'receivedAt')::bigint) FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2 AND registration_epoch=$3")
+                        .bind(tenant).bind(device.into_uuid()).bind(epoch).fetch_one(&mut *c).await.map_err(crate::database::db)?;
                     let current: Vec<_> = readbacks.iter().filter(|r| r.backend_artifact == config.operation_id).collect();
                     let verified = !current.is_empty() && current.iter().all(|r| {
                         resolution.configuration.as_ref() == Some(&r.effective)

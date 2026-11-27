@@ -89,6 +89,7 @@ impl InventoryRuntime {
             )
             .map_err(|_| ProbeFailure::Authority)?,
             scope.source().clone(),
+            self.clock.policy.page_bytes,
         )
         .map_err(|_| ProbeFailure::Authority)?;
         let control = rss_projection::Control::new(

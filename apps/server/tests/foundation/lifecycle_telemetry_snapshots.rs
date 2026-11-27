@@ -149,12 +149,12 @@ async fn publish_unrelated(
     verify_queue(store, &first_id, admin).await?;
     interrupt_projection(store, ch, &first, &first_id).await?;
     ensure!(matches!(
-        Box::pin(store.write(&second, cutoff()?)).await,
-        Err(rss_timeseries::Error::Unavailable)
+        Box::pin(store.write(&second, cutoff()?)).await?,
+        Outcome::Unknown
     ));
     assert_eq!(
         store.progress(&second_id, cutoff()?).await?,
-        ProjectionProgress::NotVisible
+        ProjectionProgress::Verified
     );
     let recovered = Box::pin(store.recover(&scope, &authority, cutoff()?)).await?;
     ensure!(
@@ -162,7 +162,7 @@ async fn publish_unrelated(
     );
     ensure!(matches!(
         Box::pin(store.write(&second, cutoff()?)).await?,
-        Outcome::Accepted(_)
+        Outcome::Replay(_)
     ));
     assert_eq!(
         store.progress(&second_id, cutoff()?).await?,

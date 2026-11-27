@@ -353,7 +353,7 @@ class Candidate:
         database=dict(host=self.pg_host,port=5432,name=name,user='postgres',
             password_file='/run/mdm/telemetry-administrator',ca_file='/run/mdm/ca.crt')
         runtime=dict(database,user='r_'+uuid.uuid4().hex,password_file='/run/mdm/telemetry-password')
-        config=dict(resource_id=str(uuid.uuid4()),backend=dict(kind='postgres',database=runtime),connections=2,maintenance=dict(authorization_bytes=65536,rows=4096,buckets=64,step_seconds=6),
+        config=dict(resource_id=str(uuid.uuid4()),backend=dict(kind='postgres',database=runtime,prepare=dict(max_prepare_batches=2,max_prepare_bytes=64*1024*1024)),connections=2,maintenance=dict(authorization_bytes=65536,rows=4096,buckets=64,step_seconds=6),
             cursor_key_file='/run/mdm/telemetry-cursor',ingress=dict(requestBytes=1048576,pendingBatches=64,
             batchesPerMinute=120,bytesPerMinute=8388608),limits=dict(max_points=4096,max_series=4096,
             max_bytes=1048576,replay_micros=86400000000,cursor_micros=60000000))
@@ -533,7 +533,7 @@ class Candidate:
             require(self.sql(prefix_sql) == prefix, 'reentry preserved original unit receipts')
             require(self.sql("SELECT obj_description('rss_observation'::regnamespace, 'pg_namespace'), "
                              "obj_description('rss_projection'::regnamespace, 'pg_namespace')") ==
-                    'rss-observation-postgres:4|rss-projection-postgres:4', 'installed component revisions')
+                    'rss-observation-postgres:5|rss-projection-postgres:5', 'installed component revisions')
             self.management_tenant=self.sql('SELECT management_tenant_id FROM public.mdm_installation')
             self.config['identity']['management_tenant']=self.management_tenant
             private(self.runtime/'config.json',self.config)

@@ -310,9 +310,20 @@ pub async fn current_da_epoch_in(
     tenant: &str,
     device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<uuid::Uuid, Error> {
+    find_da_epoch_in(c, tenant, device)
+        .await?
+        .ok_or(Error::Forbidden)
+}
+
+/// Resolve an active registration for a caller that has already checked its read permission.
+pub async fn find_da_epoch_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<Option<uuid::Uuid>, Error> {
     lock_da_in(c, tenant, device).await?;
     sqlx::query_scalar("SELECT epoch FROM rss_da.devices WHERE tenant_id=$1::uuid AND id=$2 AND rss_da.current_da_registration(id) IS NOT NULL")
-        .bind(tenant).bind(device.into_uuid()).fetch_optional(c).await.map_err(db)?.ok_or(Error::Forbidden)
+        .bind(tenant).bind(device.into_uuid()).fetch_optional(c).await.map_err(db)
 }
 
 /// Shared registrar projection installed only for DA's independent registration profile.

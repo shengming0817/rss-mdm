@@ -49,41 +49,23 @@ async fn release(h: &Harness, page: &Page) -> Result<()> {
         stream: &page.stream,
         cutoff,
     };
-    let role = format!("obs_{}", Uuid::new_v4().simple());
-    let password = Uuid::new_v4().simple().to_string();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE ROLE {role} LOGIN PASSWORD '{password}'; GRANT USAGE ON SCHEMA rss_observation TO {role}; GRANT EXECUTE ON FUNCTION rss_observation.reclaim(text,bigint,bigint,numeric,integer) TO {role}")))
-        .execute(&h.c.operator).await?;
-    let result = async {
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                h.c.inputs
-                    .options(&h.c.profile, "mdm_runtime")?
-                    .username(&role)
-                    .password(&password),
-            )
-            .await?;
-        let maintenance = rss_observation_postgres::PgMaintenance::new(
-            pool.clone(),
-            page.clock.clone(),
-            deadline,
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            h.c.inputs
+                .options(&h.c.profile, "mdm_runtime")?
+                .username("mdm_observation_maintenance"),
         )
         .await?;
-        let authorized = MaintenanceGrant::verify(&claim, scope.clone(), cutoff, 2)?;
-        let outcome = maintenance
-            .reclaim(authorized, ScanWindow::new(None, 8)?, deadline)
+    let maintenance =
+        rss_observation_postgres::PgMaintenance::new(pool.clone(), page.clock.clone(), deadline)
             .await?;
-        anyhow::ensure!(outcome.reclaimed == 3);
-        pool.close().await;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "DROP OWNED BY {role}; DROP ROLE {role}"
-    )))
-    .execute(&h.c.operator)
-    .await?;
-    result?;
+    let authorized = MaintenanceGrant::verify(&claim, scope.clone(), cutoff, 2)?;
+    let outcome = maintenance
+        .reclaim(authorized, ScanWindow::new(None, 8)?, deadline)
+        .await?;
+    anyhow::ensure!(outcome.reclaimed == 3);
+    pool.close().await;
     expired_receipts(page, deadline).await
 }
 async fn expired_receipts(page: &Page, deadline: rss_request_context::Deadline) -> Result<()> {
@@ -134,17 +116,20 @@ struct FirstWrite {
     released: CancellationToken,
 }
 impl rss_projection_postgres::PgEffect for FirstWrite {
+    type Item = rss_projection::EventWith<rss_observation_postgres::VerifiedObservation>;
+    const ISOLATION: rss_projection_postgres::EffectIsolation =
+        rss_projection_postgres::EffectIsolation::ReadCommitted;
     async fn apply(
         &self,
         tx: &mut rss_projection_postgres::PgTransaction<'_>,
         scope: &rss_projection::ProjectionScope,
-        event: &rss_projection::Event,
+        event: &Self::Item,
     ) -> std::result::Result<
         rss_projection_postgres::PgEffectOutcome,
         rss_projection_postgres::PgOperationError,
     > {
         let outcome = self.effect.apply(tx, scope, event).await?;
-        if event.position().get() == 1 {
+        if event.as_ref().position().get() == 1 {
             self.written.cancel();
             self.released.cancelled().await;
         }
@@ -178,21 +163,32 @@ async fn baseline(
         .await?;
     let events = page
         .source
-        .read(page.scope.source(), None, BatchLimit::new(2)?, &control)
+        .read(
+            page.scope.source(),
+            None,
+            PageBudget::new(2, rss_projection::Event::MAX_PAYLOAD_BYTES)?,
+            &control,
+        )
         .await?;
+    let rss_projection::ReadPage::Events(events) = events else {
+        anyhow::bail!("expected prefix events");
+    };
     assert_eq!(events.len(), 2);
     let prefix = rss_projection::run_batched(
         &*page.source,
         &worker,
         &control,
-        RunLimit::new(BatchLimit::new(2)?, 2)?,
+        RunLimit::new(
+            PageBudget::new(2, rss_projection::Event::MAX_PAYLOAD_BYTES)?,
+            2,
+        )?,
     )
     .await
     .into_result()?;
     assert_eq!(prefix.position, Some(Position::new(2)?));
     let receipts = events
         .iter()
-        .map(BaselineReceipt::from_event)
+        .map(|item| BaselineReceipt::from_event(item.as_ref()))
         .collect::<Vec<_>>();
     let snapshot: Value =
         sqlx::query_scalar("SELECT to_jsonb(i) FROM mdm.inventory i WHERE tenant_id=$1::uuid")

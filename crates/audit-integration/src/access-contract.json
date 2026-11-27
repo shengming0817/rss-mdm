@@ -26,6 +26,10 @@
       "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     },
     {
+      "name": "rss_transactional_messaging.outbox_policy_present",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
+    },
+    {
       "name": "rss_transactional_messaging.projection_scope_matches",
       "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     }

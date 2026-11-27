@@ -153,6 +153,8 @@ pub struct Assembly {
     pub browser: axum::Router,
     pub protocol: Arc<http::Services>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
+    inventory_health: Arc<rss_mdm_device_access_postgres::reports::inventory::Health>,
+    inventory: Vec<rss_mdm_device_access_postgres::reports::inventory::Admission>,
 }
 
 #[derive(Clone)]
@@ -560,9 +562,12 @@ pub async fn assemble(
         .as_ref()
         .map(|r| r.open().map_err(|_| Error::Configuration))
         .transpose()?;
+    let inventory_health =
+        Arc::new(rss_mdm_device_access_postgres::reports::inventory::Health::default());
     let runtime = da::Runtime::assemble(
         da::Resources {
             recovery: custody.clone(),
+            report_projection: Some(inventory_health.clone()),
             report_limits: config.reports.clone(),
             probe: binding,
             installation: config.installation.instance,
@@ -702,11 +707,63 @@ pub async fn assemble(
         compiled.http.requests,
     )));
 
+    let (inventory_pool, inventory) = inventory_admission(config, cutoff).await?;
+    acquire(DynManagedResource::new_box(Pool(inventory_pool)));
     Ok(Assembly {
+        inventory_health,
+        inventory,
         browser,
         protocol,
         pki,
     })
+}
+pub(crate) async fn inventory_admission(
+    config: &Config,
+    cutoff: rss_request_context::Deadline,
+) -> Result<(
+    sqlx::PgPool,
+    Vec<rss_mdm_device_access_postgres::reports::inventory::Admission>,
+)> {
+    tokio::time::timeout_at(cutoff.instant().into(), async {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .acquire_timeout(Duration::from_secs(2))
+            .connect_with(config.inventory_database.options()?)
+            .await
+            .map_err(|_| Error::AdmissionAt("DA Inventory login"))?;
+        let mut admissions = Vec::new();
+        for (tenant, _) in config.installation.tenants()? {
+            let binding = config.installation.execution(tenant)?;
+            let admission = rss_mdm_device_access_postgres::reports::inventory::Admission::check(
+                pool.clone(),
+                config.installation.instance,
+                binding,
+                config.projection_page_bytes,
+                cutoff,
+                Arc::new(Timer),
+            )
+            .await
+            .map_err(|e| match e {
+                rss_mdm_device_access_postgres::Error::Conflict => Error::AdmissionAt(
+                    "DA Inventory checkpoint requires a verified recovery baseline",
+                ),
+                rss_mdm_device_access_postgres::Error::Forbidden => {
+                    Error::AdmissionAt("DA Inventory role or row-policy contract")
+                }
+                _ => Error::AdmissionAt("DA Inventory provider or execution fence"),
+            });
+            match admission {
+                Ok(value) => admissions.push(value),
+                Err(e) => {
+                    pool.close().await;
+                    return Err(e);
+                }
+            }
+        }
+        Ok((pool, admissions))
+    })
+    .await
+    .map_err(|_| Error::AdmissionAt("DA Inventory admission timeout"))?
 }
 fn certificates(
     input: &Listener,
@@ -770,6 +827,10 @@ pub async fn serve(
   startup.stage_task_with_token(http::tls::registration(tcp,chain,key,app.protocol,compiled.http.listener).map_err(|_|Error::Lifecycle)?.critical());
 
   let execution=config.installation.execution(rss_request_context::TenantId::parse(&config.installation.tenant.to_string()).map_err(|_|Error::Configuration)?)?;
+  for admission in app.inventory {
+      let worker=admission.start(cutoff).await.map_err(|_|Error::AdmissionAt("DA inventory claim"))?;
+      startup.stage_task_with_token(worker.registration(app.inventory_health.clone(),config.projection_rows()?));
+  }
   let (task,_)=rss_runtime::ManagedTask::prepare("da-pki-maintenance",Duration::from_secs(10));
 
   startup.stage_task_with_token(task.into_registration(move|stop|async move{loop{tokio::select!{biased;

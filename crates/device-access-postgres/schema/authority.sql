@@ -51,6 +51,8 @@ CREATE TABLE rss_da.report_heads (
     tenant_id uuid NOT NULL
   , device uuid NOT NULL
   , kind text NOT NULL CHECK (kind IN ('status', 'application'))
+  , registration_epoch uuid NOT NULL
+  , stream_revision bigint NOT NULL CHECK (stream_revision > 0)
   , integrity text NOT NULL CHECK (octet_length(integrity) <= 4096)
   , document jsonb NOT NULL CHECK (octet_length(CAST(document AS text)) <= 131072)
   , receipt jsonb NOT NULL
@@ -60,14 +62,19 @@ CREATE TABLE rss_da.report_history (
     tenant_id uuid NOT NULL
   , device uuid NOT NULL
   , kind text NOT NULL CHECK (kind IN ('status', 'application'))
+  , registration_epoch uuid NOT NULL
+  , stream_revision bigint NOT NULL CHECK (stream_revision > 0)
+  , delivery_pending boolean NOT NULL
+  , storage_epoch bigint NOT NULL CHECK (storage_epoch > 0)
   , sequence bigint NOT NULL CHECK (sequence > 0)
   , operation uuid
   , received_at bigint NOT NULL
   , document jsonb NOT NULL CHECK (octet_length(CAST(document AS text)) <= 131072)
   , receipt jsonb NOT NULL
-  , PRIMARY KEY (tenant_id, device, kind, sequence)
-  , UNIQUE (tenant_id, device, kind, operation)
+  , PRIMARY KEY (tenant_id, device, registration_epoch, kind, sequence)
+  , UNIQUE (tenant_id, device, registration_epoch, kind, operation)
 );
+CREATE INDEX report_pending_order ON rss_da.report_history(tenant_id,device,kind,stream_revision,sequence) WHERE delivery_pending;
 CREATE INDEX report_history_retention ON rss_da.report_history(tenant_id,received_at);
 CREATE TABLE rss_da.report_budget(tenant_id uuid PRIMARY KEY,minute bigint NOT NULL,reports bigint NOT NULL,bytes bigint NOT NULL);
 ALTER TABLE rss_da.report_heads ENABLE ROW LEVEL SECURITY;
@@ -75,7 +82,7 @@ ALTER TABLE rss_da.report_heads FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON rss_da.report_heads USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON rss_da.report_heads FROM PUBLIC;
 GRANT SELECT,INSERT ON rss_da.report_heads TO da_access;
-GRANT UPDATE(integrity,document,receipt) ON rss_da.report_heads TO da_access;
+GRANT UPDATE(integrity,document,receipt,registration_epoch,stream_revision) ON rss_da.report_heads TO da_access;
 ALTER TABLE rss_da.report_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rss_da.report_history FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON rss_da.report_history USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
@@ -87,4 +94,5 @@ CREATE POLICY tenant ON rss_da.report_budget USING(tenant_id=nullif(current_sett
 REVOKE ALL ON rss_da.report_budget FROM PUBLIC;
 GRANT SELECT,INSERT ON rss_da.report_budget TO da_access;
 GRANT UPDATE(minute,reports,bytes) ON rss_da.report_budget TO da_access;
+CREATE POLICY expired_only ON rss_da.report_history AS RESTRICTIVE FOR DELETE USING (NOT delivery_pending);
 GRANT DELETE ON rss_da.report_history TO da_access;

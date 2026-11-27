@@ -1,6 +1,7 @@
 -- Product runtime identities; no role aggregates all business writers.
 CREATE ROLE mdm_group_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
 ALTER ROLE mdm_group_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_observation_maintenance NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
 CREATE ROLE mdm_inventory_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
 ALTER ROLE mdm_inventory_runtime SET default_transaction_isolation='read committed';
 CREATE ROLE mdm_scope_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;

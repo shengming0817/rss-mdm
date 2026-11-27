@@ -291,6 +291,7 @@ GRANT ALL ON FUNCTION rss_observation.lock_stream(p_scope text) TO "###, $ingest
 REVOKE ALL ON FUNCTION rss_projection.append_event(t uuid, s text, e text, bytes bytea) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rss_projection.assert_tenant(t uuid) FROM PUBLIC;
 GRANT ALL ON FUNCTION rss_projection.assert_tenant(t uuid) TO "###, $ingestion_runtime, r###";
+GRANT EXECUTE ON FUNCTION rss_projection.lock_batch(uuid,text,text,text,bigint,uuid,bigint,bigint[],text[],bytea[],bytea), rss_projection.finish_batch(uuid,text,text,text,bigint,uuid,bigint,bigint[],text[],bytea[],bytea) TO "###, $ingestion_runtime, r###";
 REVOKE ALL ON FUNCTION rss_projection.finish_event(t uuid, s text, p text, g text, worker_epoch bigint, token uuid, expected bigint, at_position bigint, e text, digest bytea, definition bytea) FROM PUBLIC;
 GRANT ALL ON FUNCTION rss_projection.finish_event(t uuid, s text, p text, g text, worker_epoch bigint, token uuid, expected bigint, at_position bigint, e text, digest bytea, definition bytea) TO "###, $ingestion_runtime, r###";
 REVOKE ALL ON FUNCTION rss_projection.initialize(t uuid, s text, p text, g text, start_at bigint, is_replay boolean, end_at bigint, ids text[], digests bytea[], definition bytea) FROM PUBLIC;

@@ -212,6 +212,9 @@ pub struct Config {
     pub installation: Installation,
     pub database: Database,
     pub identity_database: Database,
+    pub inventory_database: Database,
+    pub projection_page_bytes: u32,
+    pub projection_batch: u32,
     pub audit: Audit,
     pub browser: Listener,
     pub registration: Registration,
@@ -230,6 +233,9 @@ pub struct Compiled {
     pub http: http::Compiled,
 }
 impl Config {
+    pub(crate) fn projection_rows(&self) -> Result<rss_projection::BatchLimit> {
+        rss_projection::BatchLimit::new(self.projection_batch).map_err(|_| Error::Configuration)
+    }
     pub fn compile(&self) -> Result<Compiled> {
         self.validate()?;
         let identity = self
@@ -245,7 +251,12 @@ impl Config {
 
         self.registration.listener.host()?;
 
-        if self.database.user != "da_access"
+        self.projection_rows()?;
+        if self.projection_page_bytes
+            < rss_mdm_device_access_postgres::reports::inventory::MIN_PAGE_BYTES
+            || self.inventory_database.user != "da_report_projection"
+            || !self.database.same_database(&self.inventory_database)
+            || self.database.user != "da_access"
             || self.identity_database.user != "da_identity_runtime"
             || !self.database.same_database(&self.identity_database)
             || self.browser.listen == self.registration.listener.listen

@@ -545,6 +545,8 @@ Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设�
 
 ## 安装遥测存储
 
+PostgreSQL、Timescale shared 和 dedicated 资源的 `backend.prepare` 必填。`max_prepare_batches` 是每个物理 store 的并发批数（至少 1），`max_prepare_bytes` 是准备编码和 SQL 参数的总字节数（至少为所选候选的 `Limits::MIN_PREPARE_BYTES`，本候选 64 位环境为 17,813,504 字节）。标准安装为两个并发批次准备两倍最低字节。查询输出上限由 `limits.max_bytes` 单独控制。
+
 遥测为显式可选配置。先以部署管理员执行 `prepare-telemetry --config /absolute/private-request.json`，再通过 `configure-host` 的 `telemetry` 变更启用。请求结构由 `installation::providers::telemetry::Request` 持有，运行结构由 `telemetry::Config` 持有；安装请求、操作 UUID、私有安装目录与回执一起保管。重复执行使用原请求，变更同一 UUID 的内容会冲突。
 
 遥测数据库与产品主库分开。PostgreSQL 模式在安装请求中显式提供 UTC 微秒分区边界；Timescale 模式先由部署方安装要求的扩展版本。dedicated 模式为每个租户配置独立数据库、运行角色、维护登录与池，维护登录只能切换到该库的 NOLOGIN owner。运行启动只做准入，不创建对象，不自动选择或回退存储模式。支持版本与预算由安装器及固定 RSS adapter 校验，不能用“能连接”替代准入结果。
@@ -602,15 +604,17 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 ### 独立 Device Access 宿主
 
-`rss-da`（Cargo package `rss-da-app`）拥有独立进程和两条直接 TLS listener：浏览器/Identity 与 DA 设备协议。它使用 `rss_da`、Identity、Audit 和消息组件，不需要 MDM/Inventory 数据库对象。MDM 配置的 `device_access` 为 `null` 时不装配 DA 路由、listener 或 Identity 平台 verifier；旧 DA 执行仅允许按原坐标结算，停止新 offer、Start、策略推进和 relay，其他 MDM 工作照常。
+`rss-da`（Cargo package `rss-da-app`）拥有独立进程和两条直接 TLS listener：浏览器/Identity 与 DA 设备协议。独立 DA 在本库安装 Observation 和 Projection，设备状态及配置应用报告由独立登录 `da_report_projection` 连接执行有序批投影。安装配置须指定同库的 `inventory_database`、每页最大报告条数 `projection_batch`（1–1024）和 `projection_page_bytes`（规范 Observation 正文字节，至少 4 MiB）。`GET /api/v1/tenants/{tenant}/da/admin/devices/{device}/inventory` 以设备级 OperationRead 读取当前注册代际已提交的自报资产。资产响应的 `assets` 保存已提交事实，`projection.state` 报告 running、history_expired 或 fenced。停止的租户保留新收报告的待交付状态。即时报告与配置诊断沿用各自的接收时间。积压达到每设备每种报告的 historyCount 时，精确重试仍能取得原接收回执，新报告待容量恢复后重试。独立维护角色为 `da_observation_maintenance`，主服务对应 `mdm_observation_maintenance`，按已授权的退休历史范围单独使用。MDM 配置的 `device_access` 为 `null` 时不装配 DA 路由、listener 或 Identity 平台 verifier；旧 DA 执行仅允许按原坐标结算，停止新 offer、Start、策略推进和 relay，其他 MDM 工作照常。
 
-当前安装采用全新 V1 基线，不提供历史结构升级或数据迁移。`--describe` 输出该二进制的精确安装单元；独立和嵌入模式共用 DA owner 清单。`prepare-database --config <绝对路径>` 在已由部署方建立的空 PostgreSQL 17 数据库中创建固定角色；输入为 `administrator` 数据库连接、`installation` 绑定和五个 LOGIN 角色到独立密码文件的 `passwords` 映射。已有不同 installation 的角色会被拒绝。`install --config` 输入为 `da_owner` 的 `database`、同一 `installation` 和 `audit`。
+当前安装采用全新 V1 基线，不提供历史结构升级或数据迁移。`--describe` 输出该二进制的精确安装单元；独立和嵌入模式共用 DA owner 清单。`prepare-database --config <绝对路径>` 在已由部署方建立的空 PostgreSQL 17 数据库中创建固定角色；输入为 `administrator` 数据库连接、`installation` 绑定和六个 LOGIN 角色到独立密码文件的 `passwords` 映射（`da_owner`、`da_access`、`da_report_projection`、`da_identity_runtime`、`da_identity_maintenance`、`da_identity_provisioning`）。已有不同 installation 的角色会被拒绝。`install --config` 输入为 `da_owner` 的 `database`、同一 `installation` 和 `audit`。
 
 运行配置参见 `deployment/da-config.example.json`；示例中的身份、provider、证书、保护钥和 trust 必须替换为实际部署材料。秘密文件使用绝对路径和仅所属用户可读权限，不能将演示值投入部署。安装、维护与运行分别使用 owner、maintenance、runtime 数据库角色。`initialize-account --config` 的输入为 `runtime_file`、`maintenance_database`、`tenant`、`principal`、`login`、`password_file`、`operation_id`；分别初始化业务和管理租户的原管理员。账户创建与授权初始化分阶段持久化；若创建已成功而后续中断，使用同一主体、原密码和 operation 执行 `initialize-authorization`，不重新建账户。`recover-account` 只恢复指定原账户的本地密码。`diagnose` 装配并检查实际 owner、身份、密钥与权限后关闭资源，不绑定 listener。`public-configuration` 只输出公开坐标。
 
 `deployment/initialize_da.py` 顺序消费安装目录中的 `database.json`、`install.json`、`accounts.json` 列出的维护配置和 `runtime/runtime.json`，所有持久操作仍由 Rust CLI 执行。安装根及 `runtime/` 使用 0700，秘密文件使用 0600；`runtime/` 只保存运行配置、runtime 数据库密码和运行所需证书/密钥，维护配置的 `runtime_file` 指向该目录内的原文件。server 仅只读挂载 `runtime/`，installer 挂载安装根；管理员、owner、maintenance 密码、账户原密码及恢复请求必须放在 `runtime/` 之外，仅向 installer 提供。`deployment/da.compose.yaml` 使用独立 server/installer 镜像，直接发布 8443/8444 TLS 端口。PostgreSQL、CA 和证书材料由部署方提供；无反向代理身份注入。发布入口 `hack/release.py --product da` 生成对应 OCI/Compose 输入和精确 HTTP、状态映射合同；构建输入与镜像 digest 仍由原发布机制固定。
 
 独立冷备入口为 `backup-installation --config`，包含操作 ID、独立归档目录、安装目录、runtime 文件、管理员数据库连接和完整在线/离线 CA 材料。先停止应用、CA 和所有写入进程。备份保留原数据库、Identity、签名回执、Audit/可选 Ledger、保护钥、配置和 CA 身份；失败后保持数据库 CONNECT fencing，使用同一操作查询/重入。`restore-installation` 必须提供独立保存的 manifest SHA-256、原数据库坐标、操作 ID，以及每个原租户管理员的 `tenant/principal/login/password_file`；仅接受空目标或同一恢复操作的中断状态。恢复核验原 owner、原 Audit 链和原账户，不能用于迁移历史结构或覆盖已推进的数据。
+
+独立 DA 报告出现 `HistoryExpired` 或启动拒绝 `DA Inventory checkpoint requires a verified recovery baseline` 时，停止该实例的进程和写流量，保留原库。在隔离恢复环境选择受信冷备，核对安装实例、target、lineage、租户、投影代际和报告覆盖范围。该备份须同时覆盖缺失前缀的资产、完整投影回执、对应 checkpoint，以及继续投影所需的报告后缀和待交付记录。用独立保存的 manifest SHA-256 按上面的 `restore-installation` 恢复到空库；该入口在开放运行前用实际 Inventory 凭据检查角色、执行围栏、数据源边界与 checkpoint。随后运行 `diagnose`，启动隔离实例，对照备份的资产、回执和重放后的 checkpoint，再恢复对外流量。覆盖不全时保持原库封存和入口关闭。维护时由数据库管理员为指定的 Observation 维护角色单独启用 LOGIN、分发仅限维护作业的凭据，操作结束后撤销登录资格。
 
 DA 管理 API `GET /api/v1/tenants/{tenant}/da/configuration-operations/{operation}/templates` 从原签名回执派生原生材料。macOS 需提供 `macosVersion`；可选 `profileUrl` 必须是部署方实际 MDM 内容传输地址，否则 DDM Legacy 明确返回 `mdm_profile_transport_required`。Classic Profile 和 DDM 使用同一 Profile 身份、载荷顺序和内层包。仅允许部署方调整 `PayloadDisplayName`、`PayloadDescription`、`PayloadOrganization` 后重签外层 CMS；内层 payload、绑定身份和原生业务字段必须保留。Windows 材料使用应用自有 ADMX/ADML 和单个 `SignedConfiguration` Registry 字符串；删除 delivery 不等于解除 managed lock。`status-mapping` 输出 RSS/Jamf/Intune 字段声明；未提供 vendor connector 时仍标记 unavailable，reported/ready/applied 均不推导为 verified 或 compliant。
 

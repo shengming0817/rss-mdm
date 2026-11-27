@@ -17,51 +17,86 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let vocabulary = (0..1024)
         .map(|i| format!("state{i:04}{}", "s".repeat(128)))
         .collect::<std::collections::BTreeSet<_>>();
-    let fields = (0..4096)
-        .map(|i| {
-            Ok(FieldDefinition {
-                key: FieldKey::parse(&format!("custom.capacity.f{i:04}_{}", "x".repeat(96)))?,
-                version: 1,
-                value_type: match i {
-                    0 => ValueType::Array {
-                        items: Box::new(ValueType::String {
-                            max_length: 65536,
-                            allow_empty: false,
-                        }),
-                        max_items: 128,
+    let id = Uuid::new_v4();
+    let observed_at = now();
+    // Grow declared enum fields without inflating the Observation result-reference envelope.
+    let mut enum_fields = 1;
+    let (fields, definition, wire, values, report, body) = loop {
+        let fields = (0..4096)
+            .map(|i| {
+                Ok(FieldDefinition {
+                    key: FieldKey::parse(&format!("custom.capacity.f{i:04}_{}", "x".repeat(96)))?,
+                    version: 1,
+                    value_type: match i {
+                        0 => ValueType::Array {
+                            items: Box::new(ValueType::String {
+                                max_length: 65536,
+                                allow_empty: false,
+                            }),
+                            max_items: 128,
+                        },
+                        i if i <= enum_fields => ValueType::Enum {
+                            values: vocabulary.clone(),
+                        },
+                        _ => ValueType::Boolean,
                     },
-                    1 => ValueType::Enum {
-                        values: vocabulary.clone(),
-                    },
-                    _ => ValueType::Boolean,
-                },
-                nullable: false,
-                manual: false,
-                sources: [(Source::AgentBuiltin, 0)].into(),
-                platforms: [Platform::Windows].into(),
-                sensitivity: Sensitivity::Standard,
-                unit: None,
-                searchable: false,
-                item_key: None,
-                time_series: None,
+                    nullable: false,
+                    manual: false,
+                    sources: [(Source::AgentBuiltin, 0)].into(),
+                    platforms: [Platform::Windows, Platform::Macos].into(),
+                    sensitivity: Sensitivity::Standard,
+                    unit: None,
+                    searchable: false,
+                    item_key: None,
+                    time_series: None,
+                })
             })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    assert!(serde_json::to_vec(&fields[1])?.len() > 65536);
-    let definition = CollectionDefinition::new(
-        "capacity",
-        1,
-        Source::AgentBuiltin,
-        fields
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        assert!(serde_json::to_vec(&fields[1])?.len() > 65536);
+        let definition = CollectionDefinition::new(
+            "capacity",
+            1,
+            Source::AgentBuiltin,
+            fields
+                .iter()
+                .cloned()
+                .map(|definition| CollectionField {
+                    definition,
+                    scope: CollectionScope::Device,
+                })
+                .collect(),
+        )?;
+        assert!(serde_json::to_vec(&definition)?.len() > 1024 * 1024);
+        let wire = collection::wire::to_wire(&definition)?;
+        let values = wire
+            .fields()
             .iter()
-            .cloned()
-            .map(|definition| CollectionField {
-                definition,
-                scope: CollectionScope::Device,
+            .enumerate()
+            .map(|(i, f)| w::FieldValue {
+                field: f.key,
+                value: w::CollectedValue::Value(match i {
+                    0 => w::Scalar::Array(vec![w::Scalar::String("\\\"".repeat(1024)); 128]),
+                    i if i <= enum_fields => w::Scalar::String(vocabulary.first().unwrap().clone()),
+                    _ => w::Scalar::Boolean(true),
+                }),
             })
-            .collect(),
-    )?;
-    assert!(serde_json::to_vec(&definition)?.len() > 1024 * 1024);
+            .collect::<Vec<_>>();
+        assert!(serde_json::to_vec(&values[0])?.len() > 65536);
+        let report = w::ReportRequest::new(
+            id,
+            1,
+            observed_at,
+            wire.clone(),
+            w::ReportBody::Snapshot(values.clone()),
+        )?;
+        let body = report.canonical()?;
+        if body.len() >= w::MAX_REPORT_BYTES - 150 * 1024 {
+            break (fields, definition, wire, values, report, body);
+        }
+        enum_fields += 1;
+        anyhow::ensure!(enum_fields < 32);
+    };
+    eprintln!("mdm_inventory_input_bytes={}", body.len());
     let mut tx = command::seed_transaction(&h.c).await?;
     // Exercise the actual publication boundary for the large definition. The remaining independent
     // authoritative history is one minimal seed, avoiding thousands of repeated catalog reads.
@@ -77,32 +112,13 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     sqlx::query("SELECT mdm.append_field_version($1::uuid,f->>'key',1,f) FROM jsonb_array_elements($2::jsonb) f")
         .bind(h.c.tenant.to_string()).bind(serde_json::to_value(others)?).execute(&mut *tx).await?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, h.c.tenant, &definition).await?;
+    if let Some(path) = std::env::var_os("RSS_MDM_CAPACITY_FIXTURE") {
+        let registered:serde_json::Value=sqlx::query_scalar("SELECT to_jsonb(d)-'tenant_id' FROM mdm.collection_definitions d WHERE tenant_id=$1::uuid AND dataset=$2 AND version=$3")
+            .bind(h.c.tenant.to_string()).bind(definition.dataset()).bind(definition.version()).fetch_one(&mut *tx).await?;
+        let fixture = serde_json::json!({"fields":fields,"definition":registered,"report":report});
+        std::fs::write(path, serde_json::to_vec(&fixture)?)?;
+    }
     tx.commit().await?;
-    let wire = collection::wire::to_wire(&definition)?;
-    let values = wire
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(i, f)| w::FieldValue {
-            field: f.key,
-            value: w::CollectedValue::Value(match i {
-                0 => w::Scalar::Array(vec![w::Scalar::String("\\\"".repeat(1024)); 128]),
-                1 => w::Scalar::String(vocabulary.first().unwrap().clone()),
-                _ => w::Scalar::Boolean(true),
-            }),
-        })
-        .collect::<Vec<_>>();
-    assert!(serde_json::to_vec(&values[0])?.len() > 65536);
-    let id = Uuid::new_v4();
-    let report = w::ReportRequest::new(
-        id,
-        1,
-        now(),
-        wire.clone(),
-        w::ReportBody::Snapshot(values.clone()),
-    )?;
-    let body = report.canonical()?;
-    assert!(body.len() > 2 * 1024 * 1024 && body.len() <= w::MAX_REPORT_BYTES);
     let batch = agent::report_batch(&report)?;
     assert!(batch.encode().len() <= 4 * 1024 * 1024);
 
@@ -232,7 +248,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let replay = send(body.clone(), true).await?;
     assert_eq!(replay, first);
     let mut changed = values;
-    changed[2].value = w::CollectedValue::Value(w::Scalar::Boolean(false));
+    changed.last_mut().expect("registered boolean field").value =
+        w::CollectedValue::Value(w::Scalar::Boolean(false));
     let conflict = w::ReportRequest::new(
         id,
         1,
@@ -274,6 +291,10 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         )
         .await?;
     assert_eq!(prefix.len(), 1);
+    eprintln!(
+        "mdm_observation_canonical_bytes={}",
+        prefix[0].batch().encode().len()
+    );
     assert_eq!(prefix[0].batch().id().as_str(), first_id.to_string());
     let total_charge: i64 = sqlx::query_scalar("SELECT sum(octet_length(attempts::text)::bigint+octet_length(batch)+octet_length(scope)+1024)::bigint FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending")
         .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
@@ -358,14 +379,19 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
             .len(),
         4096
     );
-    for (field, state, value) in &rows {
+    for ((key, state, value), field) in rows.iter().zip(&fields) {
+        assert_eq!(key, field.key.as_str());
         assert_eq!(state, "known");
-        if field != fields[0].key.as_str() && field != fields[1].key.as_str() {
-            assert_eq!(
-                serde_json::from_str::<Scalar>(value.as_ref().unwrap())?,
-                Scalar::Boolean(true)
-            );
-        }
+        let expected = match &field.value_type {
+            ValueType::Boolean => Scalar::Boolean(true),
+            ValueType::Enum { values } => Scalar::String(values.first().unwrap().clone()),
+            ValueType::Array { .. } => continue,
+            _ => anyhow::bail!("unexpected fixture field"),
+        };
+        assert_eq!(
+            serde_json::from_str::<Scalar>(value.as_ref().unwrap())?,
+            expected
+        );
     }
     let projected = rss_mdm_inventory_postgres::read_in(
         &mut tx,

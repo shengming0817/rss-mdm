@@ -49,6 +49,16 @@
     "password_file": "/srv/rss-da/runtime/da-access-password",
     "ca_file": "/srv/rss-da/runtime/postgres-ca.pem"
   },
+  "projection_batch": 64,
+  "projection_page_bytes": 4194304,
+  "inventory_database": {
+    "host": "postgres.example.com",
+    "port": 5432,
+    "name": "da",
+    "user": "da_report_projection",
+    "password_file": "/srv/rss-da/runtime/inventory-password",
+    "ca_file": "/srv/rss-da/runtime/postgres-ca.pem"
+  },
   "identity_database": {
     "host": "postgres.example.com",
     "port": 5432,

@@ -164,8 +164,8 @@ impl Context {
         assert_eq!(
             revisions,
             (
-                "rss-observation-postgres:4".into(),
-                "rss-projection-postgres:4".into()
+                "rss-observation-postgres:5".into(),
+                "rss-projection-postgres:5".into()
             )
         );
         let mut check = operator.acquire().await?;
@@ -197,8 +197,8 @@ impl Context {
             .await
             .is_err()
         );
-        let absent:bool=sqlx::query_scalar("SELECT to_regnamespace('mdm') IS NULL AND to_regclass('rss_da.asset_authority_history') IS NULL").fetch_one(&operator).await?;
-        anyhow::ensure!(absent, "standalone DA must not install Inventory");
+        let absent:bool=sqlx::query_scalar("SELECT to_regnamespace('mdm') IS NULL AND to_regclass('rss_da.inventory_assets') IS NOT NULL").fetch_one(&operator).await?;
+        anyhow::ensure!(absent, "standalone DA uses only its own asset schema");
         let access = inputs.database("da_access").pool().await?;
         let runtime = inputs.runtime("da_access").await?;
         let binding = ExecutionBinding::new(

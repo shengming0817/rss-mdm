@@ -806,7 +806,7 @@ async fn apply_change(
             if tenant.is_some() {
                 return Err(Error::Input);
             }
-            settings.validate().map_err(|_| Error::Input)?;
+            super::providers::telemetry::validate_config(settings)?;
             let backend = settings.open_backend().await.map_err(|_| Error::Storage)?;
             let deadline = rss_request_context::Deadline::from_timeout(
                 &rss_mdm_telemetry_service::backend::SystemClock,

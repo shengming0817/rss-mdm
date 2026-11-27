@@ -101,7 +101,7 @@ def verify_request_slots(browser):
         for connection in held:
             connection.close()
 
-def ingress_capacity(browser, principal, deployed):
+def ingress_capacity(browser, principal, deployed, inventory_report=None):
     profile = f'/api/v1/identity/tenants/{TENANT}/accounts/{principal}/profile'
     status, original = browser.call('GET', profile)
     require(status == 200, 'local profile read')
@@ -183,6 +183,12 @@ def ingress_capacity(browser, principal, deployed):
     definition = dict(key=key, version=1, valueType=dict(kind='enum', values=members),
                       nullable=False, manual=False, sources={'agent.builtin': 0}, platforms=['windows'],
                       sensitivity='standard', unit=None, searchable=False, itemKey=None, timeSeries=None)
+    if inventory_report is not None:
+        # Publish one member of the same complete collection through the management API.
+        definition = json.loads(inventory_report.read_bytes())['fields'][1]
+        key = definition['key']
+        path = f'/api/v1/tenants/{TENANT}/asset-fields/' + key
+        members = definition['valueType']['values']
     change = dict(operationId=str(uuid.uuid4()), expectedRevision=0, input=dict(action='put', definition=definition))
     status, _ = browser.call('PUT', path, change)
     require(status in (200, 202), 'large field publication')
@@ -298,7 +304,73 @@ def report_history(deployed, browser, binding, call):
     return ['report_not_found', 'report_projection_confirmed', 'report_probe_budget', 'report_authority_rechecked', 'original_receipt_independent', 'expired_report_preserves_ack',
             'expired_report_pending_delivery_settled']
 
-def native_pki_journey(deployed,browser):
+def installed_capacity_report(deployed, path, binding, call):
+    import base64
+    payload = json.loads(path.read_bytes())
+    def encoded(value):
+        return base64.b64encode(json.dumps(value, separators=(',', ':')).encode()).decode('ascii')
+    fields = encoded(payload['fields'])
+    definition = encoded(payload['definition'])
+    tenant = uuid.UUID(deployed.tenant)
+    # Only the field catalog is a fixture; authentication, receipt and projection use the deployed service.
+    deployed.sql(f"""BEGIN;
+        SELECT set_config('rss.tenant_id','{tenant}',true),
+               set_config('rss.storage_target',encode(s.target,'hex'),true),
+               set_config('rss.storage_lineage',encode(s.lineage,'hex'),true),
+               set_config('rss.execution_epoch',e.epoch::text,true)
+        FROM rss_transactional_messaging.storage_lineage s JOIN rss_transactional_messaging.tenant_epoch e ON e.tenant_id='{tenant}';
+        SELECT count(mdm.append_field_version('{tenant}',f->>'key',1,f))
+          FROM jsonb_array_elements(convert_from(decode('{fields}','base64'),'UTF8')::jsonb) f
+          WHERE NOT EXISTS (SELECT FROM mdm.field_versions v WHERE v.tenant_id='{tenant}' AND v.field=f->>'key' AND v.version=1 AND v.definition=f);
+        INSERT INTO mdm.collection_definitions
+          SELECT (jsonb_populate_record(NULL::mdm.collection_definitions,
+             convert_from(decode('{definition}','base64'),'UTF8')::jsonb || jsonb_build_object('tenant_id','{tenant}'))).*;
+        COMMIT;""")
+    request=payload['report']
+    request.update(reportId=str(uuid.uuid4()),observedAt=int(time.time()))
+    size=len(json.dumps(request,separators=(',',':')).encode())
+    require(4*1024*1024-150*1024<=size<=4*1024*1024,'candidate report fixture size')
+    route='/api/v1/agent/runtime/reports'
+    field='channel.mdm.enrollment'
+    collection=next(c for c in binding['collections'] if any(f['key']==field for f in c['fields']))
+    def small(sequence):
+        return dict(wireVersion=1,reportId=str(uuid.uuid4()),sequence=sequence,observedAt=int(time.time()),
+                    collection=collection,body=dict(kind='snapshot',values=[dict(field=field,value=dict(kind='value',value=dict(kind='string',value='unenrolled')))]))
+    inputs=[small(2),request,small(3)]
+    trace=Path(__file__).resolve().parent/'test-support'/'inventory-pages.sql'
+    deployed.sql(trace.read_text())
+    before=int(deployed.sql(f"SELECT position FROM rss_projection.checkpoints WHERE tenant_id='{tenant}' AND projection_id='inventory'"))
+    queries=[]
+    with subprocess.Popen(["docker",*deployed.psql_args()],text=True,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE) as holder:
+        try:
+            holder.stdin.write("SET application_name='candidate_mixed_page'; BEGIN; LOCK TABLE rss_projection.checkpoints IN ACCESS EXCLUSIVE MODE;\n")
+            holder.stdin.flush()
+            blocked="""SELECT EXISTS(SELECT FROM pg_stat_activity w JOIN pg_stat_activity h ON h.pid=ANY(pg_blocking_pids(w.pid))
+                WHERE h.application_name='candidate_mixed_page' AND w.usename='mdm_runtime')"""
+            wait(lambda:deployed.sql(blocked)=='t','running Inventory worker parked at checkpoint',seconds=5)
+            for value in inputs:
+                status,ack=call('POST',route,value)
+                require(status==202 and ack['reportId']==value['reportId'],'installed mixed report intake')
+                queries.append((value['reportId'],ack))
+        finally:
+            holder.communicate("ROLLBACK;\n",timeout=10)
+    for ident,ack in queries:
+        wait(lambda:call('GET',route+'/'+ident)==(200,dict(ack=ack,observation='snapshot',projection='applied')),
+             'installed mixed report projection',seconds=120)
+    rows=json.loads(deployed.sql(f"""SELECT jsonb_agg(jsonb_build_array(b.batch_id,b.log_position,p.position,octet_length(b.raw)) ORDER BY b.log_position)
+      FROM rss_observation.batches b JOIN rss_projection.receipts r ON r.tenant_id=b.tenant_id AND r.event_id=encode(b.fingerprint,'hex')
+      JOIN public.t2_inventory_pages p ON p.tenant=r.tenant_id AND p.projection=r.projection_id AND p.writer::text=r.xmin::text
+      WHERE b.tenant_id='{tenant}' AND b.log_position>{before}"""))
+    require([(r[1]-before,r[2]-before) for r in rows]==[(1,2),(2,2),(3,3)],f'mixed report checkpoints: {rows}')
+    ids=[r[0] for r in rows]
+    require(set(ids)=={v['reportId'] for v in inputs} and ids.index(inputs[0]['reportId'])<ids.index(inputs[2]['reportId']),'mixed report sequence')
+    require(all(r[3]>0 for r in rows),'canonical Observation sizes')
+    deployed.sql("DROP TRIGGER t2_inventory_page ON rss_projection.checkpoints; DROP FUNCTION public.t2_inventory_page(); DROP TABLE public.t2_inventory_pages")
+    input_sizes={v['reportId']:len(json.dumps(v,separators=(',',':')).encode()) for v in inputs}
+    print(json.dumps(dict(mdm_formal_mixed_pages=rows,checkpoint_base=before,input_bytes=size,input_sizes=input_sizes)))
+    return 'installed_near_limit_inventory_report'
+
+def native_pki_journey(deployed,browser,inventory_report=None):
     root=deployed.root;fixture=root/'pki/agent'
     csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
     secret=secrets.token_urlsafe(32);deployed.private_values.append(secret)
@@ -314,7 +386,7 @@ def native_pki_journey(deployed,browser):
     def call(client,method,path,body=None):
         deadline=time.monotonic()+5
         while True:
-            client.request(method,path,body=json.dumps(body) if body is not None else None,
+            client.request(method,path,body=json.dumps(body,separators=(',',':')) if body is not None else None,
                            headers={'Content-Type':'application/json','Host':deployed.agent_origin.removeprefix('https://')})
             response=client.getresponse();data=response.read(8*1024*1024+1)
             require(len(data)<=8*1024*1024,'candidate native response limit')
@@ -355,6 +427,8 @@ def native_pki_journey(deployed,browser):
         require(status==200,'candidate actual mTLS activation failed')
         require(call(client,'POST','/api/v1/agent/enroll/activate',activation)==(status,active),'candidate activation replay changed registration')
         report_checks = report_history(deployed, browser, active['runtime'], lambda *args: call(client, *args))
+        if inventory_report is not None:
+            report_checks.append(installed_capacity_report(deployed,inventory_report,active['runtime'],lambda *args:call(client,*args)))
     finally:client.close()
     deployed.restore_pki_bundle()
     client=connection()
@@ -376,9 +450,11 @@ def native_pki_journey(deployed,browser):
     return report_checks + ['native_public_packages','native_public_trust','real_ca_signing','original_signing_replay','candidate_identity_denial','actual_mtls_activation',
             'activation_replay','joint_ca_mdm_audit_restore','same_registration_after_restore','retained_tls_revocation','signed_crl_serial_publication','new_tls_revocation']
 
-def run_smoke(directory):
+def run_smoke(directory,inventory_report=None):
     def capacity_config(candidate):
         candidate.config['http']['request_slots'] = 5
+        if inventory_report is not None:
+            candidate.config['inventory_runtime']['projection_batch']=2
     with Candidate(directory, prepare=capacity_config, diagnostic_filename="smoke-failure.json") as deployed:
         manifest=deployed.manifest
         digest=manifest["archive"]["manifest_digest"];archive=directory/manifest["archive"]["file"]
@@ -405,7 +481,7 @@ def run_smoke(directory):
         status,account=administrator.call('POST',tenant+'/accounts',dict(login='scoped',password=PASSWORD))
         require(status==201 and isinstance(account.get('principalId'),str),'candidate scoped account creation')
         verify_request_slots(administrator)
-        memory = ingress_capacity(administrator, account["principalId"], deployed)
+        memory = ingress_capacity(administrator, account["principalId"], deployed,inventory_report)
         browser=Browser(deployed.port,deployed.root/'ca.crt')
         require(browser.call('POST',tenant+'/login',dict(login='scoped',password=PASSWORD))[0]==200,
                 'candidate scoped account login')
@@ -429,7 +505,7 @@ def run_smoke(directory):
         # The independent native journey shares the real gateway's 10r/s, burst-20 API quota.
         # Let the browser checks' burst drain before testing mutation replay without retries.
         time.sleep(2.2)
-        pki_checks=native_pki_journey(deployed,administrator)
+        pki_checks=native_pki_journey(deployed,administrator,inventory_report)
         old_cookie=browser.cookie
         require(browser.call("POST",tenant+"/session/refresh")[0]==200 and browser.cookie!=old_cookie,"candidate refresh failed")
         stale=Browser(deployed.port,deployed.root/"ca.crt");stale.cookie=old_cookie
@@ -448,12 +524,12 @@ def run_smoke(directory):
             result["ui"] = deployed.web
     return result,logs+"\n"
 
-def smoke(directory):
+def smoke(directory,inventory_report=None):
     marker, log = directory / "smoke.json", directory / "smoke.log"
     for path in (marker, log, directory / "smoke-failure.json"):
         path.unlink(missing_ok=True)
     try:
-        result, output = run_smoke(directory)
+        result, output = run_smoke(directory) if inventory_report is None else run_smoke(directory,inventory_report)
         # Publish only after both fixture owners have finished cleanup. The marker
         # is last and binds the log, so readers never accept a partial evidence pair.
         with tempfile.TemporaryDirectory(prefix=".smoke-", dir=directory) as temporary:
@@ -474,5 +550,6 @@ def smoke(directory):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument('--inventory-report',type=Path,help='Capacity fixture exported by inventory.collection')
     args=parser.parse_args()
-    smoke(args.candidate.resolve())
+    smoke(args.candidate.resolve(),args.inventory_report)

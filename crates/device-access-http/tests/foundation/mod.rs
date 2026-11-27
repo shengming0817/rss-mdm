@@ -9,6 +9,7 @@ mod enterprise;
 mod exports;
 mod host;
 mod installation;
+mod inventory;
 mod material;
 mod platform;
 mod recovery;
@@ -695,9 +696,23 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "revoked DA registration cannot access the PSSO channel"
     );
 
+    reports::fenced_backpressure(&c, &client, &current_peer, base, &token, &current_survivor)
+        .await?;
     stop.send(())
         .map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
     tokio::time::timeout(Duration::from_secs(50), running).await???;
+    for rows in [65, 1] {
+        Box::pin(reports::configured_page(
+            &c,
+            &installed_host.runtime_file,
+            &current_peer,
+            base,
+            &current_survivor,
+            rows,
+        ))
+        .await
+        .context("configured DA projection page")?;
+    }
     Box::pin(accounts::macos::verify(
         &c,
         &material,
@@ -708,6 +723,9 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await
     .context("standalone Mac account protocol")?;
     c.close().await;
+    Box::pin(inventory::verify(&c))
+        .await
+        .context("DA Inventory page settlement and restart")?;
 
     Box::pin(recovery::verify(
         &c.inputs,

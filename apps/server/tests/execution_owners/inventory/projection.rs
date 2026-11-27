@@ -6,7 +6,7 @@ use rss_observation::{
     Access, Authority, JournalReadGrant, LifecycleGrant, ObservationStore, VerifiedBatch,
 };
 use rss_projection::{
-    BatchLimit, Control, GenerationStart, ReplayBound, RunLimit, Source as _, Timer as _,
+    Control, GenerationStart, PageBudget, ReplayBound, RunLimit, Source as _, Timer as _,
 };
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{collections::BTreeMap, time::Duration};
@@ -32,7 +32,7 @@ impl Authority for Stream {
     }
 }
 type Store = rss_observation_postgres::PgStore<rt::Clock>;
-type Source = rss_observation_postgres::PgSource<rt::Clock>;
+type Source = rss_observation_postgres::PgSource<rt::Clock, rss_observation_postgres::LocalPages>;
 type Worker =
     rss_projection_postgres::PgProjection<rss_mdm_inventory_postgres::Inventory<rt::Clock>>;
 struct Page {
@@ -110,11 +110,15 @@ impl Page {
             ));
         }
         let scope = rss_mdm_inventory_postgres::projection_scope(h.c.tenant);
-        let source = Arc::new(Source::new(
-            observation.clone(),
-            JournalReadGrant::verify(&stream, h.c.tenant)?,
-            scope.source().clone(),
-        )?);
+        let source = Arc::new(
+            rss_observation_postgres::PgSource::new(
+                observation.clone(),
+                JournalReadGrant::verify(&stream, h.c.tenant)?,
+                scope.source().clone(),
+                rss_observation::Batch::MAX_ENCODED_BYTES,
+            )?
+            .into_local(),
+        );
         Ok(Self {
             clock,
             observation,
@@ -149,7 +153,10 @@ impl Page {
     }
 }
 fn limit() -> Result<RunLimit> {
-    Ok(RunLimit::new(BatchLimit::new(8)?, 8)?)
+    Ok(RunLimit::new(
+        PageBudget::new(8, rss_projection::Event::MAX_PAYLOAD_BYTES)?,
+        8,
+    )?)
 }
 
 async fn progress(c: &Context) -> Result<(Option<i64>, i64, i64)> {
@@ -222,8 +229,8 @@ async fn report_page_settlement_and_cost() -> Result<()> {
     assert_eq!(
         installed,
         (
-            "rss-observation-postgres:4".into(),
-            "rss-projection-postgres:4".into(),
+            "rss-observation-postgres:5".into(),
+            "rss-projection-postgres:5".into(),
             false
         )
     );

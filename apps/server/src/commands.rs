@@ -319,6 +319,12 @@ fn monotonic() -> std::sync::Arc<dyn rss_observation::Clock> {
 fn setup_failure(stage: &'static str, error: crate::installation::Error) -> ProcessError {
     use crate::installation::Error;
     let kind = match error {
+        Error::MinimumCapacity { field, minimum } => {
+            return ProcessError::Configuration {
+                stage,
+                issue: crate::ConfigIssue::MinimumCapacity { field, minimum },
+            };
+        }
         Error::Capacity(field) => field,
         Error::Input => "input_rejected: correct deployment inputs before retrying",
         Error::Busy => {

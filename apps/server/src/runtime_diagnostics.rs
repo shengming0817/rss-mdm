@@ -1033,7 +1033,7 @@ fn projection(
         Some(ObservationStatus::Stopped(p)) => (
             match p.stop {
                 Stop::CaughtUp => ProgressState::CaughtUp,
-                Stop::EventLimit => ProgressState::Limited,
+                Stop::EventLimit | Stop::PayloadBudget { .. } => ProgressState::Limited,
                 Stop::Failed(e) if e.kind() == rss_projection::ErrorKind::HistoryExpired => {
                     ProgressState::HistoryExpired
                 }

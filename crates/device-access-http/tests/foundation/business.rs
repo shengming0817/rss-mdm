@@ -50,6 +50,7 @@ pub fn assemble(
     let runtime = rss_mdm_device_access_runtime::Runtime::assemble(
         rss_mdm_device_access_runtime::Resources {
             recovery: None,
+            report_projection: None,
             report_limits: pg::reports::Limits {
                 history_count: 2,
                 reports_per_minute: 10,

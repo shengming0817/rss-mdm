@@ -193,6 +193,7 @@ pub(crate) async fn open(
     let business = rss_mdm_device_access_runtime::Runtime::assemble(
         rss_mdm_device_access_runtime::Resources {
             recovery: custody.clone(),
+            report_projection: None,
             report_limits: d.reports.clone(),
             probe: config
                 .storage_binding

@@ -130,7 +130,7 @@ async fn heads(
     .map_err(storage)
 }
 async fn verify_owner(c: &mut sqlx::PgConnection, config: &Config) -> Result<()> {
-    rss_mdm_device_access_runtime::installation::verify_catalog(c)
+    rss_mdm_device_access_runtime::installation::verify_standalone_catalog(c)
         .await
         .map_err(|_| Error::Admission)?;
 
@@ -459,7 +459,12 @@ admitted.map_err(|_|Error::Admission)?;
   if expected!=supplied||input.accounts.len()!=expected.len(){return Err(Error::Configuration)}
   fence::connection_fence(&mut c,&journal,false).await.map_err(storage)?;
 
-  let verify=async {for account in &input.accounts{crate::maintenance::verify_account(&config,account).await?;
+  let verify=async {
+    let deadline=rss_request_context::Deadline::from_timeout(&crate::host::Timer,std::time::Duration::from_secs(30)).map_err(|_|Error::Configuration)?;
+    let (pool,admission)=crate::host::inventory_admission(&config,deadline).await?;
+    drop(admission);
+    pool.close().await;
+    for account in &input.accounts{crate::maintenance::verify_account(&config,account).await?;
 } Ok::<(),Error>(())}.await;
 
   if let Err(error)=verify {fence::connection_fence(&mut c,&journal,true).await.map_err(storage)?;

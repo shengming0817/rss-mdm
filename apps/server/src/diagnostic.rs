@@ -46,6 +46,7 @@ impl rss_observation::Clock for Monotonic {
 #[serde(rename_all = "snake_case")]
 pub enum ConfigIssue {
     ExternalCapacity(&'static str),
+    MinimumCapacity { field: &'static str, minimum: u32 },
     DeviceAccess,
     AgentPki,
     NativeProtection,

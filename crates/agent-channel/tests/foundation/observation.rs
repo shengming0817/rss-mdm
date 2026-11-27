@@ -2,7 +2,7 @@ use super::*;
 use rss_observation::{
     Access, Authority, JournalReadGrant, LifecycleGrant, ObservationStore, Policy, VerifiedBatch,
 };
-use rss_projection::{BatchLimit, Control, GenerationStart, ReplayBound, RunLimit, Stop};
+use rss_projection::{Control, GenerationStart, PageBudget, ReplayBound, RunLimit, Stop};
 struct ReportAuthority {
     scope: rss_observation::Scope,
     coverage: rss_observation::Coverage,
@@ -111,6 +111,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
             32,
             64 * 1024 * 1024,
             64,
+            rss_observation::Batch::MAX_ENCODED_BYTES,
             64,
         )?,
     );
@@ -144,11 +145,15 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         )
         .await?;
     let projection_scope = rss_mdm_inventory_postgres::projection_scope(c.tenant);
-    let source = Arc::new(rss_observation_postgres::PgSource::new(
-        observation.clone(),
-        JournalReadGrant::verify(&authority, c.tenant)?,
-        projection_scope.source().clone(),
-    )?);
+    let source = Arc::new(
+        rss_observation_postgres::PgSource::new(
+            observation.clone(),
+            JournalReadGrant::verify(&authority, c.tenant)?,
+            projection_scope.source().clone(),
+            rss_observation::Batch::MAX_ENCODED_BYTES,
+        )?
+        .into_local(),
+    );
     let token = tokio_util::sync::CancellationToken::new();
     let control = Control::new(&clock, clock.startup_cutoff(), &token);
     let projection =
@@ -174,7 +179,10 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         source.as_ref(),
         &execution,
         &control,
-        RunLimit::new(BatchLimit::new(64)?, 256)?,
+        RunLimit::new(
+            PageBudget::new(64, rss_projection::Event::MAX_PAYLOAD_BYTES)?,
+            256,
+        )?,
     )
     .await
     .into_result()?;

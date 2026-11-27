@@ -227,7 +227,9 @@ async fn storage_failure(
         Error::Storage => return Err(Error::Storage),
         Error::Conflict => (true, "qualification_rejected"),
         Error::Corrupt => (true, "invalid_candidate_material"),
-        Error::Input | Error::Capacity(_) => (false, "provider_configuration_unavailable"),
+        Error::Input | Error::Capacity(_) | Error::MinimumCapacity { .. } => {
+            (false, "provider_configuration_unavailable")
+        }
         Error::Busy => (false, "operation_busy"),
     };
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
