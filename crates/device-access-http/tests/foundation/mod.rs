@@ -701,15 +701,18 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     stop.send(())
         .map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
     tokio::time::timeout(Duration::from_secs(50), running).await???;
-    Box::pin(reports::configured_page(
-        &c,
-        &installed_host.runtime_file,
-        &current_peer,
-        base,
-        &current_survivor,
-    ))
-    .await
-    .context("configured DA projection page")?;
+    for rows in [65, 1] {
+        Box::pin(reports::configured_page(
+            &c,
+            &installed_host.runtime_file,
+            &current_peer,
+            base,
+            &current_survivor,
+            rows,
+        ))
+        .await
+        .context("configured DA projection page")?;
+    }
     Box::pin(accounts::macos::verify(
         &c,
         &material,

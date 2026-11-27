@@ -23,6 +23,8 @@ use uuid::Uuid;
 pub const INSTALL_SQL: &str = include_str!("../../schema/report-inventory.sql");
 pub const MIN_PAGE_BYTES: u32 = Batch::MAX_ENCODED_BYTES;
 pub(super) const GENERATION: &str = "da-report-assets-v1";
+// Small pages still drain multiple transactions per pass. Larger pages must fit a full pass.
+const MIN_REPORTS_PER_PASS: u32 = 64;
 const PASS: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "state")]
@@ -289,13 +291,14 @@ impl Worker {
         health: Arc<Health>,
         max_rows: rss_projection::BatchLimit,
     ) -> Result<(), rss_runtime::ShutdownError> {
+        let per_pass = max_rows.get().max(MIN_REPORTS_PER_PASS);
         let mut rows = max_rows.get();
         loop {
             let page =
                 rss_projection::PageBudget::new(rows, rss_projection::Event::MAX_PAYLOAD_BYTES)
                     .expect("positive reference budget");
-            let limit = rss_projection::RunLimit::new(page, u64::from(max_rows.get()))
-                .expect("positive pass");
+            let limit =
+                rss_projection::RunLimit::new(page, u64::from(per_pass)).expect("positive pass");
             let started = rss_projection::Timer::now(&self.clock);
             let report = self.project(&stop, limit).await;
             let healthy = !matches!(&report.stop, rss_projection::Stop::Failed(_));
@@ -348,7 +351,7 @@ impl Worker {
             }
             if healthy {
                 let deadline = Deadline::at(rss_observation::Clock::now(&self.clock) + PASS);
-                for _ in 0..max_rows.get() {
+                for _ in 0..per_pass {
                     let delivery = tokio::select! {
                         biased;
                         ()=stop.cancelled()=>return Ok(()),

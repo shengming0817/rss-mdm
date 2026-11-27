@@ -447,31 +447,43 @@ async fn mixed_page(
     Ok(())
 }
 
-/// Resume the two pinned reports, then verify the configured 65-row page with genuine pending input.
+/// Observe the number of page commits between delivery passes on a live backlog.
 pub(super) async fn configured_page(
     c: &Context,
     runtime_file: &std::path::Path,
     peer: &reqwest::Client,
     base: &str,
     device: &da::Registration,
+    rows: u32,
 ) -> Result<()> {
-    const ROWS: u32 = 65;
+    const REPORTS: u32 = 65;
     let mut config: rss_da_app::config::Config = rss_da_app::config::load(runtime_file)?;
-    config.projection_batch = ROWS;
-    config.reports.history_count = ROWS;
-    config.reports.reports_per_minute = ROWS;
+    config.projection_batch = rows;
+    config.reports.history_count = REPORTS;
+    config.reports.reports_per_minute = REPORTS;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(rss_da_app::host::serve(config, async move {
         stopped.await.map_err(std::io::Error::other)
     }));
     let result = async {
         let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Ok(response) = peer.get(format!("{base}/configuration-trust")).send().await
+                    && response.status().is_success() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await?;
         let (before, gate) = pause_projection(c, tenant).await?;
+        sqlx::raw_sql(include_str!("../../../../hack/test-support/da-delivery-checkpoints.sql"))
+            .execute(&c.operator).await?;
         let document: serde_json::Value = sqlx::query_scalar(
             "SELECT document FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2 AND kind='status'",
         ).bind(tenant).bind(device.device.into_uuid()).fetch_one(&c.operator).await?;
         let mut report: da::StatusReport = serde_json::from_value(document)?;
-        for _ in 0..ROWS {
+        for _ in 0..REPORTS {
             report.sequence += 1;
             material::success::<serde_json::Value>(
                 peer.post(format!("{base}/status-reports")).json(&report).send().await?
@@ -479,7 +491,7 @@ pub(super) async fn configured_page(
         }
         gate.commit().await?;
         tokio::time::timeout(Duration::from_secs(30), async {
-            while checkpoint(c, tenant).await? < before + i64::from(ROWS) {
+            while checkpoint(c, tenant).await? < before + i64::from(REPORTS) {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
             Ok::<_, anyhow::Error>(())
@@ -487,8 +499,18 @@ pub(super) async fn configured_page(
         let receipts: (i64,i64) = sqlx::query_as(
             "SELECT count(*),count(DISTINCT r.xmin::text) FROM rss_observation.batches b JOIN rss_projection.receipts r ON r.tenant_id=b.tenant_id AND r.projection_id='da-inventory' AND r.event_id=encode(b.fingerprint,'hex') WHERE b.tenant_id=$1 AND b.log_position>$2"
         ).bind(tenant).bind(before).fetch_one(&c.operator).await?;
-        anyhow::ensure!(receipts == (i64::from(ROWS), 1), "configured {ROWS}-row page produced {receipts:?}");
-        eprintln!("da_configured_page rows={ROWS} receipts={} writer_xids={}", receipts.0,receipts.1);
+        let expected_xids = i64::from(REPORTS.div_ceil(rows));
+        anyhow::ensure!(receipts == (i64::from(REPORTS), expected_xids), "configured {rows}-row page produced {receipts:?}");
+        let phases: Vec<(i64,i64)> = sqlx::query_as(
+            "SELECT position-$1,count(*) FROM public.t2_da_delivery_progress WHERE tenant=$2 GROUP BY position ORDER BY position"
+        ).bind(before).bind(tenant).fetch_all(&c.operator).await?;
+        // Delivery sees the old checkpoint until the projection pass commits its pages.
+        // With single-row pages, the 65th delivery sees a whole pass of 64 committed pages.
+        let expected = if rows == 1 { vec![(0,64),(64,1)] } else { vec![(0,65)] };
+        anyhow::ensure!(phases == expected, "delivery checkpoints for page {rows}: {phases:?}");
+        eprintln!("da_configured_page rows={rows} receipts={} writer_xids={} delivery_checkpoints={phases:?}", receipts.0,receipts.1);
+        sqlx::raw_sql("DROP TRIGGER t2_delivery ON rss_da.report_history; DROP FUNCTION public.t2_da_delivery(); DROP TABLE public.t2_da_delivery_progress")
+            .execute(&c.operator).await?;
         Ok(())
     }.await;
     let _ = stop.send(());
