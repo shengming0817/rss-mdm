@@ -264,6 +264,7 @@ pub(crate) async fn from_compiled(
         .windows
         .map(|config| {
             let verifier = rss_identity_oidc::entra::HttpEntra::new(
+                rss_mdm_device_access_runtime::oidc::provider_clock(),
                 identity_policy.transport,
                 identity_runtime_policy.jwks.max_token_bytes,
                 identity_policy.jwks,

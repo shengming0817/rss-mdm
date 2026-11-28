@@ -49,11 +49,16 @@ impl rss_mdm_group_service::runtime::DeviceFieldRefresh for Refresh {
     > {
         Box::pin(async move {
             let owner = self.clone();
+            let cutoff = rss_request_context::Deadline::from_timeout(
+                self.runtime.execution_timer(),
+                crate::identity::deadline().timeout(),
+            )
+            .map_err(|_| ReconcileError::new(ErrorKind::Transient))?;
             self.runtime
-                .local_tx(binding, crate::identity::deadline(), move |tx| {
+                .local_tx_until(binding, cutoff, move |tx| {
                     Box::pin(async move {
                         tx.with_connection(move |c| {
-                            Box::pin(async move { owner.page(c, binding).await })
+                            Box::pin(async move { owner.page(c, binding, cutoff).await })
                         })
                         .await
                     })
@@ -72,7 +77,12 @@ impl rss_mdm_group_service::runtime::DeviceFieldRefresh for Refresh {
 }
 
 impl Refresh {
-    async fn page(&self, c: &mut PgConnection, binding: ExecutionBinding) -> Result<bool> {
+    async fn page(
+        &self,
+        c: &mut PgConnection,
+        binding: ExecutionBinding,
+        cutoff: rss_request_context::Deadline,
+    ) -> Result<bool> {
         let tenant = binding.tenant().to_string();
         sqlx::query("INSERT INTO mdm_assets.personnel_cursor(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
             .bind(&tenant).execute(&mut *c).await?;
@@ -83,7 +93,7 @@ impl Refresh {
         };
         let providers = match &self.federation {
             Some(f) => f
-                .login_options(binding, crate::identity::deadline())
+                .login_options(binding, cutoff)
                 .await
                 .map_err(invalid)?
                 .into_iter()
@@ -99,7 +109,7 @@ impl Refresh {
         if let Some(field) = field
             && !devices.is_empty()
         {
-            self.publish_device_page(c, binding, &devices, &field)
+            self.publish_device_page(c, binding, &devices, &field, cutoff)
                 .await?;
         }
         let next_device = if next_field.is_some() {
@@ -121,10 +131,11 @@ impl Refresh {
         binding: ExecutionBinding,
         devices: &[Uuid],
         field: &Field,
+        cutoff: rss_request_context::Deadline,
     ) -> Result<()> {
         let subjects = self
             .users
-            .read(binding, devices, crate::identity::deadline())
+            .read(binding, devices, cutoff)
             .await
             .map_err(invalid)?;
         let ids: Vec<_> = subjects

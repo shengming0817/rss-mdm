@@ -7,6 +7,7 @@ use sqlx::{PgConnection, PgPool};
 #[derive(Clone)]
 pub struct AuditReadStore {
     pub(crate) adapter: PgAudit,
+    pub(crate) write_budget: rss_audit_postgres::WriteBudget,
     ledger: bool,
 }
 impl AuditReadStore {
@@ -69,9 +70,19 @@ impl AuditReadStore {
         integrity: Integrity,
         control: &Control<'_, T>,
     ) -> Result<Self, Error> {
+        let budget = crate::budget::write_budget(pool.options().get_max_connections())?;
+        Self::with_budget(pool, integrity, budget, control).await
+    }
+    pub(crate) async fn with_budget<T: ExecutionTimer>(
+        pool: PgPool,
+        integrity: Integrity,
+        write_budget: rss_audit_postgres::WriteBudget,
+        control: &Control<'_, T>,
+    ) -> Result<Self, Error> {
         let ledger = matches!(integrity, Integrity::Ledger(_));
         Ok(Self {
-            adapter: PgAudit::new(pool, integrity, control).await?,
+            adapter: PgAudit::new(pool, integrity, write_budget.clone(), control).await?,
+            write_budget,
             ledger,
         })
     }

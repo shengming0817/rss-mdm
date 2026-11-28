@@ -5,39 +5,8 @@ use schemars::{Schema, SchemaGenerator};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
-fn object(fields: &[(&str, Value)], required: &[&str]) -> Value {
-    json!({"type":"object","properties":fields.iter().map(|(k,v)|(k.to_string(),v.clone())).collect::<serde_json::Map<_,_>>(),"required":required,"additionalProperties":false})
-}
 fn vocabulary<T: Serialize>(values: impl IntoIterator<Item = T>) -> Value {
     json!({"type":"string","enum":values.into_iter().map(|v|serde_json::to_value(v).expect("external enum serialization")).collect::<Vec<_>>()})
-}
-fn snapshot(_: &mut SchemaGenerator) -> Schema {
-    let text = json!({"type":"string","minLength":1,"maxLength":256,"pattern":"^[^\\u0000-\\u001f\\u007f-\\u009f]*$","description":"Identity additionally validates the 256 UTF-8 byte budget, trimming and department tree relationships"});
-    let node = object(
-        &[
-            ("id", text.clone()),
-            ("displayName", text.clone()),
-            ("parentId", json!({"anyOf":[text.clone(),{"type":"null"}]})),
-        ],
-        &["id", "displayName", "parentId"],
-    );
-    object(
-        &[
-            ("version", json!({"type":"integer","const":1})),
-            ("sourceRevision", text.clone()),
-            (
-                "nodes",
-                json!({"type":"array","minItems":1,"maxItems":1024,"items":node}),
-            ),
-            (
-                "memberships",
-                json!({"type":"array","maxItems":1024,"items":text}),
-            ),
-        ],
-        &["version", "sourceRevision", "nodes", "memberships"],
-    )
-    .try_into()
-    .expect("Identity department schema")
 }
 fn unavailable(_: &mut SchemaGenerator) -> Schema {
     use rss_identity_core::department::DepartmentUnavailableReason::*;
@@ -63,7 +32,7 @@ pub(crate) enum Departments {
         snapshot_id: Uuid,
         observed_at: i64,
         expires_at: i64,
-        #[schemars(schema_with = "snapshot")]
+        #[schemars(schema_with = "rss_mdm_identity_http::challenge::department_snapshot_schema")]
         snapshot: rss_identity_core::department::DepartmentSnapshot,
     },
     Expired,

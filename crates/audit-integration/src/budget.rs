@@ -143,6 +143,16 @@ mod tests;
 
 /// The concrete product timer; no transaction or runtime ownership is transferred.
 pub struct RuntimeTimer;
+impl RuntimeTimer {
+    /// System wall time for the host's OIDC checks and browser cookie expiry.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "concrete wall clock selected at host assembly"
+    )]
+    pub fn wall_time() -> std::time::SystemTime {
+        std::time::SystemTime::now()
+    }
+}
 impl rss_request_context::Clock for RuntimeTimer {
     #[allow(
         clippy::disallowed_methods,
@@ -165,4 +175,15 @@ impl rss_request_context::CancellationObserver for AuditBudget {
     fn cancelled(&self) -> rss_request_context::CancellationFuture<'_> {
         Box::pin(self.cancel.cancelled())
     }
+}
+
+/// Canonical bytes shared across the identity and business writers of this host.
+pub fn write_budget(
+    connections: u32,
+) -> Result<rss_audit_postgres::WriteBudget, rss_audit_postgres::Error> {
+    let batch: u32 = 8 * 1024 * 1024;
+    let capacity = batch
+        .checked_mul(connections)
+        .ok_or(rss_audit_postgres::Error::WriteLimit)?;
+    rss_audit_postgres::WriteBudget::new(4096, batch, capacity)
 }

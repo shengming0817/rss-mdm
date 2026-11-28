@@ -6,7 +6,7 @@ use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_device_access::deployment::PlatformConfiguration;
 use rss_mdm_inventory_service::assets::personnel::{DeviceSubjects, DeviceSubjectsRead};
 use rss_request_context::Clock;
-use rss_transactional_messaging::policy::OperationDeadline;
+use rss_request_context::Deadline;
 use serde_json::Value;
 use sqlx::postgres::{PgArguments, PgRow};
 use std::time::Instant;
@@ -37,12 +37,12 @@ impl<'a> Reader<'a> {
     pub(crate) fn platform_configuration(&self) -> Result<Value> {
         serde_json::to_value(self.platform).map_err(|_| Error::Storage)
     }
-    fn budget(&self) -> Result<OperationDeadline> {
-        let remaining = self
-            .deadline
-            .checked_duration_since(self.clock.now())
-            .ok_or(Error::Deadline)?;
-        Ok(OperationDeadline::from_remaining(remaining))
+    fn budget(&self) -> Result<Deadline> {
+        let cutoff = Deadline::at(self.deadline);
+        if cutoff.is_expired(self.clock.now()) {
+            return Err(Error::Deadline);
+        }
+        Ok(cutoff)
     }
     /// Refresh only the authenticated caller, with the original request's remaining budget.
     pub(crate) async fn revalidate(
@@ -124,7 +124,7 @@ async fn device_subjects(
     binding: rss_transactional_messaging::fence::ExecutionBinding,
     platform: Value,
     devices: &[uuid::Uuid],
-    deadline: OperationDeadline,
+    deadline: Deadline,
 ) -> Result<Vec<DeviceSubjects>> {
     use sqlx::{Arguments, Row};
     const SELECT: &str = concat!("WITH platform_configuration AS (SELECT $3::jsonb AS config),",
@@ -181,7 +181,7 @@ impl DeviceSubjectsRead for QualifiedUsers {
         &'a self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         devices: &'a [uuid::Uuid],
-        deadline: OperationDeadline,
+        deadline: Deadline,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<

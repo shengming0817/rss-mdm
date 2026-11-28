@@ -15,13 +15,9 @@ ENV RUSTC_WRAPPER="" CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 RUN --mount=type=cache,id=mdm-${CACHE_NAMESPACE}-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=mdm-${CACHE_NAMESPACE}-git-${TARGETPLATFORM},target=/usr/local/cargo/git,sharing=locked \
     --mount=type=secret,id=azure_header,required=true \
-    GIT_CONFIG_COUNT=3 \
+    GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0=http.https://dev.azure.com/shengming0923/rss/_git/rss.extraheader \
     GIT_CONFIG_VALUE_0="$(cat /run/secrets/azure_header)" \
-    GIT_CONFIG_KEY_1=http.https://dev.azure.com/shengming0923/rss/_git/rss-identity.extraheader \
-    GIT_CONFIG_VALUE_1="$(cat /run/secrets/azure_header)" \
-    GIT_CONFIG_KEY_2=http.https://dev.azure.com/shengming0923/rss/_git/rss-audit.extraheader \
-    GIT_CONFIG_VALUE_2="$(cat /run/secrets/azure_header)" \
     cargo fetch --locked
 RUN --network=none --mount=type=cache,id=mdm-${CACHE_NAMESPACE}-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=mdm-${CACHE_NAMESPACE}-git-${TARGETPLATFORM},target=/usr/local/cargo/git,sharing=locked \

@@ -5,7 +5,7 @@ pub async fn verify(
     authority: &EntraAuthority,
     binding: rss_transactional_messaging::fence::ExecutionBinding,
     token: zeroize::Zeroizing<String>,
-    deadline: rss_transactional_messaging::policy::OperationDeadline,
+    deadline: rss_request_context::Deadline,
 ) -> Result<VerifiedExternalSubject, crate::Error> {
     authority
         .verify(binding, token, deadline)
@@ -15,7 +15,7 @@ pub async fn verify(
 pub async fn resolve(
     authority: &EntraAuthority,
     subject: VerifiedExternalSubject,
-    deadline: rss_transactional_messaging::policy::OperationDeadline,
+    deadline: rss_request_context::Deadline,
 ) -> Result<RevalidatedAccount, crate::Error> {
     authority
         .resolve(subject, deadline)
@@ -25,7 +25,7 @@ pub async fn resolve(
 pub async fn recheck(
     authority: &EntraAuthority,
     account: RevalidatedAccount,
-    deadline: rss_transactional_messaging::policy::OperationDeadline,
+    deadline: rss_request_context::Deadline,
 ) -> Result<RevalidatedAccount, crate::Error> {
     authority
         .recheck(account, deadline)

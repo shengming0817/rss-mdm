@@ -79,7 +79,10 @@ impl rss_request_context::ExecutionTimer for Timer {
         tokio::time::sleep_until(deadline.instant().into()).await;
     }
 }
+#[path = "../../../../hack/test-support/device_oidc.rs"]
+pub(super) mod device_oidc;
 pub struct Context {
+    pub oidc: std::sync::OnceLock<device_oidc::Keycloak>,
     pub browser_origin: String,
     pub platform: Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>,
     pub business: std::sync::OnceLock<Arc<rss_mdm_device_access_http::Business>>,
@@ -243,6 +246,7 @@ impl Context {
                 rss_identity_core::InstanceId::parse(&inputs.installation.instance_id)?,
                 rss_identity_core::session::SessionPolicy::new(900, 14400)?,
                 rss_audit_postgres::Integrity::Plain,
+                rss_mdm_audit_integration::budget::write_budget(4)?,
             )?
             .with_platform(platform.clone()),
             binding,
@@ -252,9 +256,11 @@ impl Context {
                     &inputs.installation.instance_id,
                 )?,
             ),
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
                 Duration::from_secs(10),
-            ),
+            )
+            .expect("bounded fixture deadline"),
         )
         .await?;
         let sessions = Arc::new(
@@ -267,6 +273,7 @@ impl Context {
         ));
         Ok(Self {
             browser_origin,
+            oidc: Default::default(),
             platform,
             business: std::sync::OnceLock::new(),
             proof_audit,

@@ -5,6 +5,10 @@ Only direct behavior inputs select T2. Preparation is not a business dependency 
 from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
+IDENTITY_HTTP = ('crates/identity-http/*', 'hack/test-support/identity_http.rs')
+DEVICE_OIDC = (*IDENTITY_HTTP, 'hack/test-support/device_oidc.rs', 'hack/test-support/identity_keycloak.py',
+               'hack/test-support/keycloak-totp.json', 'deployment/providers.lock.json')
+
 MODULES = {
     'webhook.relay': dict(prefix='assembly::webhook_relay_t2::', profiles=('shared',),
         inputs=('apps/server/tests/support/provider_http.rs','crates/webhook-service/*','crates/work-page/*','apps/server/src/assembly/webhooks.rs',
@@ -97,7 +101,7 @@ MODULES = {
 
     'device_access.foundation': dict(package='rss-mdm-device-access-http', target='foundation', installer=None,
         prefix='foundation::',profiles=('da_foundation',),
-        inputs=('hack/test-support/da-delivery-checkpoints.sql', 'hack/test-support/inventory-pages.sql', 'crates/agent-wire/src/identity.rs', 'apps/da-server/*','crates/apple-mdm/src/da.rs','crates/windows-mdm/src/da.rs','crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/recovery-credentials/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',
+        inputs=(*DEVICE_OIDC, 'hack/test-support/da-delivery-checkpoints.sql','hack/test-support/inventory-pages.sql', 'crates/agent-wire/src/identity.rs', 'apps/da-server/*','crates/apple-mdm/src/da.rs','crates/windows-mdm/src/da.rs','crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/recovery-credentials/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',
                 'crates/agent-wire/src/enroll.rs','crates/agent-wire/src/pki.rs','crates/agent-wire/src/task_trust.rs',
                 'crates/agent-wire/src/runtime.rs','crates/agent-wire/src/device_access.rs','crates/agent-wire/src/platform_sso.rs',
                 'crates/native-protection/*',
@@ -129,7 +133,7 @@ MODULES = {
     'task.scheduled_owners': dict(prefix='assembly::execution_owners_t2::scheduled::', profiles=('shared',),
         inputs=('crates/policy-postgres/*','crates/policy-service/*','crates/software-service/*','crates/inventory-service/src/collection/*','apps/server/src/assembly/policy*','apps/server/tests/execution_owners/*')),
 
-    "registration.device_access": dict(prefix="assembly::credential_owners_t2::registration::", profiles=("da_embedded",), inputs=('apps/server/src/assembly/operation_reads/sources.rs', 'crates/agent-wire/src/identity.rs', "crates/device-access*/*", "crates/recovery-credentials/*", "apps/server/schema/da-*", "apps/server/src/migration/device_access.rs", "apps/server/src/assembly/device_access/*", "apps/server/src/assembly/http.rs", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/access_execution.rs", "apps/server/src/assembly/registration_agent_facts.rs", "apps/server/src/assembly/registration_sources.rs", "crates/agent-channel/src/bindings.rs", "apps/server/tests/support/planning.rs", "apps/server/tests/task_trust/support.rs", "hack/da_foundation_materials.py", "hack/test-support/da_recovery.rs", "hack/test-support/da_provider.rs", "hack/task_trust_materials.py")),
+    "registration.device_access": dict(prefix="assembly::credential_owners_t2::registration::", profiles=("da_embedded",), inputs=(*DEVICE_OIDC, 'apps/server/src/assembly/operation_reads/sources.rs', 'crates/agent-wire/src/identity.rs', "crates/device-access*/*", "crates/recovery-credentials/*", "apps/server/schema/da-*", "apps/server/src/migration/device_access.rs", "apps/server/src/assembly/device_access/*", "apps/server/src/assembly/http.rs", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/access_execution.rs", "apps/server/src/assembly/registration_agent_facts.rs", "apps/server/src/assembly/registration_sources.rs", "crates/agent-channel/src/bindings.rs", "apps/server/tests/support/planning.rs", "apps/server/tests/task_trust/support.rs", "hack/da_foundation_materials.py", "hack/test-support/da_recovery.rs", "hack/test-support/da_provider.rs", "hack/task_trust_materials.py")),
     "recovery.credentials": dict(prefix="assembly::credential_owners_t2::credentials::", profiles=("shared", "recovery_maintenance", "recovery_audit"), inputs=('crates/work-page/*', 'crates/agent-wire/src/identity.rs', "crates/recovery-credentials/*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/credential*", "crates/device-service/src/control/credential_inputs.rs", "crates/apple-channel/src/recovery_credentials.rs", "crates/apple-channel/src/flow_store.rs", "crates/apple-channel/src/protection.rs", "apps/server/tests/support/native_identity.rs", "apps/server/tests/task_trust/support.rs", "hack/native_protocol_materials.py", "hack/task_trust_materials.py")),
     'software.deployment': dict(prefix='assembly::software_t2::', profiles=('shared', 'native_download', 'external_capacity', 'software_command_settlement'),
         inputs=('crates/audit-integration/src/command_transaction.rs', 'crates/agent-wire/src/identity.rs', 'crates/software-service/*', 'crates/device-service/src/control/source_changes.rs',
@@ -281,9 +285,9 @@ MODULES = {
 
     'foundation.authorization': dict(
         prefix='foundation_t2::authorization::', profiles=('shared', 'transaction', 'http_scope'),
-        inputs=('crates/agent-wire/src/identity.rs', 'apps/server/src/identity.rs', 'apps/server/src/identity/*', 'apps/server/src/maintenance.rs', 'apps/server/src/authorization_bootstrap.rs', 'apps/server/src/installation/backup/accounts.rs', 'crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
+        inputs=(*IDENTITY_HTTP, 'crates/management-http/src/identity.rs', 'crates/agent-wire/src/identity.rs', 'apps/server/src/identity.rs', 'apps/server/src/identity/*', 'apps/server/src/maintenance.rs', 'apps/server/src/authorization_bootstrap.rs', 'apps/server/src/installation/backup/accounts.rs', 'crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
                 'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
-                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs', 'crates/management-http/src/boundary.rs', 'crates/management-http/src/response.rs', 'apps/server/src/assembly/http.rs', 'apps/server/tests/support/host.rs', 'apps/server/tests/foundation/http_scope.rs', 'apps/server/src/diagnostic.rs',
+                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs','crates/management-http/src/boundary.rs', 'crates/management-http/src/response.rs', 'apps/server/src/assembly/http.rs', 'apps/server/tests/support/host.rs', 'apps/server/tests/foundation/http_scope.rs', 'apps/server/src/diagnostic.rs',
                 'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs', 'apps/server/src/administration/user_profiles/*')),
     'foundation.account_recovery': dict(
         prefix='installation::backup::accounts::t2::', profiles=('account_recovery',),

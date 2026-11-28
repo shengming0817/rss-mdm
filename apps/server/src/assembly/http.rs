@@ -558,6 +558,7 @@ pub(crate) fn from_state(
     }
     let apple = state.apple.clone();
     let browser = BrowserRoutes {
+        authentication,
         agent_packages: rss_mdm_management_http::software_catalog::mount_browser_agent_packages(
             Some((state.software_catalog.clone(), management_boundary.clone())),
         ),
@@ -604,13 +605,18 @@ pub(crate) fn from_state(
         )),
     }
     .assemble()
-    .rejections(crate::identity::scope_rejections);
-    let browser = authentication
-        .merge(browser.into_checked_axum(rss_mdm_http_contract::module::Listener::Browser));
+    .rejections(crate::identity::scope_rejections)
+    .rejections(crate::native::gateway::callback_admission);
+    let browser = browser.into_checked_axum(rss_mdm_http_contract::module::Listener::Browser);
     let browser = state
         .identity
         .scope_browser(browser, state.request_timeout)
         .layer(DefaultBodyLimit::max(16384));
+    let browser = if state.identity.federation.is_some() {
+        browser.layer(middleware::from_fn(rss_mdm_identity_http::protect_callback))
+    } else {
+        browser
+    };
     crate::native::Routers {
         windows_control: windows_state.clone(),
         baseline: crate::lifecycle::baseline_registration(
@@ -803,16 +809,16 @@ fn windows_management_routes(
 
 // One final browser combination; each field is produced by its actual ingress owner.
 rss_mdm_http_contract::route_module! {
-    struct BrowserRoutes for [Browser] { device_access [optional],
+    struct BrowserRoutes for [Browser] { authentication, device_access [optional],
         tenants, management, windows_management, apple_management,
         apple_browser, windows_browser, host, software_native, software_downloads,
         agent_packages at "/api/v1/agent/enroll"
     }
 }
 /// Complete self-owned HTTP surface, including conditional mounts, with no runtime state.
-/// Third-party Identity routers retain their external owner; product adapters remain included.
 pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<String>> {
     let browser = BrowserRoutes {
+        authentication: rss_mdm_management_http::identity::routes(None, true),
         agent_packages: rss_mdm_management_http::software_catalog::mount_browser_agent_packages(
             None,
         ),
@@ -855,7 +861,8 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
         ),
     }
     .assemble()
-    .rejections(crate::identity::scope_rejections);
+    .rejections(crate::identity::scope_rejections)
+    .rejections(crate::native::gateway::callback_admission);
     let agent = mount_agent(
         None,
         empty_da_agent_routes(),
@@ -888,16 +895,14 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
     if !violations.is_empty() {
         return Err(violations);
     }
-    let mut document = rss_mdm_http_contract::artifact::document([
+    rss_mdm_http_contract::artifact::document([
         ("browser", browser.into_endpoints()),
         ("agent", agent.into_endpoints()),
         ("windows-enrollment", windows_enrollment.into_endpoints()),
         ("windows-management", windows_management.into_endpoints()),
         ("apple", apple.into_endpoints()),
         ("da", da.into_endpoints()),
-    ])?;
-    document["externalOwners"] = serde_json::json!([{"owner":"rss-identity-http-axum","entry":"Identity::http_routes","scope":"Identity SDK routers; RSS product adapters are included in endpoints", "ingressResponses":crate::identity::scope_rejections("GET", "/api/v1/identity/tenants/{tenant}")}]);
-    Ok(document)
+    ])
 }
 
 fn da_agent_routes(

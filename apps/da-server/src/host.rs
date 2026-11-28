@@ -282,9 +282,10 @@ pub async fn assemble(
     let audit_budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
 
     let audit = Arc::new(
-        rss_mdm_audit_integration::AuditStore::new(
+        rss_mdm_audit_integration::AuditStore::with_budget(
             pool.clone(),
             config.audit.integrity()?,
+            compiled.identity.write_budget.clone(),
             transactions,
             binding,
             &audit_budget.control(),
@@ -310,6 +311,15 @@ pub async fn assemble(
     let mut administrators = BTreeMap::new();
 
     let mut options = compiled.identity.authority.clone();
+    if let Some(c) = &config.oidc {
+        let transport = da::oidc::transport(
+            &c.assurance_profiles,
+            &c.private_providers,
+            compiled.identity.transport,
+        )
+        .map_err(|_| Error::Configuration)?;
+        options = options.with_oidc(Arc::new(transport));
+    }
 
     if let Some(enterprise) = &config.enterprise {
         if enterprise.clients.is_empty()
@@ -319,7 +329,7 @@ pub async fn assemble(
             return Err(Error::Configuration);
         }
         for c in &enterprise.clients {
-            let client = da::enterprise::Backend::load(c, compiled.identity.transport)
+            let client = da::enterprise::Backend::load(c, instance, compiled.identity.transport)
                 .map_err(|_| Error::Configuration)?;
 
             if clients
@@ -399,20 +409,16 @@ pub async fn assemble(
         .map_err(|_| Error::Configuration)?,
     );
 
-    let authority = Authority::connect_runtime(
-        identity_runtime,
-        kdf,
-        options,
-        binding,
-        policy,
-        OperationDeadline::from_cutoff(cutoff, &Timer),
-    )
-    .await
-    .map_err(|_| Error::Identity)?;
+    let authority =
+        Authority::connect_runtime(identity_runtime, kdf, options, binding, policy, cutoff)
+            .await
+            .map_err(|_| Error::Identity)?;
 
-    let http_config =
-        rss_identity_http_axum::HttpConfig::new(&config.browser.origin, compiled.identity.request)
-            .map_err(|_| Error::Configuration)?;
+    let http_config = rss_identity_web_credentials::HttpConfig::new(
+        &config.browser.origin,
+        compiled.identity.request,
+    )
+    .map_err(|_| Error::Configuration)?;
 
     let origin = url::Url::parse(&config.browser.origin).map_err(|_| Error::Configuration)?;
 
@@ -425,27 +431,17 @@ pub async fn assemble(
     let federation = config
         .oidc
         .as_ref()
-        .map(|oidc| {
-            oidc.federation(
-                authority.clone(),
-                &config.browser.origin,
-                instance,
-                compiled.identity.transport,
-            )
-        })
+        .map(|oidc| oidc.federation(authority.clone(), &config.browser.origin, instance))
         .transpose()?;
     if let Some(federation) = &federation {
         federation
-            .reconcile_assurance_profiles(binding, OperationDeadline::from_cutoff(cutoff, &Timer))
+            .reconcile_assurance_profiles(binding, cutoff)
             .await
             .map_err(|_| Error::Identity)?;
     }
-    let federated_routes = federation
-        .map(|f| rss_identity_http_axum::federated_router(f, http_config.clone()))
-        .transpose()
-        .map_err(|_| Error::Identity)?;
     let identity = Arc::new(http::identity::Identity {
-        federated_routes: federated_routes.clone(),
+        federation,
+        excluded_federation_tenant: None,
         enterprise_clients: clients,
         enterprise_administrators: administrators,
         authority: authority.clone(),
@@ -651,36 +647,27 @@ pub async fn assemble(
         requests: Arc::new(tokio::sync::Semaphore::new(32)),
     });
 
-    let mut identity_routes =
-        rss_identity_http_axum::router(authority.clone(), http_config.clone())
-            .map_err(|_| Error::Identity)?
-            .merge(
-                rss_identity_http_axum::webauthn_router(webauthn, http_config.clone())
-                    .map_err(|_| Error::Identity)?,
-            )
-            .merge(
-                rss_identity_http_axum::bearer_router(authority.clone(), http_config.clone())
-                    .map_err(|_| Error::Identity)?,
-            );
-
-    if let Some(routes) = federated_routes {
-        identity_routes = identity_routes.merge(routes);
-    }
-    let browser = http::browser::router(Some(&state))
-        .into_checked_axum(rss_mdm_http_contract::module::Listener::Browser)
-        .merge(
-            identity_routes.route_layer(axum::middleware::from_fn_with_state(
+    let identity_routes =
+        http::identity::routes(Some(&state.identity), state.identity.federation.is_some())
+            .route_layer(axum::middleware::from_fn_with_state(
                 IdentityExecution {
                     installation: config.installation.clone(),
                     rp: compiled.identity.rp,
                 },
                 identity_execution,
-            )),
-        );
+            ));
+    let browser = http::browser::with_identity(Some(&state), identity_routes);
 
     let browser_requests = state.requests.clone();
 
     let browser = http::browser::envelope(browser, state);
+    let browser = if config.oidc.is_some() {
+        browser.layer(axum::middleware::from_fn(
+            rss_mdm_identity_http::protect_callback,
+        ))
+    } else {
+        browser
+    };
 
     let protocol = Arc::new(http::Services {
         request_budget,

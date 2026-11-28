@@ -211,7 +211,7 @@ async fn operation(
     Extension(audit): Extension<RequestAudit>,
     Path((owner, id)): Path<(OperationOwner, Uuid)>,
     PresentedCredentials(headers): PresentedCredentials,
-    address: Option<Extension<rss_identity_http_axum::ClientAddress>>,
+    address: Option<Extension<rss_mdm_identity_http::ClientAddress>>,
     params: rss_mdm_http_contract::query::OwnedQuery<LocatorParameters>,
 ) -> Result<Json<Detail>, Error> {
     if id.is_nil() {
@@ -358,7 +358,7 @@ fn tenant_operation(
     audit: Extension<RequestAudit>,
     Path((_tenant, owner, id)): Path<(Uuid, OperationOwner, Uuid)>,
     headers: PresentedCredentials,
-    address: Option<Extension<rss_identity_http_axum::ClientAddress>>,
+    address: Option<Extension<rss_mdm_identity_http::ClientAddress>>,
     params: rss_mdm_http_contract::query::OwnedQuery<LocatorParameters>,
 ) -> impl std::future::Future<Output = Result<Json<Detail>, Error>> {
     operation(

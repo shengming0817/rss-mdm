@@ -174,11 +174,13 @@ pub struct Endpoint {
     pub query: Option<QueryDeclaration>,
     pub contract: EndpointContract,
     pub operation_id: String,
+    #[serde(skip)]
+    pub settles_transaction: bool,
     pub conditions: Vec<&'static str>,
     pub configured_path: Option<ConfiguredSegment>,
     /// Resolved by the real middleware owner after all path prefixes are mounted.
     #[serde(skip)]
-    pub authentication: Option<fn(&str, &str) -> authentication::Description>,
+    pub authentication: Option<authentication::Describe>,
     pub ingress_rejections: Vec<signature::Response>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

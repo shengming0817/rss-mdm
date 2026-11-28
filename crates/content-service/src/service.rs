@@ -77,9 +77,7 @@ impl<'a> UploadAuthority<'a> {
                         self.proof.binding(),
                         &app.authorization,
                         secret,
-                        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                            budget.remaining(),
-                        ),
+                        budget.operation_deadline(),
                     )
                     .await
                     .map_err(Error::from)

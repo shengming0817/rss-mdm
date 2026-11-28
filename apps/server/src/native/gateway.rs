@@ -70,6 +70,17 @@ pub(crate) fn router(
             admit_request,
         ))
 }
+/// Gateway connection capacity is checked before dispatch to the Browser callback projection.
+pub(crate) fn callback_admission(
+    _: &str,
+    path: &str,
+) -> Vec<rss_mdm_http_contract::signature::Response> {
+    if path == rss_mdm_identity_http::CALLBACK_PATH {
+        vec![rss_mdm_management_http::boundary::capacity_rejection()]
+    } else {
+        Vec::new()
+    }
+}
 async fn admit_request(
     State(slots): State<Arc<tokio::sync::Semaphore>>,
     mut request: Request,
@@ -171,7 +182,7 @@ fn attest(request: &mut Request) -> Result<(String, IpAddr), ()> {
         .insert(connection.request_origin(origin.clone()));
     request
         .extensions_mut()
-        .insert(rss_identity_http_axum::ClientAddress(source));
+        .insert(rss_mdm_identity_http::ClientAddress(source));
     if let Some(certificate) = certificate {
         request.extensions_mut().insert(certificate);
     }
@@ -295,11 +306,14 @@ mod budget_tests {
                 ));
                 arrivals.recv().await.unwrap();
             }
+            let callback = Request::get(rss_mdm_identity_http::CALLBACK_PATH)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = app.oneshot(callback).await.unwrap();
+            assert_eq!(response.status(), 429);
+            assert_eq!(response.headers()["retry-after"], "1");
             assert_eq!(
-                app.oneshot(Request::new(axum::body::Body::empty()))
-                    .await
-                    .unwrap()
-                    .status(),
+                callback_admission("GET", rss_mdm_identity_http::CALLBACK_PATH)[0].status,
                 429
             );
             release.notify_waiters();

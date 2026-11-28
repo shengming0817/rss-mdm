@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 pub struct Authentication {
     pub authority: rss_identity_postgres::Authority,
-    pub http: rss_identity_http_axum::HttpConfig,
+    pub http: rss_identity_web_credentials::HttpConfig,
     pub origin: String,
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
@@ -146,37 +146,41 @@ pub(crate) async fn authenticate(
     active: bool,
     cutoff: rss_request_context::Deadline,
 ) -> Result<AuthorizedPrincipal, Error> {
-    let (session, _secret) = rss_identity_http_axum::authenticate_request(
+    let (session, _secret) = rss_identity_web_credentials::authenticate_request(
         &app.authentication.authority,
         &app.authentication.http,
         execution,
         headers,
         if active {
-            rss_identity_http_axum::SessionActivity::Active
+            rss_identity_web_credentials::SessionActivity::Active
         } else {
-            rss_identity_http_axum::SessionActivity::Passive
+            rss_identity_web_credentials::SessionActivity::Passive
         },
-        rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-            cutoff,
-            &rss_mdm_audit_integration::budget::RuntimeTimer,
-        ),
+        cutoff,
     )
     .await
-    .map_err(
-        |r| match r.extensions().get::<rss_identity_http_axum::HttpFailure>() {
-            Some(rss_identity_http_axum::HttpFailure::Authority(
-                rss_identity_postgres::AuthorityError::CommitUnknown(_),
-            )) => Error::CommitUnknown,
-            Some(rss_identity_http_axum::HttpFailure::Authority(
-                rss_identity_postgres::AuthorityError::RollbackFailed(_),
-            )) => Error::RollbackFailed,
-            _ if r.status().is_server_error() => Error::Unavailable(Failure::Database),
-            _ => Error::Unauthorized,
-        },
-    )?;
+    .map_err(|e| match e {
+        rss_identity_web_credentials::CredentialError::Authority(
+            rss_identity_postgres::AuthorityError::CommitUnknown(_),
+        ) => Error::CommitUnknown,
+        rss_identity_web_credentials::CredentialError::Authority(
+            rss_identity_postgres::AuthorityError::RollbackFailed(_),
+        ) => Error::RollbackFailed,
+        rss_identity_web_credentials::CredentialError::Authority(
+            rss_identity_postgres::AuthorityError::Rejected,
+        )
+        | rss_identity_web_credentials::CredentialError::Invalid
+        | rss_identity_web_credentials::CredentialError::Malformed
+        | rss_identity_web_credentials::CredentialError::Forbidden => Error::Unauthorized,
+        _ => Error::Unavailable(Failure::Database),
+    })?;
     AuthorizedPrincipal::from_identity(
         &app.access.authorization,
-        rss_mdm_authorization_service::context::Principal::new(session, execution)?,
+        rss_mdm_authorization_service::context::Principal::new(
+            &app.authentication.authority,
+            session,
+            execution,
+        )?,
     )?
     .load_authorization(&app.access.authorization)
     .await
@@ -309,10 +313,7 @@ pub(crate) async fn authorize_user(
         enrollment,
         app.account_authority.clone(),
         None,
-        rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-            cutoff,
-            &rss_mdm_audit_integration::budget::RuntimeTimer,
-        ),
+        cutoff,
     )
     .await?;
     if admission.coordinates().version
@@ -474,13 +475,7 @@ pub async fn progress_in(
     let reference =
         serde_json::from_value(reference).map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     let required = match sessions
-        .recheck(
-            execution,
-            &reference,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(10),
-            ),
-        )
+        .recheck(execution, &reference, sessions.reference_deadline())
         .await
     {
         Ok(_) => false,

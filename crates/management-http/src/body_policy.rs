@@ -7,7 +7,7 @@ use axum::http::Method;
 pub(crate) enum BodyPolicy {
     Buffered(usize),
     Streaming,
-    Sdk(usize),
+    Handler(usize),
 }
 
 /// Completion and package publication verify stored streams under the content lifecycle budget.
@@ -44,7 +44,7 @@ struct RouteLimit {
 enum Mode {
     Buffered,
     Streaming,
-    Sdk,
+    Handler,
 }
 
 /// Product request limits exported unchanged with each host's gateway facts.
@@ -86,7 +86,7 @@ pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
     match rule.mode {
         Mode::Buffered => BodyPolicy::Buffered(rule.bytes),
         Mode::Streaming => BodyPolicy::Streaming,
-        Mode::Sdk => BodyPolicy::Sdk(rule.bytes),
+        Mode::Handler => BodyPolicy::Handler(rule.bytes),
     }
 }
 

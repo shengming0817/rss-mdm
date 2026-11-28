@@ -139,7 +139,8 @@ fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Decla
                     oidc_step_up,
                     &contracts::DEVICE_ACCESS,
                     &[RouteOperation::Action],
-                ),
+                )
+                .settles_transaction(),
             ),
             post_step_up: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/device-access/bindings/{id}/step-up",
@@ -464,21 +465,16 @@ impl ChangeInput {
 pub(crate) fn operation_proof(
     headers: &axum::http::HeaderMap,
 ) -> Result<Option<rss_mdm_agent_wire::runtime::Secret>, Error> {
-    let mut found = None;
-    for header in headers.get_all(axum::http::header::COOKIE) {
-        for part in header.to_str().map_err(|_| Error::Malformed)?.split(';') {
-            if let Some(("__Host-identity-operation", value)) = part.trim().split_once('=') {
-                if found.is_some() {
-                    return Err(Error::Malformed);
-                }
-                found = Some(
-                    rss_mdm_agent_wire::runtime::Secret::parse(value)
-                        .map_err(|_| Error::Unauthorized)?,
-                );
-            }
-        }
+    if !headers.contains_key(axum::http::header::COOKIE) {
+        return Ok(None);
     }
-    Ok(found)
+    let value = rss_identity_web_credentials::read_operation_cookie(headers)
+        .map_err(|_| Error::Malformed)?;
+    value
+        .as_deref()
+        .map(rss_mdm_agent_wire::runtime::Secret::parse)
+        .transpose()
+        .map_err(|_| Error::Unauthorized)
 }
 async fn step_up(
     State(s): State<Arc<Services>>,
@@ -504,11 +500,11 @@ async fn step_up(
         .webauthn
         .begin_authentication(
             s.identity
-                .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
+                .ceremony_actor(auth.proof.binding(), &headers, auth.cutoff())
                 .await?,
             s.identity.rp_generation,
             context,
-            auth.remaining()?,
+            auth.cutoff(),
         )
         .await
         .map_err(crate::identity::failure)?;
@@ -522,104 +518,123 @@ struct FederatedChange {
     return_target: String,
 }
 
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-struct AuthorizationUrl {
-    authorization_url: String,
+enum StepUpError {
+    Device(Error),
+    Identity(rss_mdm_identity_http::HttpError),
 }
-
-/// Identity's own federated route owns browser/CSRF checks, its cookie and callback.
-struct OidcRedirect(axum::response::Response);
-#[derive(serde::Serialize, schemars::JsonSchema)]
-struct IdentityRateLimit {
-    code: String,
-}
-impl axum::response::IntoResponse for OidcRedirect {
-    fn into_response(self) -> axum::response::Response {
-        self.0
+impl From<Error> for StepUpError {
+    fn from(e: Error) -> Self {
+        Self::Device(e)
     }
 }
-impl rss_mdm_http_contract::signature::Output for OidcRedirect {
+impl From<rss_mdm_identity_http::HttpError> for StepUpError {
+    fn from(e: rss_mdm_identity_http::HttpError) -> Self {
+        Self::Identity(e)
+    }
+}
+impl axum::response::IntoResponse for StepUpError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::Device(e) => e.into_response(),
+            Self::Identity(e) => {
+                let mut response = e.into_response();
+                let failure = match response
+                    .extensions()
+                    .get::<rss_mdm_identity_http::HttpFailure>()
+                {
+                    Some(rss_mdm_identity_http::HttpFailure::RequestTimeout) => {
+                        Some(rss_mdm_audit_integration::completion::ResponseFailure::Deadline)
+                    }
+                    Some(rss_mdm_identity_http::HttpFailure::Authority(e)) => {
+                        crate::identity::failure(*e).failure()
+                    }
+                    None => None,
+                };
+                if let Some(failure) = failure {
+                    response.extensions_mut().insert(failure);
+                }
+                response
+            }
+        }
+    }
+}
+impl rss_mdm_http_contract::signature::Output for StepUpError {
     fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
-        use rss_mdm_http_contract::signature::{Response, Schema};
-        let mut r = Response::json::<AuthorizationUrl>(200);
-        r.headers
-            .insert("set-cookie".into(), Schema::response::<String>());
-        let mut limited = Response::json::<IdentityRateLimit>(429);
-        limited
-            .headers
-            .insert("retry-after".into(), Schema::response::<String>());
-        vec![r, limited]
+        let mut r = Error::responses();
+        r.extend(rss_mdm_identity_http::HttpError::responses());
+        r
     }
 }
 async fn oidc_step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(peer): Extension<rss_identity_http_axum::ClientAddress>,
-    Extension(control): Extension<rss_axum::RequestControl>,
-    Path((tenant, device, id, provider)): Path<(Uuid, rss_mdm_agent_wire::DeviceId, Uuid, Uuid)>,
+    Extension(peer): Extension<rss_mdm_identity_http::ClientAddress>,
+    Path((_tenant, device, id, provider)): Path<(Uuid, rss_mdm_agent_wire::DeviceId, Uuid, Uuid)>,
     crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     body: Result<Json<FederatedChange>, axum::extract::rejection::JsonRejection>,
-) -> Result<OidcRedirect, Error> {
-    use tower::ServiceExt;
+) -> Result<rss_mdm_identity_http::CookieJson<rss_mdm_identity_http::AuthorizationUrl>, StepUpError>
+{
     let input = body.map_err(Error::from)?.0;
-    let router = s
-        .identity
-        .federated_routes
-        .clone()
-        .ok_or(Error::Unsupported)?;
+    let federation = s.identity.federation.as_ref().ok_or(Error::Unsupported)?;
     let change = input.change.into_change();
-    let (context, employee) = s
-        .registration
-        .change_step_up_context(
+    let deadline = auth.cutoff().capped(
+        s.identity.authority.execution_timer(),
+        s.identity.http.timeout(),
+    );
+    let (context, employee) = tokio::time::timeout_at(
+        deadline.instant().into(),
+        s.registration.change_step_up_context(
             &auth.proof,
             &device,
             id,
             &change,
             &offboarding_providers(&s, auth.proof.binding(), &change),
             s.admission.as_ref(),
-        )
-        .await?;
+        ),
+    )
+    .await
+    .map_err(|_| {
+        Error::Classified(rss_mdm_audit_integration::completion::ResponseFailure::Deadline)
+    })?
+    .map_err(Error::from)?;
     if employee.is_none() {
-        return Err(Error::Forbidden);
+        return Err(Error::Forbidden.into());
     }
-    let mut request = axum::http::Request::post(format!(
-        "/api/v1/identity/tenants/{tenant}/oidc/{provider}/step-up"
-    ))
-    .body(axum::body::Body::from(
-        serde_json::to_vec(
-            &serde_json::json!({"returnTarget":input.return_target,"operation":{"kind":"host"}}),
+    let binding = auth.proof.binding();
+    if s.identity.excluded_federation_tenant == Some(binding.tenant()) {
+        return Err(Error::Forbidden.into());
+    }
+    let state = rss_mdm_identity_http::AppState {
+        wall_time: rss_mdm_audit_integration::budget::RuntimeTimer::wall_time,
+        authority: s.identity.authority.clone(),
+        config: s.identity.http.clone(),
+    };
+    let actor = rss_mdm_identity_http::operation_actor(&state, binding, &headers, deadline).await?;
+    let browser = rss_identity_web_credentials::BrowserBinding::start(&headers)
+        .map_err(rss_mdm_identity_http::HttpError::from)?;
+    let source = rss_identity_postgres::AttemptSource::parse(&peer.0.to_string())
+        .map_err(rss_mdm_identity_http::HttpError::from)?;
+    let provider = rss_identity_core::federation::ProviderId::parse(&provider.to_string())
+        .map_err(|_| Error::Malformed)?;
+    let redirect = federation
+        .begin_step_up(
+            rss_identity_postgres::LoginRequest {
+                binding,
+                provider,
+                browser: browser.value,
+                target: input.return_target,
+                replacement: Some(actor),
+                source,
+            },
+            context,
+            deadline,
         )
-        .map_err(|_| Error::Malformed)?,
+        .await
+        .map_err(rss_mdm_identity_http::HttpError::from)?;
+    Ok(rss_mdm_identity_http::authorization_redirect(
+        redirect,
+        browser.set_cookie,
     ))
-    .map_err(|_| Error::Malformed)?;
-    *request.headers_mut() = headers;
-    request
-        .headers_mut()
-        .remove(axum::http::header::CONTENT_LENGTH);
-    request.extensions_mut().insert(peer);
-    request.extensions_mut().insert(control.deadline());
-    request.extensions_mut().insert(auth.proof.binding());
-    request.extensions_mut().insert(context);
-    let mut response = router.oneshot(request).await.expect("router is infallible");
-    if let Some(class) = response
-        .extensions()
-        .get::<rss_identity_http_axum::HttpFailure>()
-        .copied()
-    {
-        let failure = match class {
-            rss_identity_http_axum::HttpFailure::RequestTimeout => {
-                Some(rss_mdm_audit_integration::completion::ResponseFailure::Deadline)
-            }
-            rss_identity_http_axum::HttpFailure::Authority(error) => {
-                crate::identity::failure(error).failure()
-            }
-        };
-        if let Some(failure) = failure {
-            response.extensions_mut().insert(failure);
-        }
-    }
-    Ok(OidcRedirect(response))
 }
 
 async fn offboarding(
@@ -681,12 +696,11 @@ async fn offboarding_identity(
     }
     let principal = rss_identity_core::PrincipalId::parse(&original.person.principal.to_string())
         .map_err(|_| Error::Malformed)?;
-    let deadline = || auth.remaining();
     match input {
         IdentityDisposition::Reconcile {} => {
             let actor = s
                 .identity
-                .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
+                .ceremony_actor(auth.proof.binding(), &headers, auth.cutoff())
                 .await?;
             let account = s
                 .identity
@@ -697,7 +711,7 @@ async fn offboarding_identity(
                         tenant: auth.proof.binding().tenant(),
                         principal,
                     },
-                    deadline()?,
+                    auth.cutoff(),
                 )
                 .await
                 .map_err(crate::identity::failure)?;
@@ -728,7 +742,7 @@ async fn offboarding_identity(
             }
             let actor = s
                 .identity
-                .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
+                .ceremony_actor(auth.proof.binding(), &headers, auth.cutoff())
                 .await?;
             let Some(attempt) = s
                 .registration
@@ -746,7 +760,7 @@ async fn offboarding_identity(
             let outcome = s
                 .identity
                 .authority
-                .set_account_membership(actor, target, false, deadline()?)
+                .set_account_membership(actor, target, false, auth.cutoff())
                 .await;
             let phase = match outcome {
                 Ok(_) => P::Confirmed,
@@ -843,12 +857,12 @@ async fn enterprise_step_up(
     let context = input.context(&auth.proof, target.as_deref())?;
     let actor = s
         .identity
-        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.cutoff())
         .await?;
     let started = s
         .identity
         .webauthn
-        .begin_authentication(actor, s.identity.rp_generation, context, auth.remaining()?)
+        .begin_authentication(actor, s.identity.rp_generation, context, auth.cutoff())
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::Challenge {
@@ -1054,12 +1068,12 @@ async fn material_step_up(
     let context = input.context(&auth.proof, &device, id, version)?;
     let actor = s
         .identity
-        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.cutoff())
         .await?;
     let started = s
         .identity
         .webauthn
-        .begin_authentication(actor, s.identity.rp_generation, context, auth.remaining()?)
+        .begin_authentication(actor, s.identity.rp_generation, context, auth.cutoff())
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::Challenge {

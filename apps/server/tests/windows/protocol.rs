@@ -192,6 +192,7 @@ async fn host_with_provider(
         rss_audit_postgres::Integrity::Plain,
     )?;
     let verifier = Arc::new(rss_identity_oidc::entra::HttpEntra::new(
+        rss_mdm_device_access_runtime::oidc::provider_clock(),
         compiled.transport,
         policy.jwks.max_token_bytes,
         compiled.jwks,

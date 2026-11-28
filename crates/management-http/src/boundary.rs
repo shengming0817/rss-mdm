@@ -143,6 +143,7 @@ async fn admit(
     let endpoint = endpoints
         .iter()
         .find(|endpoint| endpoint.path == route && endpoint.method == request.method().as_str());
+    let owner_settles = endpoint.is_some_and(|endpoint| endpoint.settles_transaction);
     let protected = endpoint.is_some_and(|endpoint| endpoint.authentication.is_some());
     let intent = endpoint.map_or(
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -188,9 +189,14 @@ async fn admit(
             } else {
                 remaining - (remaining / 4).min(std::time::Duration::from_secs(2))
             };
-        let mut response = match rss_axum::RequestBudget::new(operation) {
-            Ok(budget) => rss_axum::request_control(State(budget), request, next).await,
-            Err(_) => project(Error::RequestDeadline),
+        let mut response = if owner_settles && !operation.is_zero() {
+            let cutoff = total.shortened_to(envelope.clock.now() + operation);
+            rss_mdm_identity_http::settlement::dispatch(request, next, cutoff).await
+        } else {
+            match rss_axum::RequestBudget::new(operation) {
+                Ok(budget) => rss_axum::request_control(State(budget), request, next).await,
+                Err(_) => project(Error::RequestDeadline),
+            }
         };
         if response
             .extensions_mut()
@@ -236,7 +242,7 @@ async fn admit(
     secure(response, id)
 }
 /// Identity commits its own security event. Transport diagnostics must never replace
-/// a settled SDK response (which may contain a rotated session credential).
+/// a settled authentication response (which may contain a rotated session credential).
 pub async fn authentication(
     State(envelope): State<Envelope>,
     mut request: Request,
@@ -350,7 +356,6 @@ pub fn rejection_contract(
     response
 }
 pub(crate) fn rejections(_: &str, _: &str) -> Vec<rss_mdm_http_contract::signature::Response> {
-    use rss_mdm_http_contract::signature::Output;
     let errors = [
         Error::Malformed,
         Error::Forbidden,
@@ -365,6 +370,11 @@ pub(crate) fn rejections(_: &str, _: &str) -> Vec<rss_mdm_http_contract::signatu
         .iter()
         .map(|error| rejection_contract(error.response_contract()))
         .collect::<Vec<_>>();
+    responses.push(capacity_rejection());
+    responses
+}
+pub fn capacity_rejection() -> rss_mdm_http_contract::signature::Response {
+    use rss_mdm_http_contract::signature::Output;
     let mut limited = <Error as Output>::responses()
         .into_iter()
         .find(|response| {
@@ -376,8 +386,7 @@ pub(crate) fn rejections(_: &str, _: &str) -> Vec<rss_mdm_http_contract::signatu
     let mut retry = rss_mdm_http_contract::signature::Schema::response::<String>();
     retry.value["const"] = "1".into();
     limited.headers.insert("retry-after".into(), retry);
-    responses.push(rejection_contract(limited));
-    responses
+    rejection_contract(limited)
 }
 fn limited(id: uuid::Uuid) -> Response {
     let mut response = (
@@ -400,7 +409,7 @@ async fn body(request: Request, next: Next, bytes: Arc<tokio::sync::Semaphore>) 
     let policy = crate::body_policy::for_route(route, request.method());
     let limit = match policy {
         BodyPolicy::Streaming => return next.run(request).await,
-        BodyPolicy::Buffered(limit) | BodyPolicy::Sdk(limit) => limit,
+        BodyPolicy::Buffered(limit) | BodyPolicy::Handler(limit) => limit,
     };
     let normal = crate::body_limits().default_bytes();
     // Keep one default-size request available while a larger wire body is resident.
@@ -426,7 +435,7 @@ async fn body(request: Request, next: Next, bytes: Arc<tokio::sync::Semaphore>) 
                 .expect("reserved small-request headroom"),
         );
     }
-    if matches!(policy, BodyPolicy::Sdk(_)) {
+    if matches!(policy, BodyPolicy::Handler(_)) {
         return next.run(request).await;
     }
     match crate::body_policy::buffer(request, limit).await {

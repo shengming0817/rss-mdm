@@ -28,17 +28,17 @@ class DependencyPolicy(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'forbidden production dependencies'):
                     ci.verify_capability_boundaries(changed)
 
-    def test_identity_pin_rejects_invalid_or_divergent_sources(self):
-        source = {'git': 'https://example.test/identity', 'rev': 'a' * 40}
+    def test_rss_pin_rejects_invalid_or_divergent_sources(self):
+        source = {'git': 'https://dev.azure.com/shengming0923/rss/_git/rss', 'rev': 'a' * 40}
         manifest = {'workspace': {'dependencies': {name: dict(source) for name in ci.IDENTITY_PACKAGES}}}
-        self.assertEqual(ci.identity_pin(manifest), (source['git'], source['rev']))
+        self.assertEqual(ci.rss_pin(manifest), (source['git'], source['rev']))
         bad_sources = [{**source, 'rev': 'short'}, {**source, 'rev': 'g' * 40}, {**source, 'rev': 'A' * 40}, {'path': '../identity'}, {**source, 'path': '../identity'}, {**source, 'branch': 'develop'}, {**source, 'rev': 'b' * 40}, {**source, 'git': 'https://example.test/other-identity'}]
         for candidate in bad_sources:
             with self.subTest(candidate=candidate):
                 changed = copy.deepcopy(manifest)
                 changed['workspace']['dependencies']['rss-identity-core'] = candidate
                 with self.assertRaises(RuntimeError):
-                    ci.identity_pin(changed)
+                    ci.rss_pin(changed)
 
     def test_source_and_feature_mismatch_are_rejected(self):
         root = ci.ROOT
@@ -47,13 +47,8 @@ class DependencyPolicy(unittest.TestCase):
         source = f'git+{url}?rev={rev}#{rev}'
         data = {'packages': [*[{'id': name, 'name': name, 'manifest_path': str(root / path / 'Cargo.toml'), 'source': None, 'dependencies': []} for name, path in ci.LOCAL_PACKAGES.items()], {'id': 'obs', 'name': 'rss-observation-postgres', 'source': source}, {'id': 'proj', 'name': 'rss-projection-postgres', 'source': source}], 'workspace_members': list(ci.LOCAL_PACKAGES), 'resolve': {'nodes': [*[{'id': name, 'features': []} for name in ci.LOCAL_PACKAGES], {'id': 'obs', 'features': []}, {'id': 'proj', 'features': []}]}}
         registry = 'registry+https://github.com/rust-lang/crates.io-index'
-        identity_url, revision = ci.identity_pin(ci.tomllib.loads((root / 'Cargo.toml').read_text()))
-        identity_source = f'git+{identity_url}?rev={revision}#{revision}'
-        extra = []
-        extra += [{'id': name, 'name': name, 'source': identity_source} for name in ci.IDENTITY_PACKAGES]
-        audit_url, revision = ci.audit_pin(ci.tomllib.loads((root / 'Cargo.toml').read_text()))
-        audit_source = f'git+{audit_url}?rev={revision}#{revision}'
-        extra += [{'id': name, 'name': name, 'source': audit_source} for name in ci.AUDIT_PACKAGES]
+        extra = [{'id': name, 'name': name, 'source': source}
+                 for name in ci.IDENTITY_PACKAGES | ci.AUDIT_PACKAGES]
         data['packages'][-2:-2] = extra
         for node in data['resolve']['nodes']:
             node['deps'] = []
@@ -351,7 +346,7 @@ class WorkingTreeStability(unittest.TestCase):
                     source.write_text('after')
                 return subprocess.CompletedProcess(args, 0, 'revision')
             selection = make_selection([], [], [])
-            with mock.patch.object(ci, 'require_lease'), mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'OUT', root / 'artifacts'), mock.patch.object(ci, 'command', side_effect=command), mock.patch.object(ci, 'select_impact', return_value=selection), mock.patch.object(ci, 'selected_gate', side_effect=lambda name, _: name == 'fmt'), mock.patch.object(ci, 'gate_command', side_effect=lambda name, args, selection: args), mock.patch.object(ci, 'workspace_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'identity_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'clear_execution_evidence'), mock.patch.dict(ci.os.environ, {'CI_PLAN': '0', 'CI_T2': 'none', 'CI_FULL': '0'}):
+            with mock.patch.object(ci, 'require_lease'), mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'OUT', root / 'artifacts'), mock.patch.object(ci, 'command', side_effect=command), mock.patch.object(ci, 'select_impact', return_value=selection), mock.patch.object(ci, 'selected_gate', side_effect=lambda name, _: name == 'fmt'), mock.patch.object(ci, 'gate_command', side_effect=lambda name, args, selection: args), mock.patch.object(ci, 'workspace_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'clear_execution_evidence'), mock.patch.dict(ci.os.environ, {'CI_PLAN': '0', 'CI_T2': 'none', 'CI_FULL': '0'}):
                 self.assertEqual(ci.main(), int(edit))
             result = json.loads((root / 'artifacts/result.json').read_text())
             self.assertEqual(result['gates']['source-stability']['status'], 'failed' if edit else 'passed')

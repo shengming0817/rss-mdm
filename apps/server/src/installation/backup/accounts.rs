@@ -105,10 +105,7 @@ pub(super) async fn verify_restored(
             compiled.authority,
             binding,
             policy,
-            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                cutoff,
-                &crate::lifecycle::RuntimeTimer,
-            ),
+            cutoff,
         )
         .await
         .map_err(|_| Error::Storage)?;

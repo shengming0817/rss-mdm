@@ -76,7 +76,7 @@ def management(backend, limits, host_id):
     for rule in limits['routes']:
         method, path, size, mode = (rule[k] for k in ('method', 'path', 'bytes', 'mode'))
         if (method not in ('POST', 'PUT', 'PATCH') or not path.startswith('/api/v1/')
-                or mode not in ('buffered', 'streaming', 'sdk')
+                or mode not in ('buffered', 'streaming', 'handler')
                 or type(size) is not int or not 0 < size <= 8 * 1024**3
                 or (method, path) in seen):
             raise ValueError('invalid management body rule')

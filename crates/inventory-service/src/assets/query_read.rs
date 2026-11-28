@@ -201,7 +201,15 @@ impl AssetService {
             if !devices.is_empty() {
                 let users = self
                     .users
-                    .read(binding, &devices, crate::transaction::deadline())
+                    .read(
+                        binding,
+                        &devices,
+                        rss_request_context::Deadline::from_timeout(
+                            self.runtime.execution_timer(),
+                            tx.deadline().timeout(),
+                        )
+                        .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?,
+                    )
                     .await?;
                 for u in users {
                     let device = crate::database::device_id(u.device)?;

@@ -14,6 +14,7 @@ type MethodBinding = (
 pub struct MethodRouter<S = ()> {
     pub(crate) inner: axum::routing::MethodRouter<S>,
     pub(crate) binding: MethodBinding,
+    settles: bool,
 }
 fn binding(
     method: &'static str,
@@ -32,10 +33,23 @@ fn binding(
     (method, resource, operations, contract, handler)
 }
 impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
+    /// The handler settles a bounded transaction on its original deadline.
+    pub fn settles_transaction(mut self) -> Self {
+        self.settles = true;
+        self
+    }
+    /// Override Axum's implicit HEAD for a GET that consumes a one-use callback.
+    pub fn reject_head(mut self) -> Self {
+        self.inner = self
+            .inner
+            .head(|| async { axum::http::StatusCode::METHOD_NOT_ALLOWED });
+        self
+    }
     pub fn with_state<S2>(self, state: S) -> MethodRouter<S2> {
         MethodRouter {
             inner: self.inner.with_state(state),
             binding: self.binding,
+            settles: self.settles,
         }
     }
     pub(crate) fn endpoint(&self, path: &str) -> Endpoint {
@@ -51,9 +65,13 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
             },
             contract: signature.clone(),
             operation_id: (*handler).into(),
+            settles_transaction: self.settles,
             conditions: Vec::new(),
             configured_path: None,
-            authentication: None,
+            authentication: match signature {
+                EndpointContract::Product(s) => s.request.authentication,
+                EndpointContract::External(_) => None,
+            },
             ingress_rejections: Vec::new(),
         }
     }
@@ -70,6 +88,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         Self {
             inner: self.inner.layer(layer),
             binding: self.binding,
+            settles: self.settles,
         }
     }
     pub fn route_layer<L>(self, layer: L) -> Self
@@ -89,6 +108,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         Self {
             inner: self.inner.route_layer(layer),
             binding: self.binding,
+            settles: self.settles,
         }
     }
 }
@@ -97,7 +117,7 @@ macro_rules! product_methods {
     ($($method:ident => $name:literal),* $(,)?) => { $(
         pub fn $method<H,T,S>(handler:H, resource:&'static Resource, operations:&'static [Operation]) -> MethodRouter<S>
         where H:axum::handler::Handler<T,S> + ContractHandler<T,S>, T:'static, S:Clone+Send+Sync+'static {
-            MethodRouter { inner:axum::routing::$method(handler), binding: binding($name,resource,operations,EndpointContract::Product(Box::new(H::signature())),std::any::type_name::<H>()) }
+            MethodRouter { settles: false, inner:axum::routing::$method(handler), binding: binding($name,resource,operations,EndpointContract::Product(Box::new(H::signature())),std::any::type_name::<H>()) }
         }
 
     )* };
@@ -107,7 +127,7 @@ macro_rules! external_methods {
     ($($method:ident => ($function:ident,$name:literal)),* $(,)?) => { $(
         pub fn $function<H,T,S>(handler:H,protocol:ExternalProtocol,resource:&'static Resource,operations:&'static [Operation])->MethodRouter<S>
         where H:axum::handler::Handler<T,S>,T:'static,S:Clone+Send+Sync+'static {
-            MethodRouter { inner:axum::routing::$method(handler),binding: binding($name,resource,operations,EndpointContract::External(protocol),std::any::type_name::<H>()) }
+            MethodRouter { settles: false, inner:axum::routing::$method(handler),binding: binding($name,resource,operations,EndpointContract::External(protocol),std::any::type_name::<H>()) }
         }
 
     )* };

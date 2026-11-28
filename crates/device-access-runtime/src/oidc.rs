@@ -57,6 +57,35 @@ pub fn transport(
     providers: &[PrivateProvider],
     policy: rss_identity_oidc::TransportPolicy,
 ) -> Result<rss_identity_oidc::HttpOidc, Error> {
-    rss_identity_oidc::HttpOidc::new(profiles(assurance)?, private_access(providers)?, policy)
+    http(profiles(assurance)?, private_access(providers)?, policy).map_err(|_| Error::Configuration)
+}
+
+pub(crate) fn http(
+    profiles: Vec<rss_identity_oidc::TrustedAssuranceProfile>,
+    access: Vec<rss_identity_oidc::PrivateProviderAccess>,
+    policy: rss_identity_oidc::TransportPolicy,
+) -> Result<rss_identity_oidc::HttpOidc, Error> {
+    use std::time::Duration;
+    let clock = provider_clock();
+    let reuse = rss_identity_oidc::ReusePolicy {
+        max_providers: 128,
+        max_resident_bytes: 8 * 1024 * 1024,
+        max_refreshes: 8,
+        max_idle_per_host: 2,
+        idle_timeout: Duration::from_secs(30),
+        discovery_ttl: Duration::from_secs(300),
+        jwks_ttl: Duration::from_secs(60),
+        refresh_cooldown: Duration::from_secs(5),
+    };
+    rss_identity_oidc::HttpOidc::new(clock, profiles, access, policy, reuse)
         .map_err(|_| Error::Configuration)
+}
+
+pub fn provider_clock() -> rss_identity_oidc::ProviderClock {
+    rss_identity_oidc::ProviderClock::new(
+        rss_request_context::SharedExecutionTimer::new(
+            rss_mdm_audit_integration::budget::RuntimeTimer,
+        ),
+        rss_mdm_audit_integration::budget::RuntimeTimer::wall_time,
+    )
 }

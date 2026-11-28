@@ -3059,8 +3059,9 @@ checksum = "3cd14fd5e3b777a7422cca79358c57a8f6e3a703d9ac187448d0daf220c2407f"
 [[package]]
 name = "rss-audit-core"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-audit?rev=392b48fc28df6b1d290ec66727af4e632c10d090#392b48fc28df6b1d290ec66727af4e632c10d090"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
+ "bytes",
  "rss-contract",
  "rss-diag-context",
  "rss-ledger",
@@ -3072,7 +3073,7 @@ dependencies = [
 [[package]]
 name = "rss-audit-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-audit?rev=392b48fc28df6b1d290ec66727af4e632c10d090#392b48fc28df6b1d290ec66727af4e632c10d090"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-audit-core",
@@ -3087,12 +3088,13 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
 name = "rss-axum"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "axum",
  "futures",
@@ -3114,7 +3116,7 @@ dependencies = [
 [[package]]
 name = "rss-contract"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 
 [[package]]
 name = "rss-da-app"
@@ -3124,9 +3126,9 @@ dependencies = [
  "rss-audit-postgres",
  "rss-axum",
  "rss-identity-core",
- "rss-identity-http-axum",
  "rss-identity-oidc",
  "rss-identity-postgres",
+ "rss-identity-web-credentials",
  "rss-ledger",
  "rss-ledger-postgres",
  "rss-mdm-agent-wire",
@@ -3138,6 +3140,7 @@ dependencies = [
  "rss-mdm-device-access-runtime",
  "rss-mdm-device-trust",
  "rss-mdm-http-contract",
+ "rss-mdm-identity-http",
  "rss-mdm-install-support",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
@@ -3170,7 +3173,7 @@ dependencies = [
 [[package]]
 name = "rss-data-protection"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "hmac 0.12.1",
  "icu_properties",
@@ -3186,7 +3189,7 @@ dependencies = [
 [[package]]
 name = "rss-device-command"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "rss-request-context",
  "rss-transactional-messaging",
@@ -3197,7 +3200,7 @@ dependencies = [
 [[package]]
 name = "rss-device-command-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "rss-device-command",
  "rss-redact",
@@ -3212,7 +3215,7 @@ dependencies = [
 [[package]]
 name = "rss-diag-context"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -3220,7 +3223,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-core"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=53904d91b6ccaacbbd7f8f71ed31d5ffc2771290#53904d91b6ccaacbbd7f8f71ed31d5ffc2771290"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3239,34 +3242,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "rss-identity-http-axum"
-version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=53904d91b6ccaacbbd7f8f71ed31d5ffc2771290#53904d91b6ccaacbbd7f8f71ed31d5ffc2771290"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "rss-identity-core",
- "rss-identity-postgres",
- "rss-request-context",
- "rss-transactional-messaging",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "subtle",
- "thiserror 2.0.20",
- "tokio",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
 name = "rss-identity-oidc"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=53904d91b6ccaacbbd7f8f71ed31d5ffc2771290#53904d91b6ccaacbbd7f8f71ed31d5ffc2771290"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "base64 0.22.1",
+ "futures-util",
  "http 1.5.0",
+ "httpdate",
  "ipnet",
  "jsonwebtoken",
  "reqwest",
@@ -3285,7 +3268,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=53904d91b6ccaacbbd7f8f71ed31d5ffc2771290#53904d91b6ccaacbbd7f8f71ed31d5ffc2771290"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -3312,10 +3295,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-identity-web-credentials"
+version = "0.1.0"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
+dependencies = [
+ "http 1.5.0",
+ "rss-identity-core",
+ "rss-identity-postgres",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "thiserror 2.0.20",
+ "url",
+]
+
+[[package]]
 name = "rss-ledger"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-audit?rev=392b48fc28df6b1d290ec66727af4e632c10d090#392b48fc28df6b1d290ec66727af4e632c10d090"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
+ "bytes",
  "hmac 0.12.1",
  "rss-request-context",
  "sha2 0.10.9",
@@ -3326,7 +3324,7 @@ dependencies = [
 [[package]]
 name = "rss-ledger-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-audit?rev=392b48fc28df6b1d290ec66727af4e632c10d090#392b48fc28df6b1d290ec66727af4e632c10d090"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-ledger",
@@ -3338,6 +3336,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -3456,9 +3455,9 @@ dependencies = [
  "rss-device-command",
  "rss-device-command-postgres",
  "rss-identity-core",
- "rss-identity-http-axum",
  "rss-identity-oidc",
  "rss-identity-postgres",
+ "rss-identity-web-credentials",
  "rss-ledger",
  "rss-ledger-postgres",
  "rss-mdm-agent-channel",
@@ -3485,6 +3484,7 @@ dependencies = [
  "rss-mdm-group-postgres",
  "rss-mdm-group-service",
  "rss-mdm-http-contract",
+ "rss-mdm-identity-http",
  "rss-mdm-install-support",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
@@ -3573,8 +3573,8 @@ dependencies = [
  "rss-contract",
  "rss-device-command",
  "rss-identity-core",
- "rss-identity-http-axum",
  "rss-identity-postgres",
+ "rss-identity-web-credentials",
  "rss-mdm-agent-wire",
  "rss-mdm-apple-mdm",
  "rss-mdm-audit-integration",
@@ -3947,8 +3947,8 @@ dependencies = [
  "rss-axum",
  "rss-da-app",
  "rss-identity-core",
- "rss-identity-http-axum",
  "rss-identity-postgres",
+ "rss-identity-web-credentials",
  "rss-mdm-agent-wire",
  "rss-mdm-apple-mdm",
  "rss-mdm-audit-integration",
@@ -3959,6 +3959,7 @@ dependencies = [
  "rss-mdm-device-access-runtime",
  "rss-mdm-device-trust",
  "rss-mdm-http-contract",
+ "rss-mdm-identity-http",
  "rss-mdm-install-support",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
@@ -4283,6 +4284,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-identity-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "jsonschema",
+ "rss-axum",
+ "rss-identity-core",
+ "rss-identity-postgres",
+ "rss-identity-web-credentials",
+ "rss-mdm-http-contract",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
+ "webauthn-rs-proto",
+]
+
+[[package]]
 name = "rss-mdm-install-support"
 version = "0.1.0"
 dependencies = [
@@ -4431,8 +4455,8 @@ dependencies = [
  "rss-contract",
  "rss-device-command",
  "rss-identity-core",
- "rss-identity-http-axum",
  "rss-identity-postgres",
+ "rss-identity-web-credentials",
  "rss-ledger-postgres",
  "rss-mdm-agent-wire",
  "rss-mdm-apple-mdm",
@@ -4446,6 +4470,7 @@ dependencies = [
  "rss-mdm-device-service",
  "rss-mdm-group-service",
  "rss-mdm-http-contract",
+ "rss-mdm-identity-http",
  "rss-mdm-install-support",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
@@ -5339,7 +5364,7 @@ dependencies = [
 [[package]]
 name = "rss-observation"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "rss-contract",
  "rss-redact",
@@ -5353,7 +5378,7 @@ dependencies = [
 [[package]]
 name = "rss-observation-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-observation",
@@ -5370,7 +5395,7 @@ dependencies = [
 [[package]]
 name = "rss-projection"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "arc-swap",
  "rss-redact",
@@ -5384,7 +5409,7 @@ dependencies = [
 [[package]]
 name = "rss-projection-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-projection",
@@ -5399,7 +5424,7 @@ dependencies = [
 [[package]]
 name = "rss-reconcile"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-redact",
@@ -5412,7 +5437,7 @@ dependencies = [
 [[package]]
 name = "rss-reconcile-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-reconcile",
@@ -5431,7 +5456,7 @@ dependencies = [
 [[package]]
 name = "rss-redact"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "hmac 0.12.1",
  "icu_properties",
@@ -5447,7 +5472,7 @@ dependencies = [
 [[package]]
 name = "rss-redact-derive"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5458,7 +5483,7 @@ dependencies = [
 [[package]]
 name = "rss-request-context"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "thiserror 2.0.20",
  "uuid",
@@ -5467,7 +5492,7 @@ dependencies = [
 [[package]]
 name = "rss-runtime"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "dynosaur",
  "futures",
@@ -5483,7 +5508,7 @@ dependencies = [
 [[package]]
 name = "rss-timeseries"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "rss-contract",
  "rss-request-context",
@@ -5496,7 +5521,7 @@ dependencies = [
 [[package]]
 name = "rss-timeseries-clickhouse"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "base64 0.22.1",
  "clickhouse",
@@ -5522,7 +5547,7 @@ dependencies = [
 [[package]]
 name = "rss-timeseries-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -5542,7 +5567,7 @@ dependencies = [
 [[package]]
 name = "rss-transactional-messaging"
 version = "0.2.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-contract",
@@ -5556,7 +5581,7 @@ dependencies = [
 [[package]]
 name = "rss-transactional-messaging-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-contract",
@@ -5581,7 +5606,7 @@ dependencies = [
 [[package]]
 name = "rss-transactional-messaging-recovery"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "rss-contract",
  "rss-data-protection",
@@ -5599,7 +5624,7 @@ dependencies = [
 [[package]]
 name = "rss-transactional-messaging-runtime"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "futures",
  "rss-request-context",
@@ -5613,7 +5638,7 @@ dependencies = [
 [[package]]
 name = "rss-transactional-messaging-webhook"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=9843ec49d96c71c64854b6676c9c41fe6d40712a#9843ec49d96c71c64854b6676c9c41fe6d40712a"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss?rev=8f50018ade8b32f797698b7b0290d11ea90502bf#8f50018ade8b32f797698b7b0290d11ea90502bf"
 dependencies = [
  "base64 0.22.1",
  "bytes",

@@ -36,7 +36,7 @@ async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
     .await?;
     let mut tx = c.seed().await?;
     sqlx::query(
-        "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
+        "INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
     )
     .bind(c.tenant.to_string())
     .execute(&mut *tx)
@@ -71,9 +71,11 @@ async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
             LoginKey::parse(&login)?,
             Password::new(password.into())?,
             rss_identity_postgres::AttemptSource::parse("vault-test")?,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
                 Duration::from_secs(10),
-            ),
+            )
+            .expect("bounded fixture deadline"),
         )
         .await?;
     let secret = issued.secret().expose().to_owned();
@@ -85,9 +87,11 @@ async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(issued.secret().expose().into())?,
             ),
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
                 std::time::Duration::from_secs(10),
-            ),
+            )
+            .expect("bounded fixture deadline"),
         )
         .await?;
     Ok((actor, secret))
@@ -641,9 +645,11 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     rss_mdm_vault_sync::verify_catalog(&mut conn).await?;
     let stale = signed(&c, &s, &p, &d4, &k2, None, Action::Devices).await?;
     let deadline = || {
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(
-            10,
-        ))
+        rss_request_context::Deadline::from_timeout(
+            &rss_mdm_audit_integration::budget::RuntimeTimer,
+            Duration::from_secs(10),
+        )
+        .expect("bounded fixture deadline")
     };
     let session = c
         .authority

@@ -82,7 +82,18 @@ impl AuditStore {
         probe: ExecutionBinding,
         control: &Control<'_, T>,
     ) -> Result<Self, Error> {
-        let read = AuditReadStore::new(pool, integrity.clone(), control).await?;
+        let budget = crate::budget::write_budget(pool.options().get_max_connections())?;
+        Self::with_budget(pool, integrity, budget, runtime, probe, control).await
+    }
+    pub async fn with_budget<T: ExecutionTimer>(
+        pool: PgPool,
+        integrity: Integrity,
+        budget: rss_audit_postgres::WriteBudget,
+        runtime: Arc<PgRuntime>,
+        probe: ExecutionBinding,
+        control: &Control<'_, T>,
+    ) -> Result<Self, Error> {
+        let read = AuditReadStore::with_budget(pool, integrity.clone(), budget, control).await?;
         let store = Self {
             read,
             integrity,
@@ -214,10 +225,36 @@ impl AuditStore {
         .await
     }
     async fn flush(&self, tx: &mut SourceTransaction<'_, '_>) -> Result<(), Error> {
-        for appended in
-            rss_audit_postgres::append_batch_in(tx.inner, &self.integrity, &tx.facts).await?
-        {
-            require_new_business_fact(&appended)?;
+        self.append_prepared(tx.inner, &tx.facts).await
+    }
+    async fn append_prepared(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        mut facts: &[rss_audit_core::PreparedAuditV1],
+    ) -> Result<(), Error> {
+        while !facts.is_empty() {
+            let mut bytes = 0;
+            let count = facts
+                .iter()
+                .enumerate()
+                .take_while(|(index, fact)| {
+                    bytes += fact.canonical_bytes().len();
+                    self.write_budget.supports_batch(index + 1, bytes)
+                })
+                .count();
+            if count == 0 {
+                return Err(rss_audit_postgres::Error::WriteLimit.into());
+            }
+            let (batch, rest) = facts.split_at(count);
+            let admitted = self.write_budget.try_admit(batch)?;
+            for fact in self
+                .write_budget
+                .append_batch_in(tx, &self.integrity, admitted)
+                .await?
+            {
+                require_new_business_fact(&fact)?;
+            }
+            facts = rest;
         }
         Ok(())
     }
@@ -266,10 +303,7 @@ impl AuditStore {
                     .map_err(rss_audit_postgres::Error::from)?)
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        for appended in rss_audit_postgres::append_batch_in(tx, &self.integrity, &prepared).await? {
-            require_new_business_fact(&appended)?;
-        }
-        Ok(())
+        self.append_prepared(tx, &prepared).await
     }
     /// Commit a necessary final request outcome before releasing its response.
     pub async fn settle_request<T: ExecutionTimer>(

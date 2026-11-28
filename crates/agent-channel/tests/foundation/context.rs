@@ -226,6 +226,7 @@ impl Context {
                 rss_identity_core::InstanceId::parse(&inputs.installation.instance_id)?,
                 rss_identity_core::session::SessionPolicy::new(900, 14400)?,
                 rss_audit_postgres::Integrity::Plain,
+                rss_mdm_audit_integration::budget::write_budget(4)?,
             )?,
             binding,
             Arc::new(
@@ -234,9 +235,11 @@ impl Context {
                     &inputs.installation.instance_id,
                 )?,
             ),
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
                 Duration::from_secs(10),
-            ),
+            )
+            .expect("bounded fixture deadline"),
         )
         .await?;
         let sessions =

@@ -75,8 +75,11 @@ pub async fn verify(
                 .unwrap(),
         }
     });
+    // The registration, browser and cold-restore clients all originate at the same loopback peer.
+    let mut identity_policy = example["identity_policy"].clone();
+    identity_policy["source_attempts"] = 64.into();
     let value = serde_json::json!({
-        "identity_policy":example["identity_policy"],
+        "identity_policy":identity_policy,
         "http":http,
         "installation":{"instance":c.inputs.installation.instance_id,"tenant":c.tenant.to_string(),
           "management_tenant":management,"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1},
@@ -140,6 +143,35 @@ pub async fn verify(
         "Inventory admission accepted a worker unable to acknowledge reports"
     );
     drop((browser, protocol));
+    let oidc = super::device_oidc::Keycloak::start(&c.inputs.directory, &origin).await?;
+    let (end, end_requested) = tokio::sync::oneshot::channel();
+    let federated_host = tokio::spawn(rss_da_app::host::serve(
+        serde_json::from_value(value.clone())?,
+        async move { end_requested.await.map_err(std::io::Error::other) },
+    ));
+    let client = m.client(None)?;
+    let probe = async {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while client
+                .head(format!("{origin}/api/v1/identity/oidc/callback"))
+                .send()
+                .await
+                .is_err()
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await?;
+        identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), false).await
+    }
+    .await;
+    let _ = end.send(());
+    federated_host.await??;
+    probe?;
+    let mut value = value;
+    value["oidc"] = identity_http::federation_config(&m.directory, &origin, false)?;
+    oidc.configure(&mut value["oidc"], &c.tenant.to_string());
+    private(&runtime_file, &serde_json::to_vec(&value)?)?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let config = rss_da_app::config::load(&runtime_file)?;
     let running = tokio::spawn(rss_da_app::host::serve(config, async move {
@@ -158,6 +190,28 @@ pub async fn verify(
         })
         .await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let too_large = client
+            .post(format!("{base}/login"))
+            .body(vec![0_u8; 131_073])
+            .send()
+            .await?;
+        assert_eq!(too_large.status(), 413);
+        for (name, value) in [
+            ("connection", "close"),
+            ("cache-control", "no-store"),
+            ("x-content-type-options", "nosniff"),
+        ] {
+            assert_eq!(too_large.headers()[name], value);
+        }
+        uuid::Uuid::parse_str(too_large.headers()["x-request-id"].to_str()?)?;
+        identity_http::surface(&rss_da_app::http_contract()?, true);
+        identity_http::federation_surface(&client, &origin, &c.tenant.to_string(), true).await?;
+        identity_http::anonymous_session(&client, &base).await?;
+        identity_http::session_lifecycle(&client, &base, &origin, &login, password).await?;
+        assert_eq!(
+            client.get(format!("{base}/profile")).send().await?.status(),
+            401
+        );
         let response = client
             .post(format!("{base}/login"))
             .header("origin", &origin)
@@ -217,6 +271,25 @@ pub async fn verify(
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let observed: rss_mdm_agent_wire::pki::Trust = response.json().await?;
         assert_eq!(observed.purpose, rss_mdm_agent_wire::pki::Purpose::DaDevice);
+        let csrf = rss_identity_core::session::SessionSecret::parse(
+            business_cookie
+                .split_once('=')
+                .context("session")?
+                .1
+                .to_owned(),
+        )?
+        .csrf();
+        oidc.install(
+            &client,
+            &origin,
+            &c.tenant.to_string(),
+            business_cookie,
+            &csrf,
+        )
+        .await?;
+        c.oidc
+            .set(oidc)
+            .map_err(|_| anyhow::anyhow!("Keycloak already running"))?;
         Box::pin(enterprise::verify(
             c,
             &client,
@@ -352,3 +425,6 @@ async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) ->
     ));
     Ok(())
 }
+
+#[path = "../../../../hack/test-support/identity_http.rs"]
+mod identity_http;

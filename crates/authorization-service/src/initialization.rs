@@ -13,14 +13,6 @@ pub struct Initialization {
     pub password: Password,
     pub operation_id: uuid::Uuid,
 }
-fn remaining(
-    cutoff: rss_request_context::Deadline,
-) -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-        cutoff,
-        &rss_mdm_audit_integration::budget::RuntimeTimer,
-    )
-}
 fn identity_failure(error: AuthorityError) -> Error {
     match error {
         AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,
@@ -86,7 +78,7 @@ pub async fn verify_local(
             AttemptSource::parse("authorization-initialization")
                 .map_err(|_| Error::Configuration)?,
             None,
-            remaining(cutoff),
+            cutoff,
         )
         .await
         .map_err(identity_failure)?;
@@ -94,7 +86,7 @@ pub async fn verify_local(
         .inspect_session(
             binding,
             SessionSecret::parse(issued.secret().expose().into()).map_err(|_| Error::Corrupt)?,
-            remaining(cutoff),
+            cutoff,
         )
         .await
         .map_err(identity_failure)?;
@@ -105,7 +97,7 @@ pub async fn verify_local(
     };
     // Never leave a transferable bootstrap credential behind, including a target mismatch.
     authority
-        .revoke_current_session(session, remaining(cutoff))
+        .revoke_current_session(session, cutoff)
         .await
         .map_err(identity_failure)?;
     if user != expected {

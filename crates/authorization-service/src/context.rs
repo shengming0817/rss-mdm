@@ -113,6 +113,13 @@ impl AuthorizedPrincipal {
     pub fn shared_session(&self) -> Result<Arc<AuthenticatedSession>, Error> {
         self.identity.shared_session()
     }
+    /// Borrow the issuing authority for fenced checks on a product transaction.
+    pub fn session_authority(&self) -> Result<&rss_identity_postgres::Authority, Error> {
+        match &self.identity.proof {
+            Authentication::Account(_, authority) => Ok(authority),
+            _ => Err(Error::Unauthorized),
+        }
+    }
     pub fn session(&self) -> Result<&AuthenticatedSession, Error> {
         self.identity.session()
     }
@@ -301,6 +308,9 @@ pub struct RequestAuth {
     pub cancellation: Arc<dyn rss_request_context::CancellationObserver>,
 }
 impl RequestAuth {
+    pub fn cutoff(&self) -> rss_request_context::Deadline {
+        rss_request_context::Deadline::at(self.deadline)
+    }
     pub fn remaining(
         &self,
     ) -> Result<rss_transactional_messaging::policy::OperationDeadline, Error> {
@@ -317,13 +327,13 @@ impl RequestAuth {
     pub async fn revalidate(&self) -> Result<Option<crate::session::RevalidatedSession>, Error> {
         self.proof.check_live()?;
         match &self.proof.identity.proof {
-            Authentication::Account(session) => {
+            Authentication::Account(session, _) => {
                 let reference = session
                     .reference()
                     .map_err(crate::session::authority_error)?;
                 Ok(Some(
                     self.sessions
-                        .recheck(self.proof.binding(), &reference, self.remaining()?)
+                        .recheck(self.proof.binding(), &reference, self.cutoff())
                         .await?,
                 ))
             }
@@ -341,7 +351,7 @@ impl RequestAuth {
     ) -> Result<String, Error> {
         self.remaining()?;
         match (&self.proof.identity.proof, fresh) {
-            (Authentication::Account(_), Some(facts)) => {
+            (Authentication::Account(_, _), Some(facts)) => {
                 snapshot.query_binding_revalidated(&self.proof, facts)
             }
             (Authentication::ApiKey(_) | Authentication::Initialization { .. }, None) => {
@@ -360,7 +370,10 @@ pub struct Principal {
     subject: String,
 }
 enum Authentication {
-    Account(Arc<AuthenticatedSession>),
+    Account(
+        Arc<AuthenticatedSession>,
+        Arc<rss_identity_postgres::Authority>,
+    ),
     ApiKey(crate::api_key::KeyProof),
     Initialization {
         authority: Arc<crate::baseline::Authority>,
@@ -369,9 +382,15 @@ enum Authentication {
     },
 }
 impl Principal {
-    pub fn new(session: AuthenticatedSession, binding: ExecutionBinding) -> Result<Self, Error> {
+    pub fn new(
+        authority: &rss_identity_postgres::Authority,
+        session: AuthenticatedSession,
+        binding: ExecutionBinding,
+    ) -> Result<Self, Error> {
         session.assurance().map_err(|_| Error::Unauthorized)?;
-        if session.account().tenant != binding.tenant() {
+        if session.instance() != authority.instance()
+            || session.account().tenant != binding.tenant()
+        {
             return Err(Error::Forbidden);
         }
         let user = crate::User {
@@ -383,7 +402,7 @@ impl Principal {
             binding,
             subject: user.principal_id.clone(),
             actor: crate::Actor::Account { user },
-            proof: Authentication::Account(Arc::new(session)),
+            proof: Authentication::Account(Arc::new(session), Arc::new(authority.clone())),
         })
     }
     pub(crate) fn from_key(proof: crate::api_key::KeyProof, binding: ExecutionBinding) -> Self {
@@ -401,7 +420,7 @@ impl Principal {
     }
     pub fn session(&self) -> Result<&AuthenticatedSession, Error> {
         match &self.proof {
-            Authentication::Account(session) => Ok(session),
+            Authentication::Account(session, _) => Ok(session),
             Authentication::ApiKey(_) | Authentication::Initialization { .. } => {
                 Err(Error::Forbidden)
             }
@@ -409,7 +428,7 @@ impl Principal {
     }
     fn shared_session(&self) -> Result<Arc<AuthenticatedSession>, Error> {
         match &self.proof {
-            Authentication::Account(session) => Ok(session.clone()),
+            Authentication::Account(session, _) => Ok(session.clone()),
             Authentication::ApiKey(_) | Authentication::Initialization { .. } => {
                 Err(Error::Forbidden)
             }
@@ -426,7 +445,7 @@ impl Principal {
         match &self.proof {
             Authentication::ApiKey(_) => Some(AuthenticationKind::ApiKey),
             Authentication::Initialization { .. } => None,
-            Authentication::Account(proof) => Some(match proof.view().credential_kind {
+            Authentication::Account(proof, _) => Some(match proof.view().credential_kind {
                 rss_identity_core::session::CredentialKind::Cookie => AuthenticationKind::Cookie,
                 rss_identity_core::session::CredentialKind::Bearer => AuthenticationKind::Bearer,
             }),
@@ -434,7 +453,7 @@ impl Principal {
     }
     pub fn check_live(&self) -> Result<(), Error> {
         match &self.proof {
-            Authentication::Account(session) => session
+            Authentication::Account(session, _) => session
                 .assurance()
                 .map(|_| ())
                 .map_err(|_| Error::Unauthorized),
@@ -457,7 +476,7 @@ impl Principal {
     }
     pub fn credential_binding(&self) -> String {
         match &self.proof {
-            Authentication::Account(session) => format!(
+            Authentication::Account(session, _) => format!(
                 "{}:{}",
                 session.view().credential_kind.as_str(),
                 session.view().id

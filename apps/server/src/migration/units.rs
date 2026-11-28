@@ -74,10 +74,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "installation-binding-v1",
             include_str!("../../schema/installation.sql"),
         ),
-        (
-            "identity-authority-v19",
-            rss_identity_postgres::MIGRATION_SQL,
-        ),
+        ("identity-v1", rss_identity_postgres::MIGRATION_SQL),
         (
             "device-command-v1",
             rss_device_command_postgres::MIGRATION_SQL,

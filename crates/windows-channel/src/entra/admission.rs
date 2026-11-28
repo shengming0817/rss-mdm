@@ -59,7 +59,7 @@ pub(super) async fn admit(
     consent(&mut tx, entra, &subject, &settings, opaque).await?;
     tx.rollback().await.map_err(db)?;
     // No MDM locks held while Identity may create/revalidate the canonical account.
-    let proof = identity::resolve(&entra.authority, subject, remaining(cutoff)).await?;
+    let proof = identity::resolve(&entra.authority, subject, cutoff).await?;
     rss_mdm_authorization_service::context::bind_native_audit(&proof, a)?;
     let proposed = Uuid::new_v4();
     let digest = crate::enrollment::digest(&(

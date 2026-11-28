@@ -69,7 +69,7 @@ pub async fn verify_access(
     let mut contracts = da::access_contracts();
     contracts.push(include_str!("../../schema/da-access.json"));
     if matches!(audit, crate::config::AuditConfig::Ledger { .. }) {
-        contracts.push(r#"{"tables":[],"functions":[{"name":"rss_ledger.prepare_append","search_path":"search_path=pg_catalog, rss_ledger"},{"name":"rss_ledger.insert_entry","search_path":"search_path=pg_catalog, rss_ledger"}],"external_relations":["rss_ledger.heads","rss_ledger.entries"],"verified_schemas":[]}"#);
+        contracts.push(rss_mdm_audit_integration::LEDGER_ACCESS_CONTRACT);
     }
     if !rss_mdm_install_support::access_admission::verify(c, "da_access", &contracts).await? {
         return Err(sqlx::Error::Protocol("DA access contract".into()));

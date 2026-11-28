@@ -79,6 +79,17 @@ pub fn router(state: Option<&Arc<Services>>) -> Router<(), impl Declaration + us
     }
     .assemble()
 }
+pub fn with_identity<M: rss_mdm_http_contract::module::Declaration>(
+    state: Option<&Arc<Services>>,
+    identity: Router<(), M>,
+) -> Router<(), impl Declaration + use<M>> {
+    rss_mdm_http_contract::route_module! {struct DaBrowser for [Browser]{product,identity}}
+    DaBrowser {
+        product: router(state),
+        identity,
+    }
+    .assemble()
+}
 fn bearer_allowed(path: &str) -> bool {
     path.starts_with("/api/v1/tenants/{tenant}/da/")
         || path.ends_with("/apple/platform-sso/status")
@@ -97,20 +108,44 @@ fn authentication(method: &str, path: &str) -> rss_mdm_http_contract::authentica
         ),
         rejections: Error::responses()
             .into_iter()
-            .chain(rss_mdm_http_contract::authentication::identity_rejections())
+            .chain(rss_mdm_identity_http::credential_rejections())
             .collect(),
-        conditional_response_headers: vec![],
+        conditional_response_headers: if bearer_allowed(path) {
+            vec![rss_mdm_http_contract::authentication::ConditionalHeader {
+                status: 401,
+                name: "www-authenticate",
+                value: "Bearer",
+                request_header_present: "authorization",
+                request_headers_absent: vec![],
+            }]
+        } else {
+            vec![]
+        },
     }
 }
-async fn authenticate(
-    State(s): State<Arc<Services>>,
+async fn authenticate(State(s): State<Arc<Services>>, request: Request, next: Next) -> Response {
+    let bearer = request.headers().contains_key("authorization")
+        && request
+            .extensions()
+            .get::<axum::extract::MatchedPath>()
+            .is_some_and(|p| bearer_allowed(p.as_str()));
+    let mut response = authenticate_request(s, request, next, bearer).await;
+    if bearer && response.status() == axum::http::StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            axum::http::HeaderValue::from_static("Bearer"),
+        );
+    }
+    response
+}
+async fn authenticate_request(
+    s: Arc<Services>,
     mut request: Request,
     next: Next,
+    bearer: bool,
 ) -> Response {
-    let Some(control) = request
-        .extensions()
-        .get::<rss_axum::RequestControl>()
-        .cloned()
+    let Some((cutoff, cancellation)) =
+        rss_mdm_identity_http::settlement::lifetime(request.extensions())
     else {
         return Error::Unavailable.into_response();
     };
@@ -118,9 +153,9 @@ async fn authenticate(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD
     ) {
-        rss_identity_http_axum::SessionActivity::Passive
+        rss_identity_web_credentials::SessionActivity::Passive
     } else {
-        rss_identity_http_axum::SessionActivity::Active
+        rss_identity_web_credentials::SessionActivity::Active
     };
     let Some(binding) = request
         .extensions()
@@ -129,33 +164,25 @@ async fn authenticate(
     else {
         return Error::Malformed.into_response();
     };
-    let deadline = rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-        control.deadline(),
-        &rss_mdm_audit_integration::budget::RuntimeTimer,
-    );
+    let deadline = cutoff;
     let headers = request.headers();
     if headers.contains_key("x-api-key") {
         return Error::Forbidden.into_response();
     }
     let authenticated = if headers.contains_key("authorization") {
-        let path = request
-            .extensions()
-            .get::<axum::extract::MatchedPath>()
-            .map(|v| v.as_str())
-            .unwrap_or_default();
-        if !bearer_allowed(path) {
+        if !bearer {
             return Error::Forbidden.into_response();
         }
         let Some(address) = request
             .extensions()
-            .get::<rss_identity_http_axum::ClientAddress>()
+            .get::<rss_mdm_identity_http::ClientAddress>()
         else {
             return Error::Forbidden.into_response();
         };
         if let Err(e) = s.authorization.require_api_source(address.0).await {
             return Error::from(e).into_response();
         }
-        rss_identity_http_axum::authenticate_bearer_request(
+        rss_identity_web_credentials::authenticate_bearer_request(
             &s.identity.authority,
             &s.identity.http,
             binding,
@@ -165,7 +192,7 @@ async fn authenticate(
         .await
         .map(|(session, _)| session)
     } else {
-        rss_identity_http_axum::authenticate_request(
+        rss_identity_web_credentials::authenticate_request(
             &s.identity.authority,
             &s.identity.http,
             binding,
@@ -178,12 +205,12 @@ async fn authenticate(
     };
     let session = match authenticated {
         Ok(s) => s,
-        Err(response) => return response,
+        Err(error) => return rss_mdm_identity_http::HttpError::from(error).into_response(),
     };
     let audit = request.extensions().get::<RequestAudit>().cloned();
-    let deadline = control.deadline().instant();
+    let deadline = cutoff.instant();
     let result = tokio::time::timeout_at(deadline.into(), async {
-        let principal = Principal::new(session, binding)?;
+        let principal = Principal::new(&s.identity.authority, session, binding)?;
         let proof = AuthorizedPrincipal::from_identity(&s.authorization, principal)?;
         let audit = audit
             .as_ref()
@@ -204,8 +231,11 @@ async fn authenticate(
                     s.identity.authority.clone(),
                 ),
                 deadline,
-                cancellation: Arc::new(control),
+                cancellation,
             });
+            if rss_mdm_identity_http::settlement::owner_settles(request.extensions()) {
+                return next.run(request).await;
+            }
             tokio::time::timeout_at(deadline.into(), next.run(request))
                 .await
                 .unwrap_or_else(|_| {
@@ -216,13 +246,46 @@ async fn authenticate(
     }
 }
 /// Audit completion also covers the host's Identity routes, without trusting forwarded identity.
-pub fn envelope(router: axum::Router, state: Arc<Services>) -> axum::Router {
+pub fn envelope<M: Declaration>(router: Router<(), M>, state: Arc<Services>) -> axum::Router {
+    let owned: Arc<std::collections::BTreeSet<_>> = Arc::new(
+        router
+            .endpoints()
+            .iter()
+            .filter(|e| e.settles_transaction)
+            .map(|e| (e.path.clone(), e.method))
+            .collect(),
+    );
+    let control_state = state.clone();
     router
+        .into_checked_axum(rss_mdm_http_contract::module::Listener::Browser)
         .layer(axum::extract::DefaultBodyLimit::max(131072))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), admit))
-        .layer(axum::middleware::from_fn_with_state(
-            state.request_budget,
-            rss_axum::request_control,
+        .layer(axum::middleware::from_fn_with_state(state, admit))
+        .layer(axum::middleware::from_fn(
+            move |request: Request, next: Next| {
+                let owned = owned.clone();
+                let state = control_state.clone();
+                async move {
+                    let selected = request
+                        .extensions()
+                        .get::<axum::extract::MatchedPath>()
+                        .is_some_and(|p| {
+                            owned.iter().any(|(path, method)| {
+                                p.as_str() == path && *method == request.method().as_str()
+                            })
+                        });
+                    if selected {
+                        let timer = state.identity.authority.execution_timer();
+                        let deadline = rss_request_context::Deadline::from_timeout(
+                            timer,
+                            state.identity.http.timeout(),
+                        )
+                        .expect("compiled identity timeout");
+                        rss_mdm_identity_http::settlement::dispatch(request, next, deadline).await
+                    } else {
+                        rss_axum::request_control(State(state.request_budget), request, next).await
+                    }
+                }
+            },
         ))
 }
 async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next) -> Response {
@@ -256,11 +319,12 @@ async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next)
             AuditIntent::Routine,
         ),
     };
+    let request_id = audit.request_id();
     let permit = match s.requests.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
             audit.finalize(None);
-            return Error::Unavailable.into_response();
+            return secure(Error::Unavailable.into_response(), request_id);
         }
     };
     let invalid = request.headers().get_all("host").iter().count() != 1
@@ -268,15 +332,27 @@ async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next)
         || request.uri().to_string().len() > 8192
         || request.headers().contains_key("x-client-certificate")
         || request.headers().contains_key("x-ssl-client-cert");
+    let Some((cutoff, _)) = rss_mdm_identity_http::settlement::lifetime(request.extensions())
+    else {
+        audit.finalize(None);
+        return secure(Error::Unavailable.into_response(), request_id);
+    };
+    let body_deadline = cutoff.capped(
+        s.identity.authority.execution_timer(),
+        Duration::from_secs(5),
+    );
     request.extensions_mut().insert(audit.clone());
-    tokio::spawn(async move {
+    let response = tokio::spawn(async move {
         let _permit = permit;
         let mut response = if invalid {
             Error::Malformed.into_response()
         } else {
             let (parts, body) = request.into_parts();
-            match tokio::time::timeout(Duration::from_secs(5), axum::body::to_bytes(body, 131072))
-                .await
+            match tokio::time::timeout_at(
+                body_deadline.instant().into(),
+                axum::body::to_bytes(body, 131072),
+            )
+            .await
             {
                 Ok(Ok(body)) => {
                     next.run(Request::from_parts(parts, axum::body::Body::from(body)))
@@ -328,20 +404,43 @@ async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next)
             }
             .into_response()
         }
-        response.headers_mut().insert(
-            "cache-control",
-            axum::http::HeaderValue::from_static("no-store"),
-        );
-        response.headers_mut().insert(
-            "x-content-type-options",
-            axum::http::HeaderValue::from_static("nosniff"),
-        );
-        response.headers_mut().insert(
-            "x-request-id",
-            axum::http::HeaderValue::from_str(&audit.request_id().to_string()).expect("UUID"),
-        );
         response
     })
     .await
-    .unwrap_or_else(|_| Error::CommitUnknown.into_response())
+    .unwrap_or_else(|_| Error::CommitUnknown.into_response());
+    secure(response, request_id)
+}
+const SECURITY_HEADERS: [(&str, &str); 2] = [
+    ("cache-control", "no-store"),
+    ("x-content-type-options", "nosniff"),
+];
+fn secure(mut response: Response, request_id: uuid::Uuid) -> Response {
+    for (name, value) in SECURITY_HEADERS {
+        response
+            .headers_mut()
+            .insert(name, axum::http::HeaderValue::from_static(value));
+    }
+    response.headers_mut().insert(
+        "x-request-id",
+        axum::http::HeaderValue::from_str(&request_id.to_string()).expect("UUID"),
+    );
+    response
+}
+pub(crate) fn rejection_headers(
+    mut response: rss_mdm_http_contract::signature::Response,
+    close: bool,
+) -> rss_mdm_http_contract::signature::Response {
+    use rss_mdm_http_contract::signature::Schema;
+    for (name, value) in SECURITY_HEADERS
+        .into_iter()
+        .chain(close.then_some(("connection", "close")))
+    {
+        let mut schema = Schema::response::<String>();
+        schema.value["const"] = value.into();
+        response.headers.insert(name.into(), schema);
+    }
+    response
+        .headers
+        .insert("x-request-id".into(), Schema::response::<uuid::Uuid>());
+    response
 }

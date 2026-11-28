@@ -137,10 +137,10 @@ impl Service {
         }
         let context = input.step_up_context(p)?;
         self.write_admitted(&self.access_audit,a,(p,input,proof,&hash,&context,a),|ctx,c|Box::pin(async move{
-            rss_identity_postgres::recheck_authenticated_session_on(c,ctx.0.session()?).await.map_err(|_|Error::Unauthorized)?;
+            ctx.0.session_authority()?.recheck_authenticated_session_on(c,ctx.0.session()?).await.map_err(|_|Error::Unauthorized)?;
             // Step-up is optional for ordinary configuration; when supplied its one-use consumption
             // precedes product locks and rolls back with the complete operation.
-            if let Some(proof)=ctx.2 {rss_identity_postgres::consume_step_up_on(c,ctx.0.session()?,ctx.4,proof.expose()).await.map_err(|_|Error::Unauthorized)?;}
+            if let Some(proof)=ctx.2 {ctx.0.session_authority()?.consume_step_up_on(c,ctx.0.session()?,ctx.4,proof.expose()).await.map_err(|_|Error::Unauthorized)?;}
             Ok(())
         }),|ctx,c|Box::pin(async move{
             let(p,input,proof,hash,_,a)=ctx; let tenant=tenant(p)?;
@@ -186,7 +186,9 @@ impl Service {
             (self, signing, p, input, platform),
             |ctx, c| {
                 Box::pin(async move {
-                    rss_identity_postgres::recheck_authenticated_session_on(c, ctx.2.session()?)
+                    ctx.2
+                        .session_authority()?
+                        .recheck_authenticated_session_on(c, ctx.2.session()?)
                         .await
                         .map_err(|_| Error::Unauthorized)?;
                     Ok(())

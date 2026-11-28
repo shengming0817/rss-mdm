@@ -81,10 +81,7 @@ impl rss_mdm_install_support::Host for MdmInstallation<'_> {
         receipts: &'a [rss_mdm_install_support::Receipt],
     ) -> rss_mdm_install_support::Pending<'a, ()> {
         Box::pin(async move {
-            if receipts
-                .iter()
-                .any(|(name, _, _)| name == "identity-authority-v19")
-            {
+            if receipts.iter().any(|(name, _, _)| name == "identity-v1") {
                 verify_installation(c, self.installation, self.instance).await?;
             }
             Ok(())
@@ -126,7 +123,7 @@ async fn apply_schema(
             .execute(&mut **tx)
             .await
             .map_err(|_| MigrationError::at(name, "restore installer role"))?;
-    } else if name == "identity-authority-v19" {
+    } else if name == "identity-v1" {
         install_identity_in(tx, installation, instance)
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;

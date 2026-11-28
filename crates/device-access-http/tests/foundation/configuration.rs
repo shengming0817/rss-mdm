@@ -108,9 +108,11 @@ pub async fn reject_account_change(
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(token)?,
             ),
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
                 std::time::Duration::from_secs(10),
-            ),
+            )
+            .expect("bounded fixture deadline"),
         )
         .await?;
     let mut changed = publication.clone();

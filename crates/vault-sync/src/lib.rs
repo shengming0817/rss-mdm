@@ -133,13 +133,22 @@ impl Service {
         let attempt = Box::pin(self.audit.write(
             actor.binding(),
             &budget.source_control(),
-            (self, input, scope, Some(f), session, audit),
+            (
+                self,
+                input,
+                scope,
+                Some(f),
+                session,
+                audit,
+                actor.session_authority().map_err(|_| Error::Denied)?,
+            ),
             |ctx, tx| {
                 Box::pin(async move {
                     let (value, replay) = tx
                         .with_connection_context(ctx, |ctx, c| {
                             Box::pin(async move {
-                                rss_identity_postgres::recheck_authenticated_session_on(c, ctx.4)
+                                ctx.6
+                                    .recheck_authenticated_session_on(c, ctx.4)
                                     .await
                                     .map_err(|_| Error::Denied)?;
                                 let installation: Uuid = sqlx::query_scalar(

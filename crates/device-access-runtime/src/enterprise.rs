@@ -34,8 +34,7 @@ pub struct Backend {
     target: EnterpriseTarget,
     provider: uuid::Uuid,
     tenant: TenantId,
-    settings: ProviderSettings,
-    credentials: ProviderCredentials,
+    installed: rss_identity_core::federation::BoundProvider,
     transport: rss_identity_oidc::HttpOidc,
     fingerprint: String,
     backend_digest: [u8; 32],
@@ -43,17 +42,8 @@ pub struct Backend {
 impl Backend {
     pub fn load(
         input: &Configuration,
+        instance: rss_identity_core::InstanceId,
         policy: rss_identity_oidc::TransportPolicy,
-    ) -> Result<Self, Error> {
-        Self::load_using(input, |access| {
-            rss_identity_oidc::HttpOidc::new(vec![], access, policy).map_err(|_| invalid())
-        })
-    }
-    fn load_using(
-        input: &Configuration,
-        transport: impl FnOnce(
-            Vec<rss_identity_oidc::PrivateProviderAccess>,
-        ) -> Result<rss_identity_oidc::HttpOidc, Error>,
     ) -> Result<Self, Error> {
         let tenant = TenantId::parse(&input.tenant.to_string()).map_err(|_| invalid())?;
         input.target.validate().map_err(|_| invalid())?;
@@ -122,7 +112,23 @@ impl Backend {
                     .collect::<Result<_, _>>()?,
             }]
         };
-        let transport = transport(access)?;
+        let transport = crate::oidc::http(vec![], access, policy)?;
+        use rss_identity_core::federation::{ProviderId, ProviderRevision, UpstreamOidc};
+        // This immutable installation owns its transport and revision registry until shutdown.
+        let installed = transport
+            .revisions()
+            .install(
+                ProviderRevision {
+                    instance,
+                    tenant,
+                    provider: ProviderId::parse(&input.provider.to_string())
+                        .map_err(|_| invalid())?,
+                    version: 1,
+                },
+                settings,
+                credentials,
+            )
+            .map_err(|_| invalid())?;
         let fingerprint = format!(
             "{:x}",
             Sha256::digest(
@@ -141,8 +147,7 @@ impl Backend {
             target: input.target.clone(),
             provider: input.provider,
             tenant,
-            settings,
-            credentials,
+            installed,
             transport,
             fingerprint,
             backend_digest: Sha256::digest(backend.as_bytes()).into(),
@@ -182,9 +187,7 @@ impl Client for Backend {
                 .transport
                 .exchange_enterprise(
                     rss_identity_oidc::enterprise::EnterpriseExchange {
-                        tenant: self.tenant,
-                        provider: &self.settings,
-                        credentials: &self.credentials,
+                        provider: self.installed.clone(),
                         target: &self.target,
                         assertion,
                         assertion_expires_at: expires,

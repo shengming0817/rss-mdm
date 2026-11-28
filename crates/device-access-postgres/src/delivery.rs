@@ -222,7 +222,7 @@ impl Service {
         }
 
         let result=self.write_admitted(&self.access_audit,a,(p,input,proof,&context,&digest,a),|ctx,c|Box::pin(async move{
-            rss_identity_postgres::consume_step_up_on(c,ctx.0.session()?,ctx.3,ctx.2.expose()).await.map_err(|_|Error::Unauthorized)?;Ok(())
+            ctx.0.session_authority()?.consume_step_up_on(c,ctx.0.session()?,ctx.3,ctx.2.expose()).await.map_err(|_|Error::Unauthorized)?;Ok(())
         }),|ctx,c|Box::pin(async move{
             let(p,input,_,_,digest,a)=ctx;
             rss_mdm_authorization_service::lock_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;

@@ -1,3 +1,5 @@
+/// Fixed RSS lock ports granted by grant_platform_subject_admission to the product role.
+pub const PLATFORM_SUBJECT_ACCESS: &str = include_str!("platform-subject-access.json");
 use crate::credential::RequestCredential;
 use crate::{
     Error, Store,
@@ -15,12 +17,20 @@ impl SessionAuthority {
     pub fn new(authority: Authority) -> Self {
         Self { authority }
     }
+    /// Existing self-service operations budget a single reference lookup on the authority clock.
+    pub fn reference_deadline(&self) -> rss_request_context::Deadline {
+        rss_request_context::Deadline::from_timeout(
+            self.authority.execution_timer(),
+            std::time::Duration::from_secs(10),
+        )
+        .expect("bounded session lookup")
+    }
     /// Recheck the trusted operation's locator without retaining credentials or renewing idle.
     pub async fn recheck(
         &self,
         binding: ExecutionBinding,
         reference: &SessionReference,
-        deadline: rss_transactional_messaging::policy::OperationDeadline,
+        deadline: rss_request_context::Deadline,
     ) -> Result<RevalidatedSession, Error> {
         self.authority
             .recheck_session_reference(binding, reference, deadline)
@@ -32,10 +42,11 @@ impl SessionAuthority {
         binding: ExecutionBinding,
         store: &Store,
         credential: RequestCredential,
-        deadline: rss_transactional_messaging::policy::OperationDeadline,
+        deadline: rss_request_context::Deadline,
     ) -> Result<AuthorizedPrincipal, Error> {
         let principal = match credential {
             RequestCredential::Cookie(secret) => Principal::new(
+                &self.authority,
                 self.authority
                     .inspect_session(binding, secret, deadline)
                     .await
@@ -43,6 +54,7 @@ impl SessionAuthority {
                 binding,
             )?,
             RequestCredential::Bearer(secret) => Principal::new(
+                &self.authority,
                 self.authority
                     .inspect_bearer(binding, secret, deadline)
                     .await

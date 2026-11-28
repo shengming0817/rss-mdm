@@ -2,7 +2,7 @@
 
 自有服务端与 Agent 使用 Rust，分别维护 workspace、lock 和工具链。只消费已接纳公共 API，不引用仓外 path、父仓内部源码或复制通用持久机制。
 
-RSS 直接依赖固定同一完整 Git rev，Identity 公共组件固定其独立仓同一 rev；精确值由 Cargo.toml/Cargo.lock 持有，来源不可取得时失败，不浮动跟踪分支或保留备用来源。产品成员使用 workspace 内部 path，身份和位置由 metadata 核查。凭据由系统 Git helper/受保护构建 secret 提供，不写入 manifest 或日志。
+RSS 基础库、Identity、Audit 与 Ledger 的直接依赖固定同一 RSS URL 和完整 Git rev；精确值由 Cargo.toml/Cargo.lock 持有，来源不可取得时失败，不浮动跟踪分支或保留备用来源。产品成员使用 workspace 内部 path，身份和位置由 metadata 核查。凭据由系统 Git helper/受保护构建 secret 提供，不写入 manifest 或日志。
 
 正常工作区 locked 构建与 normal/all-features metadata 校验依赖来源和安全约束，不以隔离 consumer、tree 导出或冷构建形成额外证明体系。源码 Git 消费不称为 registry 发布。升级依赖时验证受影响 API/features/schema、错误与提交未知语义、关闭和真实产品接缝；缺口回原 owner 修复。
 

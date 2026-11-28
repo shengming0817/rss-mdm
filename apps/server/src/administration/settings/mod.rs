@@ -412,26 +412,12 @@ impl Directory {
             let session = match credential {
                 RequestCredential::Cookie(secret) => {
                     self.identity
-                        .inspect_session(
-                            proof.binding(),
-                            secret,
-                            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                                cutoff,
-                                &crate::lifecycle::RuntimeTimer,
-                            ),
-                        )
+                        .inspect_session(proof.binding(), secret, cutoff)
                         .await
                 }
                 RequestCredential::Bearer(secret) => {
                     self.identity
-                        .inspect_bearer(
-                            proof.binding(),
-                            secret,
-                            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                                cutoff,
-                                &crate::lifecycle::RuntimeTimer,
-                            ),
-                        )
+                        .inspect_bearer(proof.binding(), secret, cutoff)
                         .await
                 }
                 RequestCredential::ApiKey(_) => return Err(Error::Forbidden),
@@ -446,16 +432,7 @@ impl Directory {
                 name: "inspect",
                 href: format!("/api/v1/identity/tenants/{}/providers", proof.tenant_id()),
             });
-            match federation
-                .list_providers(
-                    session,
-                    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                        cutoff,
-                        &crate::lifecycle::RuntimeTimer,
-                    ),
-                )
-                .await
-            {
+            match federation.list_providers(session, cutoff).await {
                 Ok(providers) => {
                     configured(projection, providers.len());
                     projection.ready = providers.iter().any(|p| p.enabled);

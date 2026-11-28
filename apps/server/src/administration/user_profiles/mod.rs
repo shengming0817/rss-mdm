@@ -37,14 +37,6 @@ fn identity_error(e: rss_identity_postgres::AuthorityError) -> Error {
         _ => Error::Unavailable(Failure::IdentityStorage),
     }
 }
-fn deadline(
-    cutoff: rss_request_context::Deadline,
-) -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-        cutoff,
-        &crate::lifecycle::RuntimeTimer,
-    )
-}
 impl Backend {
     fn authorize(&self, p: &AuthorizedPrincipal, audit: &RequestAudit) -> Result<(), Error> {
         p.check_live()?;
@@ -69,7 +61,7 @@ impl Backend {
         p.require(Permission::UserAttributeDefinitionsRead, None)?;
         let sources = self
             .identity
-            .profile_sources(p.session()?, deadline(cutoff))
+            .profile_sources(p.session()?, cutoff)
             .await
             .map_err(identity_error)?;
         let page = directory::list(self, p, audit, query).await?;
@@ -176,7 +168,7 @@ impl Backend {
         match query.view {
             View::Current => views.push(
                 self.identity
-                    .current_profile(session, deadline(cutoff))
+                    .current_profile(session, cutoff)
                     .await
                     .map_err(identity_error)?,
             ),
@@ -190,14 +182,14 @@ impl Backend {
                             account,
                             cursor,
                             self.source_page_size,
-                            deadline(cutoff),
+                            cutoff,
                         )
                         .await
                         .map_err(identity_error)?;
                     for source in page.sources {
                         views.push(
                             self.identity
-                                .latest_profile(session, account, source, deadline(cutoff))
+                                .latest_profile(session, account, source, cutoff)
                                 .await
                                 .map_err(identity_error)?,
                         );

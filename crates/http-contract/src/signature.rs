@@ -120,6 +120,9 @@ impl Response {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Request {
+    /// Credential requirements supplied by the handler's actual extractor.
+    #[serde(skip)]
+    pub authentication: Option<crate::authentication::Describe>,
     pub path: Option<Schema>,
     pub query: Option<Schema>,
     pub query_owner: Option<crate::QueryDeclaration>,
@@ -138,6 +141,7 @@ impl Request {
                 );
             }
         }
+        slot(&mut self.authentication, other.authentication, "credential");
         slot(&mut self.path, other.path, "path");
         slot(&mut self.query, other.query, "query");
         slot(&mut self.query_owner, other.query_owner, "query owner");

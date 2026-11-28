@@ -85,14 +85,16 @@ impl Database {
     pub(crate) async fn audit_store(
         &self,
         config: &crate::config::AuditConfig,
+        write_budget: rss_audit_postgres::WriteBudget,
         runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
     ) -> Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>, Error> {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
         let control = budget.control();
-        rss_mdm_audit_integration::AuditStore::new(
+        rss_mdm_audit_integration::AuditStore::with_budget(
             self.pool.clone(),
             config.integrity()?,
+            write_budget,
             runtime,
             binding,
             &control,
@@ -142,6 +144,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_content_service::connections::ACCESS_CONTRACT,
         rss_mdm_webhook_service::ACCESS_CONTRACT,
         rss_mdm_authorization_service::ACCESS_CONTRACT,
+        rss_mdm_authorization_service::session::PLATFORM_SUBJECT_ACCESS,
         rss_mdm_registration_service::ACCESS_CONTRACT,
         rss_mdm_software_service::agent_packages::ACCESS_CONTRACT,
         rss_mdm_software_service::source_snapshots::ACCESS_CONTRACT,
@@ -173,7 +176,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_recovery_credentials::ACCESS_CONTRACT,
     ];
     if matches!(audit, crate::config::AuditConfig::Ledger { .. }) {
-        contracts.push(r#"{"tables":[],"functions":[{"name":"rss_ledger.prepare_append","search_path":"search_path=pg_catalog, rss_ledger"},{"name":"rss_ledger.insert_entry","search_path":"search_path=pg_catalog, rss_ledger"}],"external_relations":["rss_ledger.heads","rss_ledger.entries"],"verified_schemas":[]}"#);
+        contracts.push(rss_mdm_audit_integration::LEDGER_ACCESS_CONTRACT);
     }
     contracts
 }

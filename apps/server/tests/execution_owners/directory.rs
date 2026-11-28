@@ -385,33 +385,92 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
         let (committed, wait_committed) = tokio::sync::oneshot::channel();
         let writer = async {
             wait_observed.await?;
-                crate::planning_t2_support::endpoint(&h.c).await?;
+            crate::planning_t2_support::endpoint(&h.c).await?;
             committed.send(()).unwrap();
             Ok::<_, anyhow::Error>(())
         };
-        let reader = h.a.snapshot.read(&request, (tenant.clone(), Some(observed), Some(wait_committed)), |state, c, _, _| Box::pin(async move {
-            let before: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::query_snapshot::sql)?;
-            state.1.take().unwrap().send(()).unwrap();
-            state.2.take().unwrap().await.unwrap();
-            let after: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::query_snapshot::sql)?;
-            assert_eq!(before, after);
-            Ok(before)
-        }));
-        let (before, ()) = tokio::try_join!(async { Ok::<_,anyhow::Error>(reader.await?) }, writer)?;
-        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&tenant).fetch_one(&h.c.operator).await?;
+        let reader = h.a.snapshot.read(
+            &request,
+            (tenant.clone(), Some(observed), Some(wait_committed)),
+            |state, c, _, _| {
+                Box::pin(async move {
+                    let before: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid",
+                    )
+                    .bind(&state.0)
+                    .fetch_one(&mut *c)
+                    .await
+                    .map_err(crate::assembly::query_snapshot::sql)?;
+                    state.1.take().unwrap().send(()).unwrap();
+                    state.2.take().unwrap().await.unwrap();
+                    let after: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid",
+                    )
+                    .bind(&state.0)
+                    .fetch_one(&mut *c)
+                    .await
+                    .map_err(crate::assembly::query_snapshot::sql)?;
+                    assert_eq!(before, after);
+                    Ok(before)
+                })
+            },
+        );
+        let (before, ()) =
+            tokio::try_join!(async { Ok::<_, anyhow::Error>(reader.await?) }, writer)?;
+        let after: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid")
+                .bind(&tenant)
+                .fetch_one(&h.c.operator)
+                .await?;
         assert_eq!(after, before + 1);
-        let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) = account.credential()? else { unreachable!() };
-        let session = h.c.authority.inspect_session(h.c.execution(), secret, request.remaining()?).await?;
+        let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) =
+            account.credential()?
+        else {
+            unreachable!()
+        };
+        let session =
+            h.c.authority
+                .inspect_session(h.c.execution(), secret, request.cutoff())
+                .await?;
         let mut revoked = false;
-        let rejected = h.a.snapshot.read(&request, (&h.c.authority, Some(session), &mut revoked), |state, _, _, _| Box::pin(async move {
-            state.0.revoke_current_session(state.1.take().unwrap(), rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(3))).await.expect("Identity revocation must commit before testing the response tail");
-            *state.2 = true;
-            Ok(())
-        })).await;
-        assert!(revoked, "the failure must occur after the callback committed revocation");
-        assert!(matches!(rejected, Err(rss_mdm_management_http::Error::Unauthorized)));
+        let rejected =
+            h.a.snapshot
+                .read(
+                    &request,
+                    (&h.c.authority, Some(session), &mut revoked),
+                    |state, _, _, _| {
+                        Box::pin(async move {
+                            state
+                            .0
+                            .revoke_current_session(
+                                state.1.take().unwrap(),
+                                rss_request_context::Deadline::from_timeout(
+                                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                                    std::time::Duration::from_secs(3),
+                                )
+                                .expect("bounded fixture deadline"),
+                            )
+                            .await
+                            .expect(
+                                "Identity revocation must commit before testing the response tail",
+                            );
+                            *state.2 = true;
+                            Ok(())
+                        })
+                    },
+                )
+                .await;
+        assert!(
+            revoked,
+            "the failure must occur after the callback committed revocation"
+        );
+        assert!(matches!(
+            rejected,
+            Err(rss_mdm_management_http::Error::Unauthorized)
+        ));
         Ok(())
-    }.await;
+    }
+    .await;
     h.close().await?;
     result
 }

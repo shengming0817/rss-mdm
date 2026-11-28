@@ -77,7 +77,7 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
     )
     .await?;
     sqlx::query(
-        "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
+        "INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
     )
     .bind(management.to_string())
     .execute(&c.operator)
@@ -97,10 +97,58 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
     )
     .await?;
     drop(listener);
+    let mut federated = configuration.clone();
+    federated["identity"]["oidc"] =
+        identity_http::federation_config(&c.inputs.directory, "https://mdm.example.test", true)?;
+    let business_tenant = c.tenant.to_string();
+    host::run(federated, |client, base| async move {
+        identity_http::federation_surface(&client, &base, &business_tenant, true).await?;
+        assert_eq!(
+            client
+                .get(format!(
+                    "{base}/api/v1/identity/tenants/{management}/login-options"
+                ))
+                .send()
+                .await?
+                .status(),
+            403
+        );
+        Ok(())
+    })
+    .await?;
     let result = {
         let c = &c;
         host::run(configuration, |client, base| async move {
             let contract = crate::http_contract_document().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            identity_http::surface(&contract, false);
+            identity_http::federation_surface(&client, &base, &c.tenant.to_string(), false).await?;
+            identity_http::anonymous_session(
+                &client,
+                &format!("{base}/api/v1/identity/tenants/{}", c.tenant),
+            )
+            .await?;
+            let account = c
+                .account(&[rss_mdm_authorization_service::Permission::OperationRead])
+                .await?;
+            identity_http::session_lifecycle(
+                &client,
+                &format!("{base}/api/v1/identity/tenants/{}", c.tenant),
+                "https://mdm.example.test",
+                &format!("foundation-{}", account.user.principal_id),
+                "foundation-only-valid-password",
+            )
+            .await?;
+            assert_eq!(
+                client
+                    .get(format!(
+                        "{base}/api/v1/identity/tenants/{}/profile",
+                        c.tenant
+                    ))
+                    .send()
+                    .await?
+                    .status(),
+                404
+            );
             for (tenant, status, code) in [
                 ("malformed".to_owned(), 400, "malformed_request"),
                 (Uuid::new_v4().to_string(), 403, "permission_denied"),
@@ -182,3 +230,5 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
     c.close().await;
     result
 }
+
+use crate::identity_http;

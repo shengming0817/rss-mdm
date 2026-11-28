@@ -308,6 +308,7 @@ fn programmatic_allowed(path: &str, authorization: bool, management: bool) -> bo
         && authorization
         && !path.starts_with("/api/v1/tenants/{tenant}/self-")
         && !path.starts_with("/api/v1/identity-host/")
+        && !path.ends_with("/device-access/bindings/{id}/step-up/oidc/{provider}")
         && !(path.contains("/device-access/materials/")
             && (path.ends_with("/secret") || path.ends_with("/step-up")))
         && path != "/api/v1/tenants/{tenant}/registration-quotas/me"
@@ -380,7 +381,7 @@ fn authentication_transport(
         .collect();
     Description {
         owner: "management-http::authorization::http::authenticate_and_run",
-        rejections: rss_mdm_http_contract::authentication::identity_rejections(),
+        rejections: rss_mdm_identity_http::credential_rejections(),
         alternatives,
         conditional_response_headers,
     }
@@ -428,7 +429,9 @@ async fn authenticate_inner(
     else {
         return Error::Forbidden.into_response();
     };
-    let Some(control) = parts.extensions.get::<rss_axum::RequestControl>().cloned() else {
+    let Some((cutoff, cancellation)) =
+        rss_mdm_identity_http::settlement::lifetime(&parts.extensions)
+    else {
         return Error::Unavailable(Failure::RequestDeadline).into_response();
     };
     let path = parts
@@ -442,11 +445,15 @@ async fn authenticate_inner(
     }
     let activity =
         if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
-            rss_identity_http_axum::SessionActivity::Passive
+            rss_identity_web_credentials::SessionActivity::Passive
         } else {
-            rss_identity_http_axum::SessionActivity::Active
+            rss_identity_web_credentials::SessionActivity::Active
         };
-    let Some(clock) = parts.extensions.get::<Arc<dyn rss_observation::Clock>>() else {
+    if parts
+        .extensions
+        .get::<Arc<dyn rss_observation::Clock>>()
+        .is_none()
+    {
         return Error::Unavailable(Failure::Runtime).into_response();
     };
     match app
@@ -458,15 +465,10 @@ async fn authenticate_inner(
             &app.access,
             parts
                 .extensions
-                .get::<rss_identity_http_axum::ClientAddress>()
+                .get::<rss_mdm_identity_http::ClientAddress>()
                 .map(|address| address.0),
             programmatic_allowed(&path, authorization, management),
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                control
-                    .deadline()
-                    .instant()
-                    .saturating_duration_since(clock.now()),
-            ),
+            cutoff,
         )
         .await
     {
@@ -481,7 +483,7 @@ async fn authenticate_inner(
                 return Error::from(error).into_response();
             }
             // Authentication has settled. Authorization I/O and the handler share the host budget.
-            let deadline = control.deadline().instant();
+            let deadline = cutoff.instant();
             let content_owned = parts
                 .extensions
                 .get::<axum::extract::MatchedPath>()
@@ -534,11 +536,12 @@ async fn authenticate_inner(
                 ),
                 proof: Arc::new(proof),
                 deadline,
-                cancellation: Arc::new(control),
+                cancellation,
             });
+            let owner_settles = rss_mdm_identity_http::settlement::owner_settles(&parts.extensions);
             let request = Request::from_parts(parts, body);
             let dispatch = crate::boundary::after_authentication(request, next);
-            if content_owned {
+            if content_owned || owner_settles {
                 // These exact routes hand off to the content owner's bounded operation.
                 dispatch.await
             } else {

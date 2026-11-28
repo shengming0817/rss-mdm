@@ -16,6 +16,14 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
 
+pub fn identity_cutoff() -> rss_request_context::Deadline {
+    rss_request_context::Deadline::from_timeout(
+        &rss_mdm_audit_integration::budget::RuntimeTimer,
+        Duration::from_secs(10),
+    )
+    .expect("bounded fixture deadline")
+}
+
 pub fn deadline() -> OperationDeadline {
     OperationDeadline::from_remaining(Duration::from_secs(10))
 }
@@ -148,7 +156,7 @@ impl Context {
             InstanceId::parse(&inputs.installation.instance_id)?,
         )
         .await?;
-        sqlx::query("INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
             .bind(tenant.to_string()).execute(&operator).await?;
         Self::connect(
             profile,
@@ -179,8 +187,18 @@ impl Context {
         .await
         .map_err(|e| anyhow::anyhow!("MDM messaging runtime: {e:?}"))?;
         let binding = inputs.installation.execution(tenant, 1)?;
+        let policy = identity::policy::RuntimePolicy::installation();
+        let compiled = policy.compile(
+            InstanceId::parse(&inputs.installation.instance_id)?,
+            audit_config.integrity()?,
+        )?;
         let audit = database
-            .audit_store(audit_config, runtime.clone(), binding)
+            .audit_store(
+                audit_config,
+                compiled.write_budget.clone(),
+                runtime.clone(),
+                binding,
+            )
             .await?;
         let identity_runtime = identity::open_runtime(
             &inputs.database(profile, "mdm_identity_runtime"),
@@ -189,11 +207,6 @@ impl Context {
             4,
         )
         .await?;
-        let policy = identity::policy::RuntimePolicy::installation();
-        let compiled = policy.compile(
-            InstanceId::parse(&inputs.installation.instance_id)?,
-            audit_config.integrity()?,
-        )?;
         let kdf = compiled.kdf.clone();
         let authority = Authority::connect_runtime(
             identity_runtime.clone(),
@@ -204,7 +217,7 @@ impl Context {
                 rss_mdm_install_support::StorageProfile::Mdm,
                 &inputs.installation.instance_id,
             )?),
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?;
         Ok(Self {
@@ -248,7 +261,7 @@ impl Context {
                 rss_mdm_install_support::StorageProfile::Mdm,
                 &self.inputs.installation.instance_id,
             )?),
-            deadline(),
+            crate::authority_t2_support::identity_cutoff(),
         )
         .await?)
     }
@@ -275,7 +288,7 @@ impl Context {
                 Password::new(password.into())?,
                 AttemptSource::parse("foundation-t2")?,
                 None,
-                deadline(),
+                crate::authority_t2_support::identity_cutoff(),
             )
             .await?;
         Ok(Account {
@@ -294,7 +307,7 @@ impl Context {
                     self.execution(),
                     &self.access(),
                     account.credential()?,
-                    deadline(),
+                    crate::authority_t2_support::identity_cutoff(),
                 )
                 .await?,
         )
@@ -401,9 +414,14 @@ pub struct Account {
     secret: String,
 }
 impl Account {
+    pub fn cookie_session(&self) -> Result<rss_identity_core::session::SessionSecret> {
+        Ok(rss_identity_core::session::SessionSecret::parse(
+            self.secret.clone(),
+        )?)
+    }
     pub fn credential(&self) -> Result<access::credential::RequestCredential> {
         Ok(access::credential::RequestCredential::Cookie(
-            rss_identity_core::session::SessionSecret::parse(self.secret.clone())?,
+            self.cookie_session()?,
         ))
     }
 }
@@ -419,7 +437,7 @@ pub async fn seed_tenant(pool: &PgPool, tenant: TenantId) -> Result<()> {
     .bind(tenant.to_string())
     .execute(&mut *tx)
     .await?;
-    sqlx::query("INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid)")
+    sqlx::query("INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid)")
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
@@ -435,8 +453,12 @@ pub async fn seed_account(
     hash: &str,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
-        "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
+        "INSERT INTO identity_authority.tenants(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
     )
     .bind(tenant.to_string())
     .execute(&mut *tx)

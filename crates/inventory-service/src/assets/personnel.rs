@@ -31,7 +31,7 @@ pub trait DeviceSubjectsRead: Send + Sync {
         &'a self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         devices: &'a [Uuid],
-        deadline: rss_transactional_messaging::policy::OperationDeadline,
+        deadline: rss_request_context::Deadline,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<DeviceSubjects>>> + Send + 'a>>;
 }
 

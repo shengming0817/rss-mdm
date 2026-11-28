@@ -335,7 +335,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 ## 运行配置与网络
 
-运行配置必须显式包含 `identity.runtime`、`background.scheduling`、`http`、`inventory_runtime` 与 `audit_query`，完整形状见 [MDM 配置示例](../../fixtures/mdm-config.example.json)。安装生成器写入当前保守值；恢复时保留原安装 target、lineage、tenant epoch 和 `rp_generation`，新安装 RP generation 为 1。Identity 公共数据库 schema 使用 owner 的版本 18，自有 HTTP、Agent 和安装格式仍为 V1。
+运行配置必须显式包含 `identity.runtime`、`background.scheduling`、`http`、`inventory_runtime` 与 `audit_query`，完整形状见 [MDM 配置示例](../../fixtures/mdm-config.example.json)。安装生成器写入当前保守值；恢复时保留原安装 target、lineage、tenant epoch 和 `rp_generation`，新安装 RP generation 为 1。Identity 公共数据库 schema 使用固定 RSS 的版本 24，自有 HTTP、Agent 和安装格式仍为 V1。
 
 `background.scheduling` 分别配置 device、commands、tasks、planning、policy 的领取量、扫描量、lease、执行、重试及排空预算。标准部署的 `MDM_DEVICE_CONCURRENCY` 和 `MDM_PLANNING_CONCURRENCY` 各取 8，由安装器写入 background 配置。设备恢复共用执行容量，每类计算的租户共享该类总额度。领取／扫描默认 64；领取支持至 1024，扫描独立配置。`command_recovery_batch_size` 和 `command_supersede_batch_size` 分别控制恢复遍历与替代命令的处理批次，默认 64。并发对应的物理池预算在启动前统一 checked 校验。
 
